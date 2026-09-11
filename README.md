@@ -199,7 +199,7 @@ Choose the configuration that best matches your deployment requirements.
 ## :package: Publishing
 
 For information about publishing Docker images to registries,
-see [PUBLISHING.md](PUBLISHING.md).
+see [PUBLISHING.md](docs/PUBLISHING.md).
 
 ## Development
 

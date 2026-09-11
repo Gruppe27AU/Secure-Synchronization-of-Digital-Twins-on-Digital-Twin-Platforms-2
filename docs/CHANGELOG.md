@@ -2,6 +2,39 @@
 
 The main changes made so far are listed here.
 
+## Week of 07-Sep-2026
+
+### Changed
+
+* Split the workspace-admin `main.py` into layered modules ahead of the git
+  backup feature: `api.py` (FastAPI app factory and HTTP routes),
+  `services.py` (workspace service discovery) and `main.py` (CLI entry point)
+* Moved `services_template.json` into `src/admin/config/` and added an empty
+  `src/admin/git/` package as the home for the upcoming git backup logic
+* Split `tests/test_main.py` into `test_api.py`, `test_services.py` and
+  `test_main.py` to mirror the new module layout
+* CLI now passes the application straight to uvicorn instead of rebinding a
+  module-level global, removing the last inline pylint suppression
+* Version is read from the package metadata rather than a literal in the
+  code, leaving `pyproject.toml` as the only place it is declared
+* Trimmed the CLI command list duplicated between the admin service
+  `README.md` and `DOCUMENTATION.md`, and added `coverage.xml` to
+  `.gitignore`
+* Behaviour is unchanged: no endpoints, flags or responses were added,
+  removed or modified
+
+### Documentation
+
+* Added a `docs/` directory for repository-level documentation and moved
+  `CHANGELOG.md`, `PUBLISHING.md`, `CODE_OF_CONDUCT.md`,
+  `PENDING_ISSUES.md` and `POTENTIAL_IMPROVEMENTS.md` into it
+* The repository root now holds only `README.md`, `LICENSE.md` and the
+  agent instruction files, which have to stay there to be found by GitHub
+  and by the coding agents that read them
+* Component documentation stays beside the code it describes, so the
+  deployment guides remain in `workspaces/test/dtaas/` and the admin
+  service documentation in `workspaces/src/admin/`
+
 ## Week of 06-April-2026
 
 ### Changed
