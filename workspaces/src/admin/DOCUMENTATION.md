@@ -114,16 +114,46 @@ curl http://localhost:8091/{path-prefix}
 
 1. User accesses `http://{domain}/{path-prefix}/services` (or `/services` without prefix)
 2. nginx receives the request and routes it to the admin service on port 8091
-3. Admin service reads the `services_template.json` file
+3. Admin service reads the `config/services_template.json` file
 4. JSON response is returned to the client
 5. Path prefix is configured via CLI argument when starting the service
 
+### Package Layout
+
+The package is split by layer, so that transport concerns stay separate from
+the logic they expose:
+
+```text
+src/admin/
+├── __init__.py                   # Package marker
+├── api.py                        # FastAPI app factory and HTTP routes
+├── services.py                   # Workspace service discovery
+├── main.py                       # Command-line entry point
+├── config/
+│   └── services_template.json    # Service catalogue (data, not code)
+└── git/
+    └── __init__.py               # Git backup of workspace directories
+```
+
+Dependencies point in one direction only: `main` → `api` → `services`. No
+module imports the layer above it, so each can be tested on its own.
+
 ### Components
 
-- **FastAPI Application** (`src/admin/main.py`): Core service implementation
-  containing all routes (`/`, `/services`, `/health`) and CLI entry point
-- **Services Template** (`src/admin/services_template.json`): JSON template
-  defining available services
+- **HTTP API** (`src/admin/api.py`): FastAPI application factory
+  (`create_app`), the router holding the `/`, `/services` and `/health`
+  routes, path prefix normalization, and `APP_VERSION`. Contains transport
+  logic only
+- **Service Discovery** (`src/admin/services.py`): `load_services()`, which
+  reads the service catalogue from the JSON template
+- **CLI Entry Point** (`src/admin/main.py`): Argument parsing
+  (`build_parser`) and the `workspace-admin` command (`cli`), which either
+  prints the catalogue or serves the API with uvicorn
+- **Git Backup** (`src/admin/git/`): Reserved for the git backup feature -
+  configuration, cloning, authentication and working tree synchronization.
+  Currently an empty package
+- **Services Template** (`src/admin/config/services_template.json`): JSON
+  template defining available services
 - **nginx Configuration** (`startup/nginx.conf`): Reverse proxy routing
 - **Startup Script** (`startup/custom_startup.sh`): Service bootstrap and
   monitoring
@@ -142,6 +172,15 @@ cd workspaces/src/admin
 poetry install
 poetry run pytest --cov=admin --cov-report=html --cov-report=term-missing
 ```
+
+The test files mirror the package layout, so a change to a module has one
+obvious test file:
+
+| Test file             | Module under test  | Covers                                     |
+| --------------------- | ------------------ | ------------------------------------------ |
+| `tests/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
+| `tests/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
+| `tests/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
 
 ### Code Quality and Coverage
 
@@ -204,7 +243,7 @@ glances, allowing easy command-line operation and service listing.
 
 To add a new service to the workspace:
 
-1. Update `services_template.json` with the new service definition:
+1. Update `config/services_template.json` with the new service definition:
 
 ```json
 {

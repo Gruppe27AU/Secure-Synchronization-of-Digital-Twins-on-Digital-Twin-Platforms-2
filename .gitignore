@@ -101,5 +101,6 @@ dist/
 build/
 *.egg-info/
 .coverage
+coverage.xml
 
 workspaces/src/admin/config.env
