@@ -99,11 +99,7 @@ def cli() -> None:
 
     # Set up path prefix
     path_prefix = args.path_prefix.strip("/")
-    if path_prefix:
-        os.environ["PATH_PREFIX"] = path_prefix
-        prefix_display = f"/{path_prefix}"
-    else:
-        prefix_display = ""
+    prefix_display = f"/{path_prefix}" if path_prefix else ""
 
     if args.list_services:
         # Just list services and exit
