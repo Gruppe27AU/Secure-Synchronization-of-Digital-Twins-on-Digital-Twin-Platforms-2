@@ -1,113 +1,29 @@
 """
-FastAPI application for workspace service discovery.
+Command-line entry point for the workspace admin service.
 
-This service provides a /services endpoint that returns a JSON object
-containing information about all available services in the workspace.
+This module wires the command-line interface to the application layers: it
+parses arguments, and then either prints the service catalogue
+(:mod:`admin.services`) or serves the HTTP API (:mod:`admin.api`) with
+uvicorn. It contains no routing and no service discovery logic itself.
 """
 
 import argparse
 import json
 import os
 import sys
-from pathlib import Path
-from typing import Dict, Any
 
 import uvicorn
-from fastapi import FastAPI, APIRouter
-from fastapi.responses import JSONResponse
 
-APP_VERSION = "0.1.1"
+from admin.api import APP_VERSION, create_app
+from admin.services import load_services
 
-def create_app(path_prefix: str = "") -> FastAPI:
+
+def build_parser() -> argparse.ArgumentParser:
     """
-    Create and configure the FastAPI application.
-
-    Args:
-        path_prefix: Optional path prefix for all routes (e.g., "dtaas-user")
+    Build the argument parser for the ``workspace-admin`` command.
 
     Returns:
-        Configured FastAPI application instance.
-    """
-    # Clean up path prefix
-    if path_prefix:
-        path_prefix = path_prefix.strip("/")
-        if path_prefix:
-            path_prefix = f"/{path_prefix}"
-    else:
-        path_prefix = ""
-
-    # Create the FastAPI app
-    fastapi_app = FastAPI(
-        title="Workspace Admin Service",
-        description="Service discovery and management for DTaaS workspace",
-        version=APP_VERSION
-    )
-
-    # Create router for our endpoints
-    router = APIRouter()
-
-    @router.get("/")
-    async def root() -> Dict[str, Any]:
-        """Root endpoint providing service information."""
-        return {
-            "service": "Workspace Admin Service",
-            "version": APP_VERSION,
-            "endpoints": {
-                "/services": "Get list of available workspace services",
-                "/health": "Health check endpoint"
-            }
-        }
-
-    @router.get("/services")
-    async def get_services() -> JSONResponse:
-        """
-        Get list of available workspace services.
-
-        Returns:
-            JSONResponse containing service information.
-        """
-        services = load_services()
-        return JSONResponse(content=services)
-
-    @router.get("/health")
-    async def health_check() -> Dict[str, str]:
-        """Health check endpoint."""
-        return {"status": "healthy"}
-
-    # Include router with optional prefix
-    fastapi_app.include_router(router, prefix=path_prefix)
-
-    return fastapi_app
-
-
-# Create default app instance
-app = create_app()
-
-# Path to services template
-SERVICES_TEMPLATE_PATH = Path(__file__).parent / "services_template.json"
-
-
-def load_services() -> Dict[str, Any]:
-    """
-    Load services from template and substitute environment variables.
-
-    Returns:
-        Dictionary containing service information with environment
-        variables substituted.
-    """
-    # Read the services template
-    with open(SERVICES_TEMPLATE_PATH, 'r', encoding='utf-8') as f:
-        services = json.load(f)
-
-    return services
-
-
-def cli():
-    """
-    Command-line interface for the workspace admin service.
-
-    This allows the service to be run as a standalone utility
-    similar to glances.
+        Parser configured with all supported command-line options.
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -132,7 +48,10 @@ def cli():
     parser.add_argument(
         "--path-prefix",
         default=os.getenv("PATH_PREFIX", "dtaas-user"),
-        help="Path prefix for API routes (e.g., 'dtaas-user' for routes at /dtaas-user/services)"
+        help=(
+            "Path prefix for API routes "
+            "(e.g., 'dtaas-user' for routes at /dtaas-user/services)"
+        )
     )
     parser.add_argument(
         "--reload",
@@ -150,7 +69,33 @@ def cli():
         version="%(prog)s " + APP_VERSION
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def print_startup_banner(host: str, port: int, prefix_display: str) -> None:
+    """
+    Print the endpoints the service is about to serve.
+
+    Args:
+        host: Host the service binds to.
+        port: Port the service binds to.
+        prefix_display: Normalized path prefix, empty when unprefixed.
+    """
+    print(f"Starting Workspace Admin Service on {host}:{port}")
+    print("Service endpoints:")
+    print(f"  - http://{host}:{port}{prefix_display}/services")
+    print(f"  - http://{host}:{port}{prefix_display}/health")
+    print(f"  - http://{host}:{port}{prefix_display}/")
+
+
+def cli() -> None:
+    """
+    Command-line interface for the workspace admin service.
+
+    This allows the service to be run as a standalone utility
+    similar to glances.
+    """
+    args = build_parser().parse_args()
 
     # Set up path prefix
     path_prefix = args.path_prefix.strip("/")
@@ -162,23 +107,13 @@ def cli():
 
     if args.list_services:
         # Just list services and exit
-        services = load_services()
-        print(json.dumps(services, indent=2))
+        print(json.dumps(load_services(), indent=2))
         sys.exit(0)
 
-    # Start the server
-    print(f"Starting Workspace Admin Service on {args.host}:{args.port}")
-    print("Service endpoints:")
-    print(f"  - http://{args.host}:{args.port}{prefix_display}/services")
-    print(f"  - http://{args.host}:{args.port}{prefix_display}/health")
-    print(f"  - http://{args.host}:{args.port}{prefix_display}/")
-
-    # Recreate app with path prefix
-    global app  # pylint: disable=global-statement
-    app = create_app(path_prefix)
+    print_startup_banner(args.host, args.port, prefix_display)
 
     uvicorn.run(
-        app,
+        create_app(path_prefix),
         host=args.host,
         port=args.port,
         reload=args.reload

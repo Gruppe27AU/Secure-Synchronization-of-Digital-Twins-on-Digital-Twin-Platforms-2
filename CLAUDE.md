@@ -296,9 +296,22 @@ poetry run workspace-admin --path-prefix dtaas-user
 poetry run workspace-admin --list-services
 ```
 
+The package is layered, and the test files mirror it:
+
+- `src/admin/api.py` - FastAPI app factory and HTTP routes
+  (tested by `tests/test_api.py`)
+- `src/admin/services.py` - Workspace service discovery
+  (tested by `tests/test_services.py`)
+- `src/admin/main.py` - CLI entry point
+  (tested by `tests/test_main.py`)
+- `src/admin/git/` - Git backup of workspace directories
+- `src/admin/config/` - Service catalogue and other configuration data
+
+Dependencies point one way only: `main` → `api` → `services`.
+
 To add new services to the workspace:
 
-1. Edit `src/admin/src/admin/services_template.json`
+1. Edit `src/admin/src/admin/config/services_template.json`
 2. Add service definition with name, description, and endpoint
 3. No code changes needed - template is read at runtime
 
@@ -367,11 +380,13 @@ guidelines.
 ## Additional Documentation
 
 - **README.md:25-88** - Basic build and run instructions
-- **TRAEFIK.md:1-20** - Multi-user deployment with Traefik reverse
-  proxy
-- **PUBLISHING.md:1-30** - Docker image publishing workflow and
+- **workspaces/test/dtaas/TRAEFIK.md** - Multi-user deployment with
+  Traefik reverse proxy
+- **docs/PUBLISHING.md** - Docker image publishing workflow and
   registry configuration
-- **CHANGELOG.md** - Version history and release notes
+- **docs/CHANGELOG.md** - Version history and release notes
+- **docs/PENDING_ISSUES.md** and **docs/POTENTIAL_IMPROVEMENTS.md** -
+  Working notes and backlog
 
 ## Getting Help
 
