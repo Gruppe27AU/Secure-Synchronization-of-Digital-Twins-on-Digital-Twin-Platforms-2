@@ -103,7 +103,3 @@ def create_app(path_prefix: str = "") -> FastAPI:
     )
 
     return fastapi_app
-
-
-# Default application instance for ASGI servers (``admin.api:app``).
-app = create_app()
