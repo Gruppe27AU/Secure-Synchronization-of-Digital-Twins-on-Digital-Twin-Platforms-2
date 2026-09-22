@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.main import build_parser, cli
 
 
@@ -50,6 +51,7 @@ def test_build_parser_defaults(monkeypatch):
     assert args.path_prefix == "dtaas-user"
     assert args.reload is False
     assert args.list_services is False
+    assert args.sync_interval == DEFAULT_SYNC_INTERVAL_SECONDS
 
 
 def test_build_parser_reads_environment(monkeypatch):
@@ -74,3 +76,10 @@ def test_build_parser_arguments_override_environment(monkeypatch):
     assert args.host == "127.0.0.1"
     assert args.port == 9100
     assert args.path_prefix == "user2"
+
+
+def test_build_parser_accepts_a_custom_sync_interval():
+    """Test the git backup interval can be shortened, for demos and tests."""
+    args = build_parser().parse_args(["--sync-interval", "30"])
+
+    assert args.sync_interval == 30

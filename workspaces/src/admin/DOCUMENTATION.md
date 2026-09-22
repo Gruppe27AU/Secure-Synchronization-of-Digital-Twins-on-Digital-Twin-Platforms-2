@@ -120,6 +120,23 @@ curl http://localhost:8091/{path-prefix}
 4. JSON response is returned to the client
 5. Path prefix is configured via CLI argument when starting the service
 
+### Git Backup Flow
+
+1. On startup, `admin.main.cli()` clones the configured git assets
+   (`clone_common_repo()`) and then starts the backup scheduler
+   (`start_git_sync()`)
+2. The scheduler runs on a background daemon thread, so it never blocks the
+   HTTP server
+3. Every 5 minutes it checks each cloned working tree with
+   `git status --porcelain`
+4. A clean working tree is skipped; a dirty one is staged, committed with a
+   timestamped message and pushed to the configured branch
+5. A repository that fails is logged and skipped, so one broken remote does
+   not stop the others from being backed up
+
+The user never runs a git command: saving a file in Jupyter or VS Code is
+enough for it to reach the remote within one interval.
+
 ### Package Layout
 
 The package is split by layer, so that transport concerns stay separate from
@@ -138,7 +155,9 @@ src/admin/
     ├── __init__.py                # Git backup of workspace directories
     ├── config.py                  # Reads config.env into RepoConfig objects
     ├── clone.py                   # Clones a single RepoConfig
-    └── bootstrap.py               # Clones the shared "common" asset on startup
+    ├── sync.py                    # Commits and pushes one working tree
+    ├── scheduler.py               # Runs the sync on a timer, in the background
+    └── bootstrap.py               # Wires the above together on startup
 ```
 
 Dependencies point in one direction only: `main` → `api` → `services`. No
@@ -166,9 +185,21 @@ module imports the layer above it, so each can be tested on its own.
     `CloneError` on failure. Credentials, when set, are passed as a
     one-off `http.extraHeader` so they are never written into
     `.git/config`
-  - `bootstrap.py`: `clone_common_repo()` wires the two together for the
-    shared `common` asset and is called once from `admin.main.cli()` on
-    startup. Errors are logged, never raised, so a missing or broken git
+  - `sync.py`: `sync_once()` commits and pushes the changes in one
+    already-cloned working tree, returning `False` when there was nothing
+    to commit and raising `SyncError` on failure. Commit messages carry a
+    UTC timestamp. The commit identity and the credentials header are
+    passed per command with `git -c`, because `clone.py` deliberately
+    leaves both out of the repository's own `.git/config`
+  - `scheduler.py`: `start_sync_scheduler()` runs `sync_once()` for every
+    repository on a background daemon thread, every
+    `DEFAULT_SYNC_INTERVAL_SECONDS` (300) seconds. A failing repository is
+    logged and skipped rather than stopping the loop
+  - `bootstrap.py`: `clone_common_repo()` and `start_git_sync()` wire the
+    other modules together and are called once from `admin.main.cli()` on
+    startup. `start_git_sync()` schedules every repository that is actually
+    cloned, so assets added later are picked up as soon as they exist on
+    disk. Errors are logged, never raised, so a missing or broken git
     configuration does not prevent the admin service from starting.
     Cloning the `private` asset is out of scope here - it belongs to the
     authentication feature built on top of this same `config.py` contract
@@ -183,8 +214,9 @@ module imports the layer above it, so each can be tested on its own.
 - `ADMIN_SERVER_PORT`: Port for the admin service (default: `8091`)
 - `PATH_PREFIX`: Optional path prefix for API routes (can also be set via CLI `--path-prefix` argument)
 - `WORKSPACE_APP_DIR`: Directory that holds `config.env`, the git asset
-  configuration file read by `admin.git.bootstrap.clone_common_repo()` on
-  startup (default: current directory)
+  configuration file read by `admin.git.bootstrap` on startup, both to
+  clone the assets and to schedule their backup (default: current
+  directory)
 
 ## Development
 
@@ -205,7 +237,13 @@ obvious test file:
 | `tests/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
 | `tests/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling |
-| `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning `common`, and graceful handling of config/clone failures |
+| `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, failed push and commit, commit identity, timestamped message, credential handling |
+| `tests/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
+| `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning `common`, scheduling only cloned repositories, and graceful handling of config/clone failures |
+
+`tests/repo_factory.py` is a shared helper rather than a test file: it builds
+the `RepoConfig` objects the git tests need, so no test module has to repeat
+the full seven-field construction.
 
 ### Code Quality and Coverage
 
@@ -256,6 +294,9 @@ poetry run workspace-admin --list-services
 
 # Run with auto-reload for development
 poetry run workspace-admin --reload
+
+# Back up the workspace every 30 seconds instead of every 5 minutes
+poetry run workspace-admin --sync-interval 30
 
 # Show help
 poetry run workspace-admin --help

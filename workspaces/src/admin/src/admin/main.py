@@ -9,13 +9,15 @@ uvicorn. It contains no routing and no service discovery logic itself.
 
 import argparse
 import json
+import logging
 import os
 import sys
 
 import uvicorn
 
 from admin.api import APP_VERSION, create_app
-from admin.git.bootstrap import clone_common_repo
+from admin.git.bootstrap import clone_common_repo, start_git_sync
+from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.services import load_services
 
 
@@ -60,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable auto-reload for development"
     )
     parser.add_argument(
+        "--sync-interval",
+        type=int,
+        default=DEFAULT_SYNC_INTERVAL_SECONDS,
+        help=(
+            "Seconds between git backups of the workspace "
+            f"(default: {DEFAULT_SYNC_INTERVAL_SECONDS})"
+        )
+    )
+    parser.add_argument(
         "--list-services",
         action="store_true",
         help="List available services and exit"
@@ -98,6 +109,14 @@ def cli() -> None:
     """
     args = build_parser().parse_args()
 
+    # Send the git backup's log records to the console. Until this is
+    # called, anything below WARNING is discarded by Python's default
+    # configuration.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
     # Set up path prefix
     path_prefix = args.path_prefix.strip("/")
     prefix_display = f"/{path_prefix}" if path_prefix else ""
@@ -108,6 +127,7 @@ def cli() -> None:
         sys.exit(0)
 
     clone_common_repo()
+    start_git_sync(args.sync_interval)
 
     print_startup_banner(args.host, args.port, prefix_display)
 
