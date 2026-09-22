@@ -2,16 +2,19 @@
 Startup bootstrap for git-backed workspace assets.
 
 Wires :mod:`admin.git.config` (reading ``config.env``) to
-:mod:`admin.git.clone` (cloning a repository), for the shared ``common``
-asset that every user in the workspace should have access to.
+:mod:`admin.git.clone` (cloning a repository) and
+:mod:`admin.git.scheduler` (committing and pushing the clones from then
+on), so :mod:`admin.main` only has to make two calls at startup.
 """
 
 import logging
 import os
+import threading
 from pathlib import Path
 
-from admin.git.clone import CloneError, clone_asset
+from admin.git.clone import CloneError, clone_asset, is_cloned
 from admin.git.config import ConfigError, RepoConfig, load_config
+from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS, start_sync_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -71,3 +74,45 @@ def clone_common_repo() -> bool:
     except CloneError as exc:
         logger.error("%s", exc)
         return False
+
+
+def start_git_sync(
+    interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
+) -> tuple[threading.Thread, threading.Event] | None:
+    """
+    Start committing and pushing the cloned repositories periodically.
+
+    Reads the same config file as :func:`clone_common_repo` and schedules
+    every repository that has actually been cloned, so repositories added
+    to the config later are picked up as soon as they exist on disk.
+    Failures are logged, not raised, so a broken git configuration does
+    not prevent the admin service from starting.
+
+    Args:
+        interval_seconds: Seconds to wait between synchronizations.
+
+    Returns:
+        The background thread and the event that stops it, or None when
+        there is nothing to synchronize. The caller may drop both: the
+        thread is a daemon, so it ends with the process either way.
+    """
+    config_path = _config_path()
+
+    try:
+        repos = load_config(config_path)
+    except ConfigError as exc:
+        logger.error("Cannot start git sync: %s", exc)
+        return None
+
+    cloned_repos = [repo for repo in repos if is_cloned(repo.git_dir)]
+    if not cloned_repos:
+        logger.warning(
+            "No cloned repositories found for %s; git sync not started",
+            config_path,
+        )
+        return None
+
+    stop_event = threading.Event()
+    thread = start_sync_scheduler(cloned_repos, interval_seconds, stop_event)
+
+    return thread, stop_event
