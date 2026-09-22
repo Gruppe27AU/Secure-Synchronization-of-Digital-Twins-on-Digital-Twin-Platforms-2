@@ -16,8 +16,12 @@ src/admin/
 ├── services.py                   # Workspace service discovery
 ├── main.py                       # Command-line entry point
 ├── config/
-│   └── services_template.json    # Service catalogue
+│   ├── services_template.json    # Service catalogue
+│   └── config.env.example        # Example git asset configuration
 └── git/                          # Git backup of workspace directories
+    ├── config.py                 # config.env -> RepoConfig
+    ├── clone.py                  # Clone a single RepoConfig
+    └── bootstrap.py              # Clone the shared "common" asset on startup
 ```
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the full architecture and
