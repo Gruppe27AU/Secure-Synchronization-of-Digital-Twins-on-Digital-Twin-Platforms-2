@@ -83,3 +83,12 @@ def test_build_parser_accepts_a_custom_sync_interval():
     args = build_parser().parse_args(["--sync-interval", "30"])
 
     assert args.sync_interval == 30
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "abc"])
+def test_build_parser_rejects_an_unusable_sync_interval(value, capsys):
+    """Test an interval that would spin or not parse is refused up front."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--sync-interval", value])
+
+    assert "--sync-interval" in capsys.readouterr().err

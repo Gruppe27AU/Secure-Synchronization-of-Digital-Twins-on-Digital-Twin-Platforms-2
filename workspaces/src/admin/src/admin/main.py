@@ -21,6 +21,36 @@ from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.services import load_services
 
 
+def positive_seconds(value: str) -> int:
+    """
+    Parse an interval that is safe to wait on.
+
+    Args:
+        value: The command-line argument.
+
+    Returns:
+        The interval in seconds.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not a whole number of
+            seconds above zero. Zero would turn the backup into a loop
+            that never waits, hammering the remote.
+    """
+    try:
+        seconds = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"expected a whole number of seconds, got '{value}'"
+        ) from error
+
+    if seconds < 1:
+        raise argparse.ArgumentTypeError(
+            f"expected at least 1 second, got {seconds}"
+        )
+
+    return seconds
+
+
 def build_parser() -> argparse.ArgumentParser:
     """
     Build the argument parser for the ``workspace-admin`` command.
@@ -63,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sync-interval",
-        type=int,
+        type=positive_seconds,
         default=DEFAULT_SYNC_INTERVAL_SECONDS,
         help=(
             "Seconds between git backups of the workspace "

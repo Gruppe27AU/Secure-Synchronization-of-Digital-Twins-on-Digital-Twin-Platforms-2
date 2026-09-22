@@ -78,7 +78,7 @@ def clone_common_repo() -> bool:
 
 def start_git_sync(
     interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
-) -> threading.Thread | None:
+) -> tuple[threading.Thread, threading.Event] | None:
     """
     Start committing and pushing the cloned repositories periodically.
 
@@ -92,8 +92,9 @@ def start_git_sync(
         interval_seconds: Seconds to wait between synchronizations.
 
     Returns:
-        The background thread, or None when there is nothing to
-        synchronize.
+        The background thread and the event that stops it, or None when
+        there is nothing to synchronize. The caller may drop both: the
+        thread is a daemon, so it ends with the process either way.
     """
     config_path = _config_path()
 
@@ -111,6 +112,7 @@ def start_git_sync(
         )
         return None
 
-    return start_sync_scheduler(
-        cloned_repos, interval_seconds, threading.Event()
-    )
+    stop_event = threading.Event()
+    thread = start_sync_scheduler(cloned_repos, interval_seconds, stop_event)
+
+    return thread, stop_event

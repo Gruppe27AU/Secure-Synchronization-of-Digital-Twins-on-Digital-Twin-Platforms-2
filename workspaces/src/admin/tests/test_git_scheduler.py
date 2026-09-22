@@ -65,6 +65,27 @@ def test_sync_all_continues_after_a_failing_repository(monkeypatch, caplog):
     assert "private" in caplog.text
 
 
+def test_sync_all_survives_an_unexpected_error(monkeypatch, caplog):
+    """Test an error other than SyncError does not escape and kill the thread.
+
+    sync_all runs on a background thread, so an escaping exception would
+    end the backup silently while the service kept serving requests.
+    """
+    synced = []
+
+    def fake_sync_once(repo):
+        synced.append(repo.name)
+        if repo.name == "private":
+            raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")])
+
+    assert synced == ["private", "common"]
+    assert "Unexpected error" in caplog.text
+
+
 def test_sync_loop_runs_until_the_stop_event_is_set(monkeypatch):
     """Test the loop synchronizes once per interval and then stops."""
     rounds = []
@@ -84,8 +105,11 @@ def test_sync_loop_does_not_sync_when_stopped_immediately(monkeypatch):
     rounds = []
     monkeypatch.setattr(scheduler, "sync_all", rounds.append)
 
+    stop_event = StubStopEvent(allowed_rounds=3)
+    stop_event.set()
+
     # pylint: disable-next=protected-access
-    scheduler._sync_loop([make_repo("common")], 300, StubStopEvent(allowed_rounds=0))
+    scheduler._sync_loop([make_repo("common")], 300, stop_event)
 
     assert not rounds
 

@@ -95,9 +95,10 @@ def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
 
     scheduled = {}
 
-    def fake_start_sync_scheduler(repos, interval_seconds, _stop_event):
+    def fake_start_sync_scheduler(repos, interval_seconds, stop_event):
         scheduled["repos"] = repos
         scheduled["interval_seconds"] = interval_seconds
+        scheduled["stop_event"] = stop_event
         return "thread"
 
     monkeypatch.setattr(
@@ -107,9 +108,13 @@ def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
     common_repo.git_dir = "cloned"
     private_repo.git_dir = "not-cloned"
 
-    assert bootstrap.start_git_sync(60) == "thread"
+    thread, stop_event = bootstrap.start_git_sync(60)
+
+    assert thread == "thread"
     assert scheduled["repos"] == [common_repo]
     assert scheduled["interval_seconds"] == 60
+    # The caller gets the event back, so the loop can actually be stopped.
+    assert stop_event is scheduled["stop_event"]
 
 
 def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog):

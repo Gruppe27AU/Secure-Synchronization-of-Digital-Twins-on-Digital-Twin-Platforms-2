@@ -132,7 +132,9 @@ curl http://localhost:8091/{path-prefix}
 4. A clean working tree is skipped; a dirty one is staged, committed with a
    timestamped message and pushed to the configured branch
 5. A repository that fails is logged and skipped, so one broken remote does
-   not stop the others from being backed up
+   not stop the others from being backed up. Unexpected errors are caught
+   too: an exception escaping the background thread would end the backup
+   silently while the service carried on serving requests
 
 The user never runs a git command: saving a file in Jupyter or VS Code is
 enough for it to reach the remote within one interval.
@@ -194,7 +196,9 @@ module imports the layer above it, so each can be tested on its own.
   - `scheduler.py`: `start_sync_scheduler()` runs `sync_once()` for every
     repository on a background daemon thread, every
     `DEFAULT_SYNC_INTERVAL_SECONDS` (300) seconds. A failing repository is
-    logged and skipped rather than stopping the loop
+    logged and skipped rather than stopping the loop, and `sync_all()`
+    deliberately catches every exception, not just `SyncError`, because
+    the thread is the only thing keeping the backup alive
   - `bootstrap.py`: `clone_common_repo()` and `start_git_sync()` wire the
     other modules together and are called once from `admin.main.cli()` on
     startup. `start_git_sync()` schedules every repository that is actually
@@ -295,7 +299,8 @@ poetry run workspace-admin --list-services
 # Run with auto-reload for development
 poetry run workspace-admin --reload
 
-# Back up the workspace every 30 seconds instead of every 5 minutes
+# Back up the workspace every 30 seconds instead of every 5 minutes.
+# Values below 1 second are refused: the backup would never wait.
 poetry run workspace-admin --sync-interval 30
 
 # Show help

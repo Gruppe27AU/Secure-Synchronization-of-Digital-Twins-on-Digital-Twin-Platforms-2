@@ -28,6 +28,11 @@ def sync_all(repos: list[RepoConfig]) -> None:
     A repository that fails is logged and skipped, so one broken remote
     cannot stop the others from being backed up.
 
+    Every exception is caught, not just :class:`SyncError`. This runs on a
+    background thread, where an escaping exception would end the thread and
+    silently stop all further backups while the service kept serving
+    requests as if nothing were wrong.
+
     Args:
         repos: Repositories to synchronize.
     """
@@ -36,6 +41,10 @@ def sync_all(repos: list[RepoConfig]) -> None:
             sync_once(repo)
         except SyncError as error:
             logger.error("%s", error)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception(
+                "Unexpected error while syncing repository '%s'", repo.name
+            )
 
 
 def _sync_loop(
