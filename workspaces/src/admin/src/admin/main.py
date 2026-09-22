@@ -15,6 +15,7 @@ import sys
 import uvicorn
 
 from admin.api import APP_VERSION, create_app
+from admin.git.bootstrap import clone_common_repo
 from admin.services import load_services
 
 
@@ -105,6 +106,8 @@ def cli() -> None:
         # Just list services and exit
         print(json.dumps(load_services(), indent=2))
         sys.exit(0)
+
+    clone_common_repo()
 
     print_startup_banner(args.host, args.port, prefix_display)
 
