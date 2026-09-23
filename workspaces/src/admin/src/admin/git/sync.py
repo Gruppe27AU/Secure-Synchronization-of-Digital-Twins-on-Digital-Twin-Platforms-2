@@ -18,11 +18,11 @@ ever written to disk in the workspace:
 - the ``Authorization`` header, without which ``git push`` is anonymous.
 """
 
-import base64
 import logging
 import subprocess
 import time
 
+from admin.git.auth import AUTH_FAILURE_HINT, auth_header_options, is_auth_failure
 from admin.git.config import RepoConfig
 
 logger = logging.getLogger(__name__)
@@ -38,45 +38,6 @@ COMMIT_MESSAGE_PREFIX = "workspace backup"
 
 class SyncError(Exception):
     """Raised when committing or pushing a repository fails."""
-
-
-def _basic_auth_value(credentials: str) -> str:
-    """
-    Base64-encode ``username:token`` for an HTTP Basic auth header.
-
-    Args:
-        credentials: A ``username:token`` pair.
-
-    Returns:
-        The value to place after ``Authorization: Basic``.
-    """
-    return base64.b64encode(credentials.encode("utf-8")).decode("ascii")
-
-
-def _auth_options(repo: RepoConfig) -> list[str]:
-    """
-    Build the one-off git options that authenticate a push.
-
-    Mirrors the header :mod:`admin.git.clone` builds for cloning. Issue #5
-    is expected to move both into one shared helper; until then the two
-    copies must stay in step.
-
-    Args:
-        repo: Repository configuration, possibly without credentials.
-
-    Returns:
-        The ``-c http.extraHeader=...`` pair, or an empty list when no
-        credentials are configured.
-    """
-    if not repo.username or not repo.token:
-        return []
-
-    credentials = f"{repo.username}:{repo.token}"
-    return [
-        "-c",
-        f"http.extraHeader=Authorization: Basic "
-        f"{_basic_auth_value(credentials)}",
-    ]
 
 
 def _identity_options() -> list[str]:
@@ -131,7 +92,10 @@ def _run_git(
         logger.error(
             "Failed to %s for repository '%s': %s", action, repo.name, reason
         )
-        raise SyncError(f"Failed to {action} for repository '{repo.name}': {reason}")
+        message = f"Failed to {action} for repository '{repo.name}': {reason}"
+        if repo.username and repo.token and is_auth_failure(reason):
+            message += f" ({AUTH_FAILURE_HINT})"
+        raise SyncError(message)
 
     return result
 
@@ -279,7 +243,7 @@ def pull_changes(repo: RepoConfig) -> list[str]:
         repo,
         ["fetch", "origin", repo.branch],
         "fetch from the remote",
-        options=_auth_options(repo),
+        options=auth_header_options(repo),
     )
 
     remote_ref = _remote_ref(repo)
@@ -352,7 +316,7 @@ def push_if_ahead(repo: RepoConfig) -> bool:
         repo,
         ["push", "origin", repo.branch],
         "push changes",
-        options=_auth_options(repo),
+        options=auth_header_options(repo),
     )
     logger.info(
         "Pushed %d commit(s) from repository '%s' to branch %s",

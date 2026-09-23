@@ -7,11 +7,11 @@ describes with a separated git directory and working tree (comparable to
 locations, as required by the workspace's persistence layout.
 """
 
-import base64
 import logging
 import subprocess
 from pathlib import Path
 
+from admin.git.auth import AUTH_FAILURE_HINT, auth_header_options, is_auth_failure
 from admin.git.config import RepoConfig
 
 logger = logging.getLogger(__name__)
@@ -46,17 +46,10 @@ def _build_clone_command(repo: RepoConfig) -> list[str]:
         The ``git`` command as an argument list, ready for
         :func:`subprocess.run`.
     """
-    command = ["git"]
-    if repo.username and repo.token:
-        credentials = f"{repo.username}:{repo.token}"
-        # Passed as a one-off ``-c`` override: applies to this clone only
-        # and, unlike embedding credentials in the URL, is never written
-        # into the resulting .git/config.
-        command += [
-            "-c",
-            f"http.extraHeader=Authorization: Basic "
-            f"{_basic_auth_value(credentials)}",
-        ]
+    # The auth header, when present, is a one-off ``-c`` override: applies
+    # to this clone only and, unlike embedding credentials in the URL, is
+    # never written into the resulting .git/config.
+    command = ["git", *auth_header_options(repo)]
     command += [
         "clone",
         "--branch",
@@ -67,19 +60,6 @@ def _build_clone_command(repo: RepoConfig) -> list[str]:
         str(repo.work_tree),
     ]
     return command
-
-
-def _basic_auth_value(credentials: str) -> str:
-    """
-    Base64-encode ``username:token`` for an HTTP Basic auth header.
-
-    Args:
-        credentials: A ``username:token`` pair.
-
-    Returns:
-        The value to place after ``Authorization: Basic``.
-    """
-    return base64.b64encode(credentials.encode("utf-8")).decode("ascii")
 
 
 def clone_asset(repo: RepoConfig) -> bool:
@@ -114,17 +94,19 @@ def clone_asset(repo: RepoConfig) -> bool:
     )
 
     if result.returncode != 0:
+        stderr = result.stderr.strip()
         logger.error(
             "Failed to clone repository '%s' (%s, branch %s) into %s: %s",
             repo.name,
             repo.repo_url,
             repo.branch,
             repo.work_tree,
-            result.stderr.strip(),
+            stderr,
         )
-        raise CloneError(
-            f"git clone failed for repository '{repo.name}': {result.stderr.strip()}"
-        )
+        message = f"git clone failed for repository '{repo.name}': {stderr}"
+        if repo.username and repo.token and is_auth_failure(stderr):
+            message += f" ({AUTH_FAILURE_HINT})"
+        raise CloneError(message)
 
     logger.info(
         "Cloned repository '%s' (%s, branch %s) into %s",

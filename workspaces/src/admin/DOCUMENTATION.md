@@ -163,9 +163,52 @@ branch checkout (`GIT_REPO_BRANCH`), the git directory
 (`$WORKSPACE_APP_DIR/assets/private`) placement, the skip-if-already-cloned
 check, and error logging on failure were already generic per `RepoConfig`.
 Authenticating the clone (using `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` from
-config, handling invalid/expired tokens gracefully) is tracked as a
-separate issue and out of scope here; a repository without credentials
+config, handling invalid/expired tokens gracefully) was tracked as a
+separate issue and out of scope here (see the report below); a repository
+without credentials
 configured is simply cloned anonymously, exactly as `common` was before.
+
+### Implementation Report: Authenticating to Git Repositories
+
+`clone.py` and `sync.py` already authenticated `git clone` and `git push`
+with `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` from `config.env` before this
+change - each built its own one-off `http.extraHeader` carrying an HTTP
+Basic `Authorization` header, so credentials never touch a repository's
+own `.git/config` or its remote URL, and `RepoConfig.token` was already
+excluded from `__repr__` so it cannot leak via accidental logging. That
+covered "uses the configured credentials" and "authenticates both
+`private` and `common`" (the same code path handles any `RepoConfig`,
+and both are now actually cloned on startup, per the private-clone report
+above). Two gaps remained:
+
+1. The header-building logic was duplicated between `clone.py` and
+   `sync.py`, with a comment in `sync.py` calling out this issue by
+   number as the place to fix it.
+2. A rejected token surfaced as a raw, undifferentiated `git` failure
+   message - correct, but not a "clear error message" pointing at the
+   actual cause.
+
+Both are addressed by a new `admin/git/auth.py` module:
+
+- `auth_header_options()` is now the single place that builds the
+  Basic-auth header; `clone.py` and `sync.py` both call it instead of
+  keeping their own copies.
+- `is_auth_failure()` inspects a failed command's stderr for GitLab/git's
+  own rejection text (`Authentication failed`, `HTTP Basic: Access
+  denied`, `returned error: 401`/`403`) using specific phrases rather
+  than bare status-code numbers, so an unrelated error containing "401"
+  is not misclassified.
+- When a clone or push fails, has credentials configured, and
+  `is_auth_failure()` matches, `CloneError`/`SyncError` append a
+  token-free hint that `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` may be
+  invalid or expired. GitLab returns the same rejection for a wrong
+  token as for an expired one, so the two cannot be, and are not claimed
+  to be, distinguished from each other - the tests exercise both
+  scenarios against that identical failure text.
+- Without configured credentials, or for a failure that doesn't match
+  (network error, repository not found, ...), the message is unchanged
+  from before: the plain `git` failure text, still without ever
+  including the token.
 
 ### Package Layout
 
@@ -184,6 +227,7 @@ src/admin/
 └── git/
     ├── __init__.py                # Git backup of workspace directories
     ├── config.py                  # Reads config.env into RepoConfig objects
+    ├── auth.py                    # Shared HTTP auth header and failure detection
     ├── clone.py                   # Clones a single RepoConfig
     ├── sync.py                    # Commits and pushes one working tree
     ├── scheduler.py               # Runs the sync on a timer, in the background
@@ -209,18 +253,28 @@ module imports the layer above it, so each can be tested on its own.
   - `config.py`: `load_config()` reads the TOML-formatted `config.env` file
     at `$WORKSPACE_APP_DIR/config.env` and returns a `RepoConfig` per
     `[assets.<name>]` table (currently `private` and `common`)
+  - `auth.py`: `auth_header_options()` builds the one-off
+    `http.extraHeader` carrying `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` as
+    HTTP Basic credentials, shared by `clone.py` and `sync.py` so neither
+    writes credentials into `.git/config` or a remote URL. `is_auth_failure()`
+    recognizes GitLab/git's own rejection text (`Authentication failed`,
+    `HTTP Basic: Access denied`, `returned error: 401`/`403`) in a failed
+    command's stderr, without ever matching on the credentials themselves
   - `clone.py`: `clone_asset()` clones one `RepoConfig` with a separated
     git directory and working tree (`git clone --separate-git-dir`),
     skipping repositories that are already cloned and raising
-    `CloneError` on failure. Credentials, when set, are passed as a
-    one-off `http.extraHeader` so they are never written into
-    `.git/config`
+    `CloneError` on failure. When the failure looks like a rejected
+    credential (`is_auth_failure()`) and the repository has one
+    configured, the error is extended with a clear, token-free hint that
+    `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` may be invalid or expired
   - `sync.py`: `sync_once()` runs one full cycle for an already-cloned
     working tree - `commit_local_changes()`, then `pull_changes()`, then
     `push_if_ahead()` - returning `False` when the repository was already
-    in sync and raising `SyncError` when a step fails. Commit messages
-    carry a UTC timestamp. `pull_changes()` returns the files whose local
-    version it kept, so a conflict can be logged by name. The commit
+    in sync and raising `SyncError` when a step fails, extended with the
+    same invalid/expired-token hint as `clone.py` when the push is
+    rejected for credentials. Commit messages carry a UTC timestamp.
+    `pull_changes()` returns the files whose local version it kept, so a
+    conflict can be logged by name. The commit
     identity and the credentials header are passed per command with
     `git -c`, because `clone.py` deliberately leaves both out of the
     repository's own `.git/config`
@@ -273,8 +327,9 @@ obvious test file:
 | `tests/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
 | `tests/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
-| `tests/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling |
-| `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling |
+| `tests/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
 | `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 

@@ -307,6 +307,58 @@ def test_push_if_ahead_raises_when_the_push_fails(monkeypatch, repo):
         push_if_ahead(repo)
 
 
+def _fake_run_push_auth_failure(auth_failure_stderr):
+    """Build a fake subprocess.run: one outgoing commit, then a failed push."""
+
+    def fake_run(command, **_kwargs):
+        key = _command_key(command)
+        if key == "push":
+            return subprocess.CompletedProcess(command, 1, "", auth_failure_stderr)
+        if key == "outgoing":
+            return subprocess.CompletedProcess(command, 0, "1", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    return fake_run
+
+
+def test_push_if_ahead_raises_clear_error_on_invalid_token(
+    monkeypatch, repo_with_credentials
+):
+    """Test a rejected push with an invalid token gets a clear hint, no token."""
+    auth_failure_stderr = (
+        "remote: HTTP Basic: Access denied. The provided password or "
+        "token is incorrect or your account has 2FA enabled\n"
+        "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", _fake_run_push_auth_failure(auth_failure_stderr)
+    )
+
+    with pytest.raises(SyncError) as excinfo:
+        push_if_ahead(repo_with_credentials)
+
+    message = str(excinfo.value)
+    assert "invalid or expired" in message
+    assert "secret-token" not in message
+
+
+def test_push_if_ahead_raises_plain_error_without_credentials_on_auth_shaped_failure(
+    monkeypatch, repo
+):
+    """Test an auth-shaped push failure without credentials gets no hint."""
+    auth_failure_stderr = (
+        "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", _fake_run_push_auth_failure(auth_failure_stderr)
+    )
+
+    with pytest.raises(SyncError) as excinfo:
+        push_if_ahead(repo)
+
+    assert "invalid or expired" not in str(excinfo.value)
+
+
 def test_push_sends_auth_header_without_exposing_the_token(
     monkeypatch, repo_with_credentials
 ):
