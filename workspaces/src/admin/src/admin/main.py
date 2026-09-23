@@ -16,7 +16,7 @@ import sys
 import uvicorn
 
 from admin.api import APP_VERSION, create_app
-from admin.git.bootstrap import clone_common_repo, start_git_sync
+from admin.git.bootstrap import clone_configured_repos, start_git_sync
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.services import load_services
 
@@ -156,7 +156,7 @@ def cli() -> None:
         print(json.dumps(load_services(), indent=2))
         sys.exit(0)
 
-    clone_common_repo()
+    clone_configured_repos()
     start_git_sync(args.sync_interval)
 
     print_startup_banner(args.host, args.port, prefix_display)
