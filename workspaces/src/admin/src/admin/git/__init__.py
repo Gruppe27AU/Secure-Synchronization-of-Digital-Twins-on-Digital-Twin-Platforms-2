@@ -10,8 +10,9 @@ authenticating against the remotes and keeping the working trees in sync.
 - :mod:`admin.git.clone` clones a single :class:`RepoConfig`, with the git
   directory and working tree kept separate (``git clone
   --separate-git-dir``).
-- :mod:`admin.git.sync` commits and pushes the changes in one cloned
-  working tree.
+- :mod:`admin.git.sync` runs one synchronization of a cloned working
+  tree: commit what the user changed, merge the remote in keeping local
+  files on conflict, and push the result.
 - :mod:`admin.git.scheduler` decides when :mod:`admin.git.sync` runs, on a
   background thread.
 - :mod:`admin.git.bootstrap` wires the others together and is called once

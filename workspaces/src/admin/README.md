@@ -7,8 +7,10 @@ FastAPI service for workspace service discovery and management.
 - `/services` endpoint - Returns JSON list of available workspace services
 - Path prefix support for multi-user deployments
 - Command-line interface for standalone operation
-- Periodic git backup - commits and pushes the workspace's git assets every
-  five minutes, so users never run a git command themselves
+- Periodic git backup - commits, pulls and pushes the workspace's git assets
+  every five minutes, so users never run a git command themselves
+- Conflict resolution that keeps the workspace's own version of a file when
+  it and the remote have both changed
 
 ## Layout
 
@@ -23,7 +25,7 @@ src/admin/
 └── git/                          # Git backup of workspace directories
     ├── config.py                 # config.env -> RepoConfig
     ├── clone.py                  # Clone a single RepoConfig
-    ├── sync.py                   # Commit and push one working tree
+    ├── sync.py                   # Commit, pull and push one working tree
     ├── scheduler.py              # Run the sync on a timer, in the background
     └── bootstrap.py              # Wire the above together on startup
 ```
