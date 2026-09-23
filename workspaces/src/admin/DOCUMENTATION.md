@@ -127,10 +127,18 @@ curl http://localhost:8091/{path-prefix}
    (`start_git_sync()`)
 2. The scheduler runs on a background daemon thread, so it never blocks the
    HTTP server
-3. Every 5 minutes it checks each cloned working tree with
-   `git status --porcelain`
-4. A clean working tree is skipped; a dirty one is staged, committed with a
-   timestamped message and pushed to the configured branch
+3. Every 5 minutes each cloned working tree goes through the same three
+   steps, in this order:
+   1. **Commit** - `git status --porcelain` decides whether there is
+      anything to save. A clean tree is skipped; a dirty one is staged and
+      committed with a timestamped message
+   2. **Pull** - the remote is fetched and merged in. Local files win any
+      conflict (see below)
+   3. **Push** - the branch is pushed only when it actually holds commits
+      the remote does not
+4. Committing happens *before* merging on purpose: git refuses to merge over
+   modified files, so an uncommitted working tree would make every pull fail
+   as soon as the remote had something to deliver
 5. A repository that fails is logged and skipped, so one broken remote does
    not stop the others from being backed up. Unexpected errors are caught
    too: an exception escaping the background thread would end the backup
@@ -138,6 +146,27 @@ curl http://localhost:8091/{path-prefix}
 
 The user never runs a git command: saving a file in Jupyter or VS Code is
 enough for it to reach the remote within one interval.
+
+### Conflict Resolution
+
+When the workspace and the remote have both changed the same file, the
+workspace's version is kept. The user is sitting in front of that file and
+did not ask for it to be replaced. Remote changes to *other* files are still
+merged in as normal.
+
+Getting that resolution logged takes two merge attempts, because the two
+things cannot be done by one command:
+
+1. An ordinary `git merge` is attempted first. Its only job is to **detect**
+   conflicts: it fails and names every file it could not resolve
+2. That attempt is thrown away with `git merge --abort`
+3. The merge is redone as `git merge -X ours`, which **resolves** every
+   conflict in favour of the local side
+
+The detour is necessary because `git merge -X ours` on its own exits
+successfully and never reports which files it resolved, so there would be
+nothing to log. Both the detection and the resolution are logged by
+filename.
 
 ### Package Layout
 
@@ -187,12 +216,15 @@ module imports the layer above it, so each can be tested on its own.
     `CloneError` on failure. Credentials, when set, are passed as a
     one-off `http.extraHeader` so they are never written into
     `.git/config`
-  - `sync.py`: `sync_once()` commits and pushes the changes in one
-    already-cloned working tree, returning `False` when there was nothing
-    to commit and raising `SyncError` on failure. Commit messages carry a
-    UTC timestamp. The commit identity and the credentials header are
-    passed per command with `git -c`, because `clone.py` deliberately
-    leaves both out of the repository's own `.git/config`
+  - `sync.py`: `sync_once()` runs one full cycle for an already-cloned
+    working tree - `commit_local_changes()`, then `pull_changes()`, then
+    `push_if_ahead()` - returning `False` when the repository was already
+    in sync and raising `SyncError` when a step fails. Commit messages
+    carry a UTC timestamp. `pull_changes()` returns the files whose local
+    version it kept, so a conflict can be logged by name. The commit
+    identity and the credentials header are passed per command with
+    `git -c`, because `clone.py` deliberately leaves both out of the
+    repository's own `.git/config`
   - `scheduler.py`: `start_sync_scheduler()` runs `sync_once()` for every
     repository on a background daemon thread, every
     `DEFAULT_SYNC_INTERVAL_SECONDS` (300) seconds. A failing repository is
@@ -241,7 +273,7 @@ obvious test file:
 | `tests/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
 | `tests/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling |
-| `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, failed push and commit, commit identity, timestamped message, credential handling |
+| `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling |
 | `tests/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
 | `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning `common`, scheduling only cloned repositories, and graceful handling of config/clone failures |
 
