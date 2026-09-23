@@ -122,9 +122,10 @@ curl http://localhost:8091/{path-prefix}
 
 ### Git Backup Flow
 
-1. On startup, `admin.main.cli()` clones the configured git assets
-   (`clone_common_repo()`) and then starts the backup scheduler
-   (`start_git_sync()`)
+1. On startup, `admin.main.cli()` clones every configured git asset
+   (`clone_configured_repos()`, one clone per `[assets.private]` and/or
+   `[assets.common]` entry in `config.env`) and then starts the backup
+   scheduler (`start_git_sync()`)
 2. The scheduler runs on a background daemon thread, so it never blocks the
    HTTP server
 3. Every 5 minutes each cloned working tree goes through the same three
@@ -147,26 +148,24 @@ curl http://localhost:8091/{path-prefix}
 The user never runs a git command: saving a file in Jupyter or VS Code is
 enough for it to reach the remote within one interval.
 
-### Conflict Resolution
+### Implementation Report: Cloning the Private Repository
 
-When the workspace and the remote have both changed the same file, the
-workspace's version is kept. The user is sitting in front of that file and
-did not ask for it to be replaced. Remote changes to *other* files are still
-merged in as normal.
+Previously only `[assets.common]` was cloned on startup; `[assets.private]`
+was parsed by `config.py` and understood by `clone.py`/`sync.py`, but
+nothing ever called `clone_asset()` for it. `bootstrap.py` is now
+repository-agnostic: `clone_common_repo()` was replaced with
+`clone_configured_repos()`, which clones every repository `load_config()`
+returns instead of looking up `common` by name.
 
-Getting that resolution logged takes two merge attempts, because the two
-things cannot be done by one command:
-
-1. An ordinary `git merge` is attempted first. Its only job is to **detect**
-   conflicts: it fails and names every file it could not resolve
-2. That attempt is thrown away with `git merge --abort`
-3. The merge is redone as `git merge -X ours`, which **resolves** every
-   conflict in favour of the local side
-
-The detour is necessary because `git merge -X ours` on its own exits
-successfully and never reports which files it resolved, so there would be
-nothing to log. Both the detection and the resolution are logged by
-filename.
+No changes were needed in `config.py`, `clone.py` or `sync.py` - the
+branch checkout (`GIT_REPO_BRANCH`), the git directory
+(`$WORKSPACE_DIR/private`) and working tree
+(`$WORKSPACE_APP_DIR/assets/private`) placement, the skip-if-already-cloned
+check, and error logging on failure were already generic per `RepoConfig`.
+Authenticating the clone (using `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` from
+config, handling invalid/expired tokens gracefully) is tracked as a
+separate issue and out of scope here; a repository without credentials
+configured is simply cloned anonymously, exactly as `common` was before.
 
 ### Package Layout
 
@@ -231,14 +230,16 @@ module imports the layer above it, so each can be tested on its own.
     logged and skipped rather than stopping the loop, and `sync_all()`
     deliberately catches every exception, not just `SyncError`, because
     the thread is the only thing keeping the backup alive
-  - `bootstrap.py`: `clone_common_repo()` and `start_git_sync()` wire the
-    other modules together and are called once from `admin.main.cli()` on
-    startup. `start_git_sync()` schedules every repository that is actually
+  - `bootstrap.py`: `clone_configured_repos()` and `start_git_sync()` wire
+    the other modules together and are called once from `admin.main.cli()`
+    on startup. `clone_configured_repos()` clones every repository
+    `load_config()` returns - `private` and/or `common` - independently:
+    one repository that fails to clone (bad credentials, unreachable
+    remote, ...) is logged and skipped without blocking the others.
+    `start_git_sync()` then schedules every repository that is actually
     cloned, so assets added later are picked up as soon as they exist on
     disk. Errors are logged, never raised, so a missing or broken git
-    configuration does not prevent the admin service from starting.
-    Cloning the `private` asset is out of scope here - it belongs to the
-    authentication feature built on top of this same `config.py` contract
+    configuration does not prevent the admin service from starting
 - **Services Template** (`src/admin/config/services_template.json`): JSON
   template defining available services
 - **nginx Configuration** (`startup/nginx.conf`): Reverse proxy routing
@@ -275,7 +276,7 @@ obvious test file:
 | `tests/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling |
 | `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling |
 | `tests/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
-| `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning `common`, scheduling only cloned repositories, and graceful handling of config/clone failures |
+| `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 
 `tests/repo_factory.py` is a shared helper rather than a test file: it builds
 the `RepoConfig` objects the git tests need, so no test module has to repeat

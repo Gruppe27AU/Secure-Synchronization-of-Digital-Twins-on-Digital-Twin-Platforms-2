@@ -1,7 +1,7 @@
 """
 Unit tests for the git asset startup bootstrap.
 
-Covers :mod:`admin.git.bootstrap`: cloning the ``common`` repository on
+Covers :mod:`admin.git.bootstrap`: cloning every configured repository on
 startup and starting the periodic sync for the repositories that are
 actually cloned, without crashing the service when config loading or
 cloning fails.
@@ -15,12 +15,31 @@ from admin.git.config import ConfigError
 from tests.repo_factory import make_repo
 
 
-def test_clone_common_repo_clones_the_common_entry(monkeypatch):
-    """Test clone_common_repo loads config and clones the 'common' entry."""
-    common_repo = make_repo("common")
+def test_clone_configured_repos_clones_every_entry(monkeypatch):
+    """Test clone_configured_repos loads config and clones each entry."""
     private_repo = make_repo("private")
+    common_repo = make_repo("common")
 
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo, common_repo])
+    monkeypatch.setattr(
+        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+    )
+
+    cloned_with = []
+
+    def fake_clone_asset(repo):
+        cloned_with.append(repo)
+        return True
+
+    monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
+
+    assert bootstrap.clone_configured_repos() == {"private": True, "common": True}
+    assert cloned_with == [private_repo, common_repo]
+
+
+def test_clone_configured_repos_clones_private_only(monkeypatch):
+    """Test a config with only [assets.private] clones just that repository."""
+    private_repo = make_repo("private")
+    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo])
 
     cloned_with = {}
 
@@ -30,48 +49,57 @@ def test_clone_common_repo_clones_the_common_entry(monkeypatch):
 
     monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
 
-    assert bootstrap.clone_common_repo() is True
-    assert cloned_with["repo"] is common_repo
+    assert bootstrap.clone_configured_repos() == {"private": True}
+    assert cloned_with["repo"] is private_repo
 
 
-def test_clone_common_repo_returns_false_when_config_load_fails(monkeypatch, caplog):
-    """Test clone_common_repo logs an error and returns False on a bad config file."""
+def test_clone_configured_repos_skips_already_cloned_repos(monkeypatch):
+    """Test a repository clone_asset reports as skipped is reflected as False."""
+    private_repo = make_repo("private")
+    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo])
+    monkeypatch.setattr(bootstrap, "clone_asset", lambda _repo: False)
+
+    assert bootstrap.clone_configured_repos() == {"private": False}
+
+
+def test_clone_configured_repos_returns_empty_when_config_load_fails(
+    monkeypatch, caplog
+):
+    """Test a broken config file logs an error and clones nothing."""
 
     def fake_load_config(_path):
-        raise ConfigError("config.env: 'GIT_REPO_URL' is missing from [assets.common]")
+        raise ConfigError("config.env: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
 
     with caplog.at_level("ERROR"):
-        assert bootstrap.clone_common_repo() is False
+        assert not bootstrap.clone_configured_repos()
 
-    assert "Cannot clone common repository" in caplog.text
-
-
-def test_clone_common_repo_returns_false_when_common_entry_missing(monkeypatch, caplog):
-    """Test clone_common_repo logs an error when [assets.common] is absent."""
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("private")])
-
-    with caplog.at_level("ERROR"):
-        assert bootstrap.clone_common_repo() is False
-
-    assert "no [assets.common] entry" in caplog.text
+    assert "Cannot clone git assets" in caplog.text
 
 
-def test_clone_common_repo_returns_false_when_clone_fails(monkeypatch, caplog):
-    """Test clone_common_repo logs the clone failure and returns False."""
+def test_clone_configured_repos_one_failure_does_not_block_the_other(
+    monkeypatch, caplog
+):
+    """Test a failing private clone is logged and skipped, common still clones."""
+    private_repo = make_repo("private")
     common_repo = make_repo("common")
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [common_repo])
+    monkeypatch.setattr(
+        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+    )
 
-    def fake_clone_asset(_repo):
-        raise CloneError("git clone failed for repository 'common': fatal error")
+    def fake_clone_asset(repo):
+        if repo.name == "private":
+            raise CloneError("git clone failed for repository 'private': denied")
+        return True
 
     monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
 
     with caplog.at_level("ERROR"):
-        assert bootstrap.clone_common_repo() is False
+        result = bootstrap.clone_configured_repos()
 
-    assert "git clone failed" in caplog.text
+    assert result == {"private": False, "common": True}
+    assert "git clone failed for repository 'private'" in caplog.text
 
 
 def test_config_path_uses_workspace_app_dir(monkeypatch):
