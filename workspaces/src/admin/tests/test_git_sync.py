@@ -154,6 +154,61 @@ def test_commit_sets_an_author_identity(monkeypatch, repo):
     assert "user.email=workspace-admin@localhost" in commit_command
 
 
+def _fake_run_push_auth_failure(status_output, auth_failure_stderr):
+    """Build a fake subprocess.run that fails only the push, on an auth error."""
+
+    def fake_run(command, **_kwargs):
+        subcommand = _subcommand(command)
+        if subcommand == "push":
+            return subprocess.CompletedProcess(command, 1, "", auth_failure_stderr)
+        stdout = status_output if subcommand == "status" else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    return fake_run
+
+
+def test_sync_once_raises_clear_error_on_invalid_token(
+    monkeypatch, repo_with_credentials
+):
+    """Test a rejected push with an invalid token gets a clear hint, no token."""
+    auth_failure_stderr = (
+        "remote: HTTP Basic: Access denied. The provided password or "
+        "token is incorrect or your account has 2FA enabled\n"
+        "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_run_push_auth_failure(" M file.txt", auth_failure_stderr),
+    )
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(repo_with_credentials)
+
+    message = str(excinfo.value)
+    assert "invalid or expired" in message
+    assert "secret-token" not in message
+
+
+def test_sync_once_raises_plain_error_without_credentials_on_auth_shaped_failure(
+    monkeypatch, repo
+):
+    """Test an auth-shaped push failure without credentials gets no hint."""
+    auth_failure_stderr = (
+        "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_run_push_auth_failure(" M file.txt", auth_failure_stderr),
+    )
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(repo)
+
+    assert "invalid or expired" not in str(excinfo.value)
+
+
 def test_push_sends_auth_header_without_exposing_the_token(
     monkeypatch, repo_with_credentials
 ):

@@ -93,6 +93,72 @@ def test_clone_asset_raises_on_failure(monkeypatch, repo):
         clone_asset(repo)
 
 
+def _fake_run_auth_failure(*_args, **_kwargs):
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=128,
+        stdout="",
+        stderr=(
+            "remote: HTTP Basic: Access denied. The provided password or "
+            "token is incorrect or your account has 2FA enabled\n"
+            "fatal: Authentication failed for "
+            "'https://example.com/org/common.git/'"
+        ),
+    )
+
+
+def test_clone_asset_raises_clear_error_on_invalid_token(monkeypatch, repo):
+    """Test an invalid token surfaces a CloneError with a clear hint, no token."""
+    repo = RepoConfig(
+        name=repo.name,
+        repo_url=repo.repo_url,
+        branch=repo.branch,
+        username="git-user",
+        token="invalid-token",
+        git_dir=repo.git_dir,
+        work_tree=repo.work_tree,
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_auth_failure())
+
+    with pytest.raises(CloneError) as excinfo:
+        clone_asset(repo)
+
+    message = str(excinfo.value)
+    assert "invalid or expired" in message
+    assert "invalid-token" not in message
+
+
+def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
+    """Test an expired token gets the same clear hint as an invalid one."""
+    repo = RepoConfig(
+        name=repo.name,
+        repo_url=repo.repo_url,
+        branch=repo.branch,
+        username="git-user",
+        token="expired-token",
+        git_dir=repo.git_dir,
+        work_tree=repo.work_tree,
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_auth_failure())
+
+    with pytest.raises(CloneError) as excinfo:
+        clone_asset(repo)
+
+    message = str(excinfo.value)
+    assert "invalid or expired" in message
+    assert "expired-token" not in message
+
+
+def test_clone_asset_raises_plain_error_without_credentials(monkeypatch, repo):
+    """Test an auth-shaped failure without configured credentials gets no hint."""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_auth_failure())
+
+    with pytest.raises(CloneError) as excinfo:
+        clone_asset(repo)
+
+    assert "invalid or expired" not in str(excinfo.value)
+
+
 def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo):
     """Test clone_asset passes a one-off Authorization header, not a stored URL."""
     repo = RepoConfig(

@@ -73,9 +73,10 @@ def start_git_sync(
     """
     Start committing and pushing the cloned repositories periodically.
 
-    Reads the same config file as :func:`clone_common_repo` and schedules
-    every repository that has actually been cloned, so repositories added
-    to the config later are picked up as soon as they exist on disk.
+    Reads the same config file as :func:`clone_configured_repos` and
+    schedules every repository that has actually been cloned, so
+    repositories added to the config later are picked up as soon as they
+    exist on disk.
     Failures are logged, not raised, so a broken git configuration does
     not prevent the admin service from starting.
 
