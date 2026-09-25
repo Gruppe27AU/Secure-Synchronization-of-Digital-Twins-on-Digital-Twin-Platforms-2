@@ -112,7 +112,7 @@ Before committing changes:
 
 #### Modifying the Admin Service
 1. Make changes to `workspaces/src/admin/src/admin/`
-2. Update tests in `workspaces/src/admin/tests/`
+2. Update tests in `workspaces/src/admin/tests/unit/` (or `tests/integration/`)
 3. Run tests: `cd workspaces/src/admin && poetry run pytest --cov`
 4. Run linting: `poetry run pylint src/admin tests`
 5. Update documentation in README.md and DOCUMENTATION.md

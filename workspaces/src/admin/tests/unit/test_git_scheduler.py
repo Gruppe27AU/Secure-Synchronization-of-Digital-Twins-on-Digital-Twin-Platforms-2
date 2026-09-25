@@ -11,7 +11,7 @@ import threading
 
 from admin.git import scheduler
 from admin.git.sync import SyncError
-from tests.repo_factory import make_repo
+from tests.helpers.repo_factory import make_repo
 
 
 class StubStopEvent:
