@@ -12,7 +12,7 @@ from pathlib import Path
 from admin.git import bootstrap
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
-from tests.repo_factory import make_repo
+from tests.helpers.repo_factory import make_repo
 
 
 def test_clone_configured_repos_clones_every_entry(monkeypatch):

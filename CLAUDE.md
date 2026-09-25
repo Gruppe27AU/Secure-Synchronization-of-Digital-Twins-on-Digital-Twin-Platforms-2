@@ -299,11 +299,11 @@ poetry run workspace-admin --list-services
 The package is layered, and the test files mirror it:
 
 - `src/admin/api.py` - FastAPI app factory and HTTP routes
-  (tested by `tests/test_api.py`)
+  (tested by `tests/unit/test_api.py`)
 - `src/admin/services.py` - Workspace service discovery
-  (tested by `tests/test_services.py`)
+  (tested by `tests/unit/test_services.py`)
 - `src/admin/main.py` - CLI entry point
-  (tested by `tests/test_main.py`)
+  (tested by `tests/unit/test_main.py`)
 - `src/admin/git/` - Git backup of workspace directories
 - `src/admin/config/` - Service catalogue and other configuration data
 
