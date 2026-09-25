@@ -2,6 +2,60 @@
 
 The main changes made so far are listed here.
 
+## Week of 21-Sep-2026
+
+### Added
+
+* `config.env`, a TOML configuration file for the workspace's git assets,
+  read from `$WORKSPACE_APP_DIR` by `admin/git/config.py`. It holds
+  `HOME_DIR`, `WORKSPACE_DIR` and `WORKSPACE_APP_DIR` at the top level and
+  one `[assets.private]` and/or `[assets.common]` table per repository.
+  `src/admin/config/config.env.example` ships as a file to copy, and is
+  also used as a fallback so a workspace without a config still starts
+* Validation of that file: every key is checked for presence, type and
+  emptiness while it is read, and anything unusable raises `ConfigError`
+  naming the file, the section and the key at fault. A `[assets]` section
+  holding neither `private` nor `common` is refused rather than silently
+  backing nothing up
+* Automatic commits of the workspace. `admin/git/sync.py` stages and
+  commits whatever changed, with a UTC timestamp in the message, and
+  `admin/git/scheduler.py` runs it on a background daemon thread every
+  300 seconds. The interval can be shortened with `--sync-interval`, which
+  refuses values below one second
+* Pulling the remote's changes and pushing the result, completing the
+  cycle. A push only happens when the local branch actually holds commits
+  the remote does not
+* Conflict resolution that keeps the workspace's version of a conflicted
+  file. The merge runs twice on purpose: an ordinary merge first, only to
+  learn which files conflict, then `-X ours` to resolve them. That way the
+  files kept can be logged by name, which a bare `-X ours` merge would
+  hide. Everything else the remote changed is merged in normally
+
+### Changed
+
+* The commit identity and the credentials header are passed per git
+  command with `git -c` instead of being written into the repository's own
+  `.git/config`, so neither ends up on disk in the workspace
+* `GIT_REPO_TOKEN` is left out of `RepoConfig.__repr__`, so printing or
+  logging a configuration cannot leak it
+* Git failures are logged rather than raised all the way up. A repository
+  that cannot be cloned or synchronized is skipped, and a broken git
+  configuration no longer prevents the admin service from starting
+
+### Documentation
+
+* Added a `Configuration` section to the admin service `DOCUMENTATION.md`
+  describing every `config.env` key, how the two path fragments are
+  resolved, and what happens when the file is wrong
+* Added implementation reports for the configuration work and for the
+  commit/pull/conflict work, matching the reports already written for
+  cloning and authentication
+* Removed a stray heading above the title of `DOCUMENTATION.md`, which
+  left the file with two top-level headings
+* Added `auth.py` to the package layout in the admin service `README.md`,
+  where it was missing, and documented `config.env` and the `git/` package
+  layering in `CLAUDE.md`
+
 ## Week of 07-Sep-2026
 
 ### Changed

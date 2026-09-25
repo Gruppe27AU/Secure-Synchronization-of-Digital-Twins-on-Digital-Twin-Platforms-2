@@ -11,6 +11,9 @@ FastAPI service for workspace service discovery and management.
   every five minutes, so users never run a git command themselves
 - Conflict resolution that keeps the workspace's own version of a file when
   it and the remote have both changed
+- Git assets configured in one TOML file, `config.env`, which is validated
+  on startup so a mistake in it is reported by name instead of failing
+  later inside git
 
 ## Layout
 
@@ -24,6 +27,7 @@ src/admin/
 │   └── config.env.example        # Example git asset configuration
 └── git/                          # Git backup of workspace directories
     ├── config.py                 # config.env -> RepoConfig
+    ├── auth.py                   # Shared HTTP auth header and failure detection
     ├── clone.py                  # Clone a single RepoConfig
     ├── sync.py                   # Commit, pull and push one working tree
     ├── scheduler.py              # Run the sync on a timer, in the background
@@ -31,7 +35,9 @@ src/admin/
 ```
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the full architecture and
-endpoint reference.
+endpoint reference, and
+[DOCUMENTATION.md#configuration](DOCUMENTATION.md#configuration) for every
+key `config.env` accepts.
 
 ## Running
 
