@@ -1,10 +1,18 @@
 """
 Command-line entry point for the workspace admin service.
 
-This module wires the command-line interface to the application layers: it
-parses arguments, and then either prints the service catalogue
-(:mod:`admin.services`) or serves the HTTP API (:mod:`admin.api`) with
-uvicorn. It contains no routing and no service discovery logic itself.
+This module is the service's startup sequence and nothing else. It owns no
+routing and no service discovery of its own; it only decides, from the
+command line, which of the other layers to run:
+
+- :func:`build_parser` declares the command-line surface.
+- :func:`cli` runs the startup sequence: either print the service
+  catalogue (:mod:`admin.services`) and exit, or bring up the git backup
+  (:mod:`admin.git.bootstrap`) and serve the HTTP API (:mod:`admin.api`)
+  with uvicorn.
+
+Everything else in this module is a step of that sequence, split out so
+each step has a name saying what it does.
 """
 
 import argparse
@@ -15,18 +23,21 @@ import sys
 
 import uvicorn
 
-from admin.api import APP_VERSION, create_app
+from admin.api import APP_VERSION, create_app, normalize_path_prefix
 from admin.git.bootstrap import clone_configured_repos, start_git_sync
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.services import load_services
 
+#: Format of the log records written to the console by the git backup.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
-def positive_seconds(value: str) -> int:
+
+def _positive_seconds(value: str) -> int:
     """
-    Parse an interval that is safe to wait on.
+    Validate ``--sync-interval`` as argparse parses it.
 
     Args:
-        value: The command-line argument.
+        value: The raw command-line argument.
 
     Returns:
         The interval in seconds.
@@ -53,7 +64,7 @@ def positive_seconds(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     """
-    Build the argument parser for the ``workspace-admin`` command.
+    Declare the command-line surface of ``workspace-admin``.
 
     Returns:
         Parser configured with all supported command-line options.
@@ -93,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sync-interval",
-        type=positive_seconds,
+        type=_positive_seconds,
         default=DEFAULT_SYNC_INTERVAL_SECONDS,
         help=(
             "Seconds between git backups of the workspace "
@@ -114,59 +125,87 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def print_startup_banner(host: str, port: int, prefix_display: str) -> None:
+def _configure_logging() -> None:
+    """
+    Send the service's log records to the console.
+    
+    """
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+
+def _print_service_catalogue() -> None:
+    """Print the service catalogue as JSON, for ``--list-services``."""
+    print(json.dumps(load_services(), indent=2))
+
+
+def _start_git_backup(interval_seconds: int) -> None:
+    """
+    Bring the git-backed workspace assets up before the server starts.
+
+    Clones whatever the git config describes and is not on disk yet, then
+    leaves a background thread committing and pushing those clones. Both
+    steps report their own failures and never raise, so a broken git
+    configuration delays nothing and the HTTP API still comes up.
+
+    Args:
+        interval_seconds: Seconds to wait between backups.
+    """
+    clone_configured_repos()
+    start_git_sync(interval_seconds)
+
+
+def _print_startup_banner(host: str, port: int, prefix: str) -> None:
     """
     Print the endpoints the service is about to serve.
 
     Args:
         host: Host the service binds to.
         port: Port the service binds to.
-        prefix_display: Normalized path prefix, empty when unprefixed.
+        prefix: Normalized path prefix, empty when unprefixed.
     """
     print(f"Starting Workspace Admin Service on {host}:{port}")
     print("Service endpoints:")
-    print(f"  - http://{host}:{port}{prefix_display}/services")
-    print(f"  - http://{host}:{port}{prefix_display}/health")
-    print(f"  - http://{host}:{port}{prefix_display}/")
+    print(f"  - http://{host}:{port}{prefix}/services")
+    print(f"  - http://{host}:{port}{prefix}/health")
+    print(f"  - http://{host}:{port}{prefix}/")
 
 
-def cli() -> None:
+def _serve(args: argparse.Namespace) -> None:
     """
-    Command-line interface for the workspace admin service.
+    Build the application and serve it until the process is stopped.
 
-    This allows the service to be run as a standalone utility
-    similar to glances.
+    Args:
+        args: The parsed command-line arguments.
     """
-    args = build_parser().parse_args()
-
-    # Send the git backup's log records to the console. Until this is
-    # called, anything below WARNING is discarded by Python's default
-    # configuration.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    _print_startup_banner(
+        args.host, args.port, normalize_path_prefix(args.path_prefix)
     )
 
-    # Set up path prefix
-    path_prefix = args.path_prefix.strip("/")
-    prefix_display = f"/{path_prefix}" if path_prefix else ""
-
-    if args.list_services:
-        # Just list services and exit
-        print(json.dumps(load_services(), indent=2))
-        sys.exit(0)
-
-    clone_configured_repos()
-    start_git_sync(args.sync_interval)
-
-    print_startup_banner(args.host, args.port, prefix_display)
-
     uvicorn.run(
-        create_app(path_prefix),
+        create_app(args.path_prefix),
         host=args.host,
         port=args.port,
         reload=args.reload
     )
+
+
+def cli() -> None:
+    """
+    Run the workspace admin service from the command line.
+
+    Parses the arguments and then takes one of two routes: ``--list-services``
+    prints the catalogue and exits without starting anything, and otherwise
+    the git backup is brought up and the HTTP API is served.
+    """
+    args = build_parser().parse_args()
+    _configure_logging()
+
+    if args.list_services:
+        _print_service_catalogue()
+        sys.exit(0)
+
+    _start_git_backup(args.sync_interval)
+    _serve(args)
 
 
 if __name__ == "__main__":

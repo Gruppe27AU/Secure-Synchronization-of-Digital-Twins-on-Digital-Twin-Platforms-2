@@ -10,7 +10,7 @@ import base64
 from dataclasses import replace
 
 from admin.git.auth import auth_header_options, is_auth_failure
-from tests.repo_factory import make_repo
+from tests.helpers.repo_factory import make_repo
 
 
 def test_auth_header_options_empty_without_credentials():

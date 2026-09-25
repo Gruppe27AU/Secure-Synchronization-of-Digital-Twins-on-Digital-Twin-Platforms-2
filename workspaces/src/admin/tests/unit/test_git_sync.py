@@ -23,7 +23,7 @@ from admin.git.sync import (
     push_if_ahead,
     sync_once,
 )
-from tests.repo_factory import make_repo
+from tests.helpers.repo_factory import make_repo
 
 
 @pytest.fixture(name="repo")

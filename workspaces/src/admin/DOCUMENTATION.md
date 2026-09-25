@@ -486,18 +486,18 @@ obvious test file:
 
 | Test file             | Module under test  | Covers                                     |
 | --------------------- | ------------------ | ------------------------------------------ |
-| `tests/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
-| `tests/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
-| `tests/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
-| `tests/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
-| `tests/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
+| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
+| `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
+| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
+| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
+| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 
-`tests/repo_factory.py` is a shared helper rather than a test file: it builds
-the `RepoConfig` objects the git tests need, so no test module has to repeat
-the full seven-field construction.
+`tests/helpers/repo_factory.py` is a shared helper rather than a test file:
+it builds the `RepoConfig` objects the git tests need, so no test module has
+to repeat the full seven-field construction.
 
 ### Code Quality and Coverage
 
