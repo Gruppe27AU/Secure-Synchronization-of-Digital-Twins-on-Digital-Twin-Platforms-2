@@ -187,6 +187,151 @@ section, or `[assets]` exists but holds neither `private` nor `common`.
 carries on, so a broken git configuration costs the workspace its backup but
 still leaves the HTTP API running.
 
+## Cloning the Git Assets
+
+When the admin service starts, it clones the repositories described in
+`config.env` into the workspace, so the user's files are there before they
+open Jupyter or VS Code. This section describes that process for the two
+repositories the service knows about, `private` and `common`.
+
+### Private and common
+
+The two repositories are cloned in exactly the same way. They differ only in
+what they are for:
+
+- **`private`** (`[assets.private]`) holds the user's own files and points
+  at a repository only that user works in.
+- **`common`** (`[assets.common]`) holds files shared between users. Every
+  workspace that configures the same `common` remote gets a clone of its
+  own, and the remote is what the clones share.
+
+Either one can be left out of `config.env`, but at least one of them has to
+be there. When both are configured, `private` is cloned first.
+
+### When cloning happens
+
+`admin.main.cli()` calls `clone_configured_repos()` once on startup, before
+the HTTP server starts. There is no endpoint or command that clones later,
+so after adding a repository to `config.env` or changing one, restart the
+service (in the workspace container: restart the container).
+
+The configuration is read from `$WORKSPACE_APP_DIR/config.env`, where
+`WORKSPACE_APP_DIR` is the environment variable, or from `config.env` in the
+directory the service was started in if the variable is not set. If there is
+no file there, the bundled `config.env.example` is used instead (see
+[Configuration](#configuration)).
+
+### Where each repository ends up
+
+Every repository is split in two:
+
+- the **git directory** holds git's own data (history, objects, refs, the
+  remote URL). It is placed at `WORKSPACE_DIR` + `GIT_DIR`
+- the **working tree** holds the checked-out files the user edits. It is
+  placed at `WORKSPACE_APP_DIR` + `GIT_WORK_TREE`, where `WORKSPACE_APP_DIR`
+  is the key in `config.env`, resolved against `HOME_DIR` unless it starts
+  with `/`
+
+With the values in `config.env.example`
+(`HOME_DIR = "/home/username"`, `WORKSPACE_DIR = "/workspace"`,
+`WORKSPACE_APP_DIR = ".workspace"`), the result is:
+
+```text
+/workspace/                              # WORKSPACE_DIR
+├── private/                             # git directory of private
+└── common/                              # git directory of common
+
+/home/username/.workspace/               # HOME_DIR + WORKSPACE_APP_DIR
+└── assets/
+    ├── private/                         # working tree of private
+    │   └── .git                         # file: "gitdir: /workspace/private"
+    └── common/                          # working tree of common
+        └── .git                         # file: "gitdir: /workspace/common"
+```
+
+The working tree does not contain a `.git` directory, only a one-line `.git`
+file pointing at the git directory. That file is the only link between the
+two: git commands run in the working tree find the git directory through it.
+
+### What a clone does, step by step
+
+`clone_asset()` in `clone.py` does the following for each repository:
+
+1. **Check whether it is already cloned.** If the git directory already
+   contains a `HEAD` file, the repository counts as cloned, the clone is
+   skipped and `Repository 'private' already cloned at <git dir>; skipping`
+   is logged. This is what happens on every start after the first. Only the
+   git directory is checked, not the working tree.
+2. **Create the directories.** The parent of the git directory and the
+   working tree itself are created if they do not exist.
+3. **Run `git clone`:**
+
+   ```bash
+   git -c http.extraHeader="Authorization: Basic <username:token, base64>" \
+       clone --branch <GIT_REPO_BRANCH> --single-branch \
+       --separate-git-dir=<git dir> <GIT_REPO_URL> <working tree>
+   ```
+
+   - `--branch` and `--single-branch` fetch only the configured branch, so
+     the clone never contains the remote's other branches.
+   - `--separate-git-dir` is what puts the git directory and the working
+     tree in the two places described above.
+   - The `-c http.extraHeader=...` option carries `GIT_REPO_USERNAME` and
+     `GIT_REPO_TOKEN` as HTTP Basic credentials for this one command. They
+     are not written into the git directory's config and not added to the
+     remote URL, so the token is not stored anywhere in the clone.
+4. **Report the result.** A successful clone logs
+   `Cloned repository 'private' (<url>, branch <branch>) into <working tree>`.
+
+### Requirements for a clone to succeed
+
+- `GIT_REPO_URL` is an HTTPS URL. The credentials are sent as an HTTP
+  header, so they are not used for an SSH URL.
+- The token is accepted by the remote and allows reading the repository
+  (on GitLab: the `read_repository` scope; the later backup also needs
+  `write_repository` to push).
+- `GIT_REPO_BRANCH` exists on the remote. A new repository with no commits
+  has no branches, so it has to be given a first commit (on GitLab:
+  *Initialize repository with a README*) before it can be cloned.
+- Neither the git directory nor the working tree already exists with files
+  in it. Git refuses to clone into a directory that is not empty, and fails
+  with `already exists and is not an empty directory`. A directory that
+  exists but is empty is fine.
+
+### When a clone fails
+
+A failed clone is logged, and the service carries on:
+
+```text
+ERROR admin.git.clone Failed to clone repository 'common' (<url>, branch main) into <working tree>: <git's message>
+ERROR admin.git.bootstrap git clone failed for repository 'common': <git's message>
+```
+
+- Each repository is cloned on its own, so a failure in `common` does not
+  stop `private` from being cloned, and the other way round.
+- If the failure looks like rejected credentials, the second message ends
+  with `(the configured GIT_REPO_USERNAME/GIT_REPO_TOKEN was rejected - it
+  may be invalid or expired; check config.env)`. GitLab gives the same answer
+  for a wrong token as for an expired one, so the message does not claim to
+  know which it is. The token itself never appears in the log.
+- If `config.env` cannot be used at all, nothing is cloned and the log shows
+  `Cannot clone git assets: ...` with the reason (see
+  [When the file is wrong](#when-the-file-is-wrong)).
+- A failed clone is not retried while the service runs. It is tried again
+  the next time the service starts. Git cleans up after a failed clone, so
+  the git directory and working tree are left empty and do not block the
+  next attempt.
+
+In none of these cases does the admin service stop: the HTTP API starts as
+normal.
+
+### After cloning
+
+`start_git_sync()` runs next and schedules the periodic backup for every
+repository whose git directory holds a clone. A repository that failed to
+clone is not backed up. See [Git Backup Flow](#git-backup-flow) for what
+the backup does.
+
 ## Architecture
 
 ### Service Discovery Flow
@@ -241,9 +386,10 @@ branch checkout (`GIT_REPO_BRANCH`), the git directory
 check, and error logging on failure were already generic per `RepoConfig`.
 Authenticating the clone (using `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` from
 config, handling invalid/expired tokens gracefully) was tracked as a
-separate issue and out of scope here (see the report below); a repository
-without credentials
-configured is simply cloned anonymously, exactly as `common` was before.
+separate issue and out of scope here (see the report below). A repository
+cannot be cloned anonymously: `config.py` rejects a section whose
+`GIT_REPO_USERNAME` or `GIT_REPO_TOKEN` is missing or empty, so every clone
+is authenticated.
 
 ### Implementation Report: Authenticating to Git Repositories
 
