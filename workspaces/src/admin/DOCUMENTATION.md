@@ -1,5 +1,3 @@
-# Temporary documentation file with latest changes updated by Claude
-
 # Admin Service Documentation
 
 The admin service is a FastAPI-based REST API that provides service discovery
@@ -110,6 +108,230 @@ curl http://localhost:8091/{path-prefix}
 }
 ```
 
+## Configuration
+
+The git backup reads one file, `config.env`, from `$WORKSPACE_APP_DIR`. The
+name ends in `.env`, but the contents are TOML: the file is parsed with
+`tomllib`, so quoting and section syntax follow TOML rules rather than shell
+rules. A file to copy and edit ships with the package as
+`src/admin/config/config.env.example`.
+
+If `$WORKSPACE_APP_DIR/config.env` does not exist, `load_config()` falls
+back to that bundled example, so a workspace without a user config still
+starts.
+
+### Top-level keys
+
+All three are required.
+
+| Key | Meaning |
+| --- | ------- |
+| `HOME_DIR` | The user's home directory inside the container |
+| `WORKSPACE_DIR` | Root for the git directories. |
+| `WORKSPACE_APP_DIR` | Root for the working trees. A value starting with `/` is used as it is, anything else is resolved against `HOME_DIR` |
+
+### Repository sections
+
+Every repository is a `[assets.<name>]` table. Two names are recognised,
+`private` and `common`, and at least one of them has to be there. All six
+keys are required in each section that is present.
+
+| Key | Meaning |
+| --- | ------- |
+| `GIT_REPO_URL` | HTTPS URL of the remote |
+| `GIT_REPO_BRANCH` | The one branch that is cloned and kept in sync |
+| `GIT_REPO_USERNAME` | Username for HTTP Basic authentication |
+| `GIT_REPO_TOKEN` | Token for HTTP Basic authentication |
+| `GIT_DIR` | Git directory, relative to `WORKSPACE_DIR` |
+| `GIT_WORK_TREE` | Working tree, relative to `WORKSPACE_APP_DIR` |
+
+The two path keys are fragments, not whole paths. `load_config()` joins each
+one to its own root and returns absolute paths, so no other module has to
+remember which fragment belongs where. Leading `/` is treated as absolute on
+every platform, because the paths describe the container filesystem and not
+the machine the code happens to run on.
+
+`GIT_REPO_TOKEN` is kept out of `RepoConfig.__repr__`, so printing or
+logging a configuration cannot leak it.
+
+### Example
+
+```toml
+HOME_DIR = "/home/dtaas-user"
+WORKSPACE_DIR = "/workspace"
+WORKSPACE_APP_DIR = ".workspace"
+
+[assets.common]
+GIT_REPO_URL = "https://gitlab.com/username/common.git"
+GIT_REPO_BRANCH = "main"
+GIT_REPO_USERNAME = "gitlab-username"
+GIT_REPO_TOKEN = "gitlab-api-token"
+GIT_DIR = "common"
+GIT_WORK_TREE = "assets/common"
+```
+
+With the values above, the `common` repository gets its git directory at
+`/workspace/common` and its working tree at
+`/home/dtaas-user/.workspace/assets/common`.
+
+### When the file is wrong
+
+Anything that makes the configuration unusable raises `ConfigError`, and the
+message names the file, the section and the key at fault so the file can be
+fixed without reading any code. The cases are: the file cannot be read, it
+is not valid TOML, a required key is missing, a key holds something other
+than a quoted string, a key is present but empty, there is no `[assets]`
+section, or `[assets]` exists but holds neither `private` nor `common`.
+
+`ConfigError` is not fatal to the service. `bootstrap.py` logs it and
+carries on, so a broken git configuration costs the workspace its backup but
+still leaves the HTTP API running.
+
+## Cloning the Git Assets
+
+When the admin service starts, it clones the repositories described in
+`config.env` into the workspace, so the user's files are there before they
+open Jupyter or VS Code. This section describes that process for the two
+repositories the service knows about, `private` and `common`.
+
+### Private and common
+
+The two repositories are cloned in exactly the same way. They differ only in
+what they are for:
+
+- **`private`** (`[assets.private]`) holds the user's own files and points
+  at a repository only that user works in.
+- **`common`** (`[assets.common]`) holds files shared between users. Every
+  workspace that configures the same `common` remote gets a clone of its
+  own, and the remote is what the clones share.
+
+Either one can be left out of `config.env`, but at least one of them has to
+be there. When both are configured, `private` is cloned first.
+
+### When cloning happens
+
+`admin.main.cli()` calls `clone_configured_repos()` once on startup, before
+the HTTP server starts. There is no endpoint or command that clones later,
+so after adding a repository to `config.env` or changing one, restart the
+service (in the workspace container: restart the container).
+
+The configuration is read from `$WORKSPACE_APP_DIR/config.env`, where
+`WORKSPACE_APP_DIR` is the environment variable, or from `config.env` in the
+directory the service was started in if the variable is not set. If there is
+no file there, the bundled `config.env.example` is used instead (see
+[Configuration](#configuration)).
+
+### Where each repository ends up
+
+Every repository is split in two:
+
+- the **git directory** holds git's own data (history, objects, refs, the
+  remote URL). It is placed at `WORKSPACE_DIR` + `GIT_DIR`
+- the **working tree** holds the checked-out files the user edits. It is
+  placed at `WORKSPACE_APP_DIR` + `GIT_WORK_TREE`, where `WORKSPACE_APP_DIR`
+  is the key in `config.env`, resolved against `HOME_DIR` unless it starts
+  with `/`
+
+With the values in `config.env.example`
+(`HOME_DIR = "/home/username"`, `WORKSPACE_DIR = "/workspace"`,
+`WORKSPACE_APP_DIR = ".workspace"`), the result is:
+
+```text
+/workspace/                              # WORKSPACE_DIR
+├── private/                             # git directory of private
+└── common/                              # git directory of common
+
+/home/username/.workspace/               # HOME_DIR + WORKSPACE_APP_DIR
+└── assets/
+    ├── private/                         # working tree of private
+    │   └── .git                         # file: "gitdir: /workspace/private"
+    └── common/                          # working tree of common
+        └── .git                         # file: "gitdir: /workspace/common"
+```
+
+The working tree does not contain a `.git` directory, only a one-line `.git`
+file pointing at the git directory. That file is the only link between the
+two: git commands run in the working tree find the git directory through it.
+
+### What a clone does, step by step
+
+`clone_asset()` in `clone.py` does the following for each repository:
+
+1. **Check whether it is already cloned.** If the git directory already
+   contains a `HEAD` file, the repository counts as cloned, the clone is
+   skipped and `Repository 'private' already cloned at <git dir>; skipping`
+   is logged. This is what happens on every start after the first. Only the
+   git directory is checked, not the working tree.
+2. **Create the directories.** The parent of the git directory and the
+   working tree itself are created if they do not exist.
+3. **Run `git clone`:**
+
+   ```bash
+   git -c http.extraHeader="Authorization: Basic <username:token, base64>" \
+       clone --branch <GIT_REPO_BRANCH> --single-branch \
+       --separate-git-dir=<git dir> <GIT_REPO_URL> <working tree>
+   ```
+
+   - `--branch` and `--single-branch` fetch only the configured branch, so
+     the clone never contains the remote's other branches.
+   - `--separate-git-dir` is what puts the git directory and the working
+     tree in the two places described above.
+   - The `-c http.extraHeader=...` option carries `GIT_REPO_USERNAME` and
+     `GIT_REPO_TOKEN` as HTTP Basic credentials for this one command. They
+     are not written into the git directory's config and not added to the
+     remote URL, so the token is not stored anywhere in the clone.
+4. **Report the result.** A successful clone logs
+   `Cloned repository 'private' (<url>, branch <branch>) into <working tree>`.
+
+### Requirements for a clone to succeed
+
+- `GIT_REPO_URL` is an HTTPS URL. The credentials are sent as an HTTP
+  header, so they are not used for an SSH URL.
+- The token is accepted by the remote and allows reading the repository
+  (on GitLab: the `read_repository` scope; the later backup also needs
+  `write_repository` to push).
+- `GIT_REPO_BRANCH` exists on the remote. A new repository with no commits
+  has no branches, so it has to be given a first commit (on GitLab:
+  *Initialize repository with a README*) before it can be cloned.
+- Neither the git directory nor the working tree already exists with files
+  in it. Git refuses to clone into a directory that is not empty, and fails
+  with `already exists and is not an empty directory`. A directory that
+  exists but is empty is fine.
+
+### When a clone fails
+
+A failed clone is logged, and the service carries on:
+
+```text
+ERROR admin.git.clone Failed to clone repository 'common' (<url>, branch main) into <working tree>: <git's message>
+ERROR admin.git.bootstrap git clone failed for repository 'common': <git's message>
+```
+
+- Each repository is cloned on its own, so a failure in `common` does not
+  stop `private` from being cloned, and the other way round.
+- If the failure looks like rejected credentials, the second message ends
+  with `(the configured GIT_REPO_USERNAME/GIT_REPO_TOKEN was rejected - it
+  may be invalid or expired; check config.env)`. GitLab gives the same answer
+  for a wrong token as for an expired one, so the message does not claim to
+  know which it is. The token itself never appears in the log.
+- If `config.env` cannot be used at all, nothing is cloned and the log shows
+  `Cannot clone git assets: ...` with the reason (see
+  [When the file is wrong](#when-the-file-is-wrong)).
+- A failed clone is not retried while the service runs. It is tried again
+  the next time the service starts. Git cleans up after a failed clone, so
+  the git directory and working tree are left empty and do not block the
+  next attempt.
+
+In none of these cases does the admin service stop: the HTTP API starts as
+normal.
+
+### After cloning
+
+`start_git_sync()` runs next and schedules the periodic backup for every
+repository whose git directory holds a clone. A repository that failed to
+clone is not backed up. See [Git Backup Flow](#git-backup-flow) for what
+the backup does.
+
 ## Architecture
 
 ### Service Discovery Flow
@@ -164,9 +386,10 @@ branch checkout (`GIT_REPO_BRANCH`), the git directory
 check, and error logging on failure were already generic per `RepoConfig`.
 Authenticating the clone (using `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` from
 config, handling invalid/expired tokens gracefully) was tracked as a
-separate issue and out of scope here (see the report below); a repository
-without credentials
-configured is simply cloned anonymously, exactly as `common` was before.
+separate issue and out of scope here (see the report below). A repository
+cannot be cloned anonymously: `config.py` rejects a section whose
+`GIT_REPO_USERNAME` or `GIT_REPO_TOKEN` is missing or empty, so every clone
+is authenticated.
 
 ### Implementation Report: Authenticating to Git Repositories
 
@@ -209,6 +432,91 @@ Both are addressed by a new `admin/git/auth.py` module:
   (network error, repository not found, ...), the message is unchanged
   from before: the plain `git` failure text, still without ever
   including the token.
+
+### Implementation Report: Parsing and Validating `config.env`
+
+This was done in two steps.
+
+The first step settled the contract. Before it there was no configuration
+file at all: the repository URL, the branch and the two paths had nowhere to
+live. `config.env.example` was written to show the shape, and `config.py`
+learned to read it with `tomllib` and hand back a `RepoConfig` per
+`[assets.<name>]` table. TOML was chosen over a plain shell-style `.env`
+because the file needs sections, one repository per table, and `tomllib`
+is in the standard library, so it costs no dependency. The file kept the
+`.env` name so it stays recognisable next to the rest of the workspace
+configuration.
+
+Two decisions from this step shape everything downstream. `GIT_DIR` and
+`GIT_WORK_TREE` are stored as fragments and resolved by `load_config()`
+against `WORKSPACE_DIR` and `WORKSPACE_APP_DIR`, so callers receive absolute
+paths and never join paths themselves. And `RepoConfig.token` is declared
+with `field(repr=False)`, so the token cannot reach a log line through an
+accidental `print(repo)`.
+
+The second step added the validation. The first version trusted the file:
+a missing key raised `KeyError` somewhere far from the cause, and a key
+holding a number instead of a string failed even later, inside `subprocess`.
+Both are now caught while reading, by a single `_require()` helper that
+every field goes through. It checks three things: the key is present, it
+holds a string, and the string is not blank. When one of them fails it
+raises `ConfigError` with the file, the section and the key in the message.
+
+Three checks sit outside `_require()` because they are about the file as a
+whole rather than one key: the file has to parse as TOML, it has to have an
+`[assets]` section, and that section has to hold at least one of `private`
+and `common`. An `[assets]` table with only unknown names is refused rather
+than silently ignored, since a typo like `[assets.privat]` would otherwise
+look like a working config that backs nothing up.
+
+`load_config()` falling back to the bundled example when the user has no
+config file is deliberate. The workspace ships without a `config.env`, and a
+container that refused to start for that reason would be worse than one that
+starts with nothing to back up.
+
+### Implementation Report: Committing, Pulling and Resolving Conflicts
+
+The first half made the workspace commit itself. `sync.py` gained
+`commit_local_changes()`, which asks `git status --porcelain` whether there
+is anything to save, stages everything with `git add -A` and commits with a
+UTC timestamp in the message. `scheduler.py` runs it on a background daemon
+thread so the HTTP server is never blocked, and `bootstrap.py` starts that
+thread once from `admin.main.cli()`. The interval defaults to 300 seconds
+and can be shortened with `--sync-interval`, which is useful for a demo
+where waiting five minutes is not practical.
+
+The commit identity is passed per command with `git -c user.name=... -c
+user.email=...` rather than written into the repository. `git commit`
+refuses to run without an identity, but the workspace's clones are the
+user's own, and writing a service account into their `.git/config` would
+show up in every commit they made by hand afterwards.
+
+The second half made it a real synchronization. `pull_changes()` fetches the
+remote and merges it in, and `push_if_ahead()` pushes only when
+`git rev-list --count` says there is something the remote does not have,
+which keeps a quiet workspace from producing a push every five minutes.
+
+The order inside `sync_once()` is commit, then pull, then push. It has to be
+that way: git refuses to merge over modified files, so pulling first would
+fail on every interval as soon as the remote had anything to deliver.
+
+Conflicts were the hard part. The rule we wanted is that local files win,
+because the user is sitting in front of the file and did not ask for it to
+be replaced. `git merge -X ours` does exactly that, but it resolves silently,
+so there is no way to tell the user which files it decided for them. The
+merge is therefore attempted twice. The first attempt is an ordinary merge
+whose only job is to fail and name the conflicted files through
+`git diff --name-only --diff-filter=U`. That attempt is thrown away with
+`git merge --abort`, and the merge is redone with `-X ours`. The result is
+the same tree `-X ours` would have produced on its own, but the conflicted
+paths are known and get logged by name, and `pull_changes()` returns them to
+its caller. Only the conflicted files keep the local version; everything
+else the remote changed is merged in normally.
+
+`sync_all()` catches every exception, not only `SyncError`. It runs on the
+background thread, and an exception escaping there would end the thread and
+stop all further backups while the service kept answering requests as if
+nothing had happened.
 
 ### Package Layout
 

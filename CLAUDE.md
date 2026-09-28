@@ -309,6 +309,31 @@ The package is layered, and the test files mirror it:
 
 Dependencies point one way only: `main` → `api` → `services`.
 
+The `git/` package backs the workspace up to its remotes and is layered the
+same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`:
+
+- `config.py`: reads `config.env` and returns one `RepoConfig` per
+  repository, raising `ConfigError` on anything unusable
+- `auth.py`: builds the per-command HTTP Basic header and recognises a
+  rejected token in git's stderr
+- `clone.py`: clones one repository, git directory and working tree kept
+  apart
+- `sync.py`: one cycle for a cloned tree: commit, pull, push. Local files
+  win a conflict
+- `scheduler.py`: runs the cycle on a background daemon thread
+- `bootstrap.py`: called once from `main.cli()` on startup
+
+Failures here are logged, never raised: a broken git configuration must not
+stop the HTTP API from starting.
+
+`config.env` is TOML despite the name, lives in `$WORKSPACE_APP_DIR`, and
+falls back to the bundled `src/admin/config/config.env.example` when absent.
+It needs `HOME_DIR`, `WORKSPACE_DIR` and `WORKSPACE_APP_DIR` at the top
+level, plus an `[assets.private]` and/or `[assets.common]` table holding
+`GIT_REPO_URL`, `GIT_REPO_BRANCH`, `GIT_REPO_USERNAME`, `GIT_REPO_TOKEN`,
+`GIT_DIR` and `GIT_WORK_TREE`. See `workspaces/src/admin/DOCUMENTATION.md`
+for what each key means.
+
 To add new services to the workspace:
 
 1. Edit `src/admin/src/admin/config/services_template.json`
@@ -327,6 +352,8 @@ To add new services to the workspace:
   `/workspace`)
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
+- `WORKSPACE_APP_DIR`: Directory holding `config.env`, the git asset
+  configuration read on startup (default: current directory)
 
 ## Code Quality Standards
 
