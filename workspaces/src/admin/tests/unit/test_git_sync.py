@@ -261,6 +261,25 @@ def test_pull_changes_raises_when_the_resolving_merge_fails(monkeypatch, repo):
     with pytest.raises(SyncError, match="keeping local files"):
         pull_changes(repo)
 
+def test_pull_changes_aborts_the_merge_when_the_resolving_fails(monkeypatch, repo):
+    """Test a failed 'ours' merge is aborted so no half merge is left behind."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(incoming=1, conflicts=["shared.txt"], failing="merge-ours"),
+    )
+
+    with pytest.raises(SyncError):
+        pull_changes(repo)
+
+    assert fake_git.keys == [
+        "fetch",
+        "incoming",
+        "merge",
+        "conflicted-files",
+        "merge-abort",
+        "merge-ours",
+        "merge-abort"
+    ]
 
 def test_fetch_sends_auth_header_without_exposing_the_token(
     monkeypatch, repo_with_credentials

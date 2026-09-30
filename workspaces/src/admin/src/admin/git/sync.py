@@ -277,12 +277,21 @@ def pull_changes(repo: RepoConfig) -> list[str]:
     )
 
     _run_git(repo, ["merge", "--abort"], "abort the conflicted merge")
-    _run_git(
-        repo,
-        ["merge", "-X", "ours", remote_ref],
-        "merge the remote's changes keeping local files",
-        options=_identity_options(),
-    )
+    try:
+        _run_git(
+            repo,
+            ["merge", "-X", "ours", remote_ref],
+            "merge the remote's changes keeping local files",   
+            options=_identity_options(),
+        )
+    except SyncError:
+        _run_git(
+            repo,
+            ["merge", "--abort"],
+            "abort the failed merge",
+            check=False)
+        raise
+
     logger.info(
         "Resolved the conflict in repository '%s' by keeping the local "
         "version of: %s",
