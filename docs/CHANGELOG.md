@@ -2,6 +2,22 @@
 
 The main changes made so far are listed here.
 
+## Week of 5-Oct-2026
+
+### Fixed
+
+* A conflict that `-X ours` cannot resolve, such as a file changed on one
+  side and deleted on the other, is no longer committed and pushed on the
+  next interval. The failed merge is now aborted, and the repository is
+  left as it was until the user resolves the conflict
+* The backup no longer commits while a merge, rebase, cherry-pick or revert
+  is unfinished or files are still unmerged. It does not pull or push
+  either, so a merge the user started by hand is never concluded or
+  aborted for them
+* Files with conflict markers left in them are not committed. Only
+  `<<<<<<<` and `>>>>>>>` lines count, so a Markdown heading underlined
+  with `=======` is committed as normal
+
 ## Week of 21-Sep-2026
 
 ### Added

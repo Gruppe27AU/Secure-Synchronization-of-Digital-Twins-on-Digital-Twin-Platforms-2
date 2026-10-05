@@ -41,6 +41,20 @@ def fixture_repo_with_credentials(repo):
     return replace(repo, username="git-user", token="secret-token")
 
 
+#: Key for each git subcommand that is only ever run one way.
+_PLAIN_KEYS = {
+    "status": "status",
+    "add": "add",
+    "commit": "commit",
+    "push": "push",
+    "fetch": "fetch",
+    "rev-parse": "git-dir",
+    "ls-files": "unmerged",
+    "show": "staged-file",
+    "reset": "unstage",
+}
+
+
 def _command_key(command):
     """
     Name the git command in a way the tests can assert on.
@@ -48,9 +62,9 @@ def _command_key(command):
     The three merges are told apart, because the order of detect, abort
     and resolve is the whole point of the conflict handling.
     """
-    for word in ("status", "add", "commit", "push", "fetch"):
+    for word, key in _PLAIN_KEYS.items():
         if word in command:
-            return word
+            return key
 
     if "rev-list" in command:
         return "incoming" if command[-1].startswith("HEAD..") else "outgoing"
@@ -61,13 +75,13 @@ def _command_key(command):
         return "merge-ours" if "ours" in command else "merge"
 
     if "diff" in command:
-        return "conflicted-files"
+        return "marker-check" if "--check" in command else "conflicted-files"
 
     return None
 
 
 @dataclass
-class FakeGit:
+class FakeGit:  # pylint: disable=too-many-instance-attributes
     """
     Stands in for ``subprocess.run`` and records every git call.
 
@@ -79,6 +93,12 @@ class FakeGit:
         conflicts: Files the first merge attempt cannot resolve. A
             non-empty list makes that attempt fail, as real git does.
         failing: Command key that should fail, for example ``"push"``.
+        git_dir: What ``git rev-parse --absolute-git-dir`` prints. The
+            default does not exist, so no operation is in progress.
+        unmerged_output: What ``git ls-files --unmerged`` prints.
+        marker_output: What ``git diff --cached --check`` prints. Non-empty
+            makes it exit with status 2, as real git does.
+        staged_files: Staged content per path, read by ``git show :<path>``.
         commands: Every command that was run, filled in as they arrive.
     """
 
@@ -87,6 +107,10 @@ class FakeGit:
     outgoing: int = 0
     conflicts: list = field(default_factory=list)
     failing: str | None = None
+    git_dir: str = "/nonexistent/git-dir"
+    unmerged_output: str = ""
+    marker_output: str = ""
+    staged_files: dict = field(default_factory=dict)
     commands: list = field(default_factory=list)
 
     def run(self, command, **_kwargs):
@@ -106,15 +130,25 @@ class FakeGit:
                 command, 1, "", "CONFLICT (content): Merge conflict"
             )
 
-        return subprocess.CompletedProcess(command, 0, self._stdout(key), "")
+        if key == "marker-check" and self.marker_output:
+            return subprocess.CompletedProcess(command, 2, self.marker_output, "")
 
-    def _stdout(self, key):
+        return subprocess.CompletedProcess(command, 0, self._stdout(command), "")
+
+    def _stdout(self, command):
         """The output git would print for a command."""
+        key = _command_key(command)
+        if key == "staged-file":
+            # The last argument is ":<path>".
+            return self.staged_files.get(command[-1][1:], "")
+
         return {
             "status": self.status_output,
             "incoming": str(self.incoming),
             "outgoing": str(self.outgoing),
             "conflicted-files": "\n".join(self.conflicts),
+            "git-dir": self.git_dir,
+            "unmerged": self.unmerged_output,
         }.get(key, "")
 
     def command_for(self, key):
@@ -146,7 +180,15 @@ def test_commit_local_changes_commits_a_dirty_working_tree(monkeypatch, repo):
     fake_git = _install(monkeypatch, FakeGit(status_output=" M notebook.ipynb"))
 
     assert commit_local_changes(repo) is True
-    assert fake_git.keys == ["status", "add", "commit"]
+    # Gate, stage, check for markers, then commit - in that order.
+    assert fake_git.keys == [
+        "git-dir",
+        "unmerged",
+        "status",
+        "add",
+        "marker-check",
+        "commit",
+    ]
 
 
 def test_commit_local_changes_skips_a_clean_working_tree(monkeypatch, repo):
@@ -154,7 +196,108 @@ def test_commit_local_changes_skips_a_clean_working_tree(monkeypatch, repo):
     fake_git = _install(monkeypatch, FakeGit(status_output=""))
 
     assert commit_local_changes(repo) is False
-    assert fake_git.keys == ["status"]
+    assert fake_git.keys == ["git-dir", "unmerged", "status"]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+    ],
+)
+def test_commit_refuses_while_an_operation_is_in_progress(
+    monkeypatch, repo, tmp_path, marker
+):
+    """Test a half finished merge, rebase or cherry-pick is never concluded."""
+    git_dir = tmp_path / "git-dir"
+    git_dir.mkdir()
+    (git_dir / marker).touch()
+    fake_git = _install(
+        monkeypatch, FakeGit(git_dir=str(git_dir), status_output="UD f.txt")
+    )
+
+    with pytest.raises(SyncError, match=marker):
+        commit_local_changes(repo)
+
+    assert "add" not in fake_git.keys
+    assert "commit" not in fake_git.keys
+
+
+def test_commit_refuses_unmerged_files(monkeypatch, repo):
+    """Test a file git still lists as conflicted is never committed."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(
+            status_output="UD f.txt",
+            unmerged_output=(
+                "100644 1111111 1\tf.txt\n100644 2222222 2\tf.txt\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(SyncError, match=r"unresolved conflicts in f\.txt$"):
+        commit_local_changes(repo)
+
+    assert "add" not in fake_git.keys
+
+
+def test_commit_refuses_staged_conflict_markers(monkeypatch, repo):
+    """Test a conflict marked resolved but still holding markers is caught."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(
+            status_output="M  notes.md",
+            marker_output=(
+                "notes.md:2: leftover conflict marker\n"
+                "notes.md:4: leftover conflict marker\n"
+                "notes.md:6: leftover conflict marker\n"
+            ),
+            staged_files={
+                "notes.md": "a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> origin\n"
+            },
+        ),
+    )
+
+    with pytest.raises(SyncError, match=r"conflict markers left in notes\.md$"):
+        commit_local_changes(repo)
+
+    assert "commit" not in fake_git.keys
+    # Unstaged again, so the working tree is left as the user had it.
+    assert fake_git.keys[-1] == "unstage"
+
+
+def test_commit_ignores_whitespace_warnings(monkeypatch, repo):
+    """Test trailing whitespace, which the same check reports, is committed."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(
+            status_output=" M notes.md",
+            marker_output="notes.md:1: trailing whitespace.\n+text   \n",
+        ),
+    )
+
+    assert commit_local_changes(repo) is True
+    assert "commit" in fake_git.keys
+
+
+def test_commit_ignores_a_markdown_heading_underline(monkeypatch, repo):
+    """Test a bare '=======', which git also reports, is committed."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(
+            status_output=" M notes.md",
+            marker_output="notes.md:2: leftover conflict marker\n",
+            staged_files={"notes.md": "Results\n=======\n"},
+        ),
+    )
+
+    assert commit_local_changes(repo) is True
+    assert "commit" in fake_git.keys
 
 
 def test_commit_message_contains_a_timestamp():
@@ -456,3 +599,23 @@ def test_sync_once_raises_when_a_step_fails(monkeypatch, repo):
         sync_once(repo)
 
     assert "fetch" not in fake_git.keys
+
+
+def test_sync_once_leaves_an_unfinished_merge_alone(monkeypatch, repo, tmp_path):
+    """Test a merge the user has not finished is neither merged into nor pushed.
+
+    Even with nothing to commit, merging would trip over the user's merge
+    and the cleanup after a failed merge would abort it, throwing away
+    whatever they had resolved so far.
+    """
+    git_dir = tmp_path / "git-dir"
+    git_dir.mkdir()
+    (git_dir / "MERGE_HEAD").touch()
+    fake_git = _install(
+        monkeypatch, FakeGit(git_dir=str(git_dir), incoming=1, outgoing=1)
+    )
+
+    with pytest.raises(SyncError, match="MERGE_HEAD"):
+        sync_once(repo)
+
+    assert fake_git.keys == ["git-dir"]
