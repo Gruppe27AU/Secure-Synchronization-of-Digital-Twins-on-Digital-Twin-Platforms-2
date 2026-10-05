@@ -4,8 +4,9 @@ Shared HTTP authentication for git commands.
 Builds the one-off ``-c http.extraHeader=...`` option that
 :mod:`admin.git.clone` and :mod:`admin.git.sync` pass to ``git``, so
 credentials are authenticated per command without ever being written into
-a repository's own ``.git/config`` or embedded in its remote URL. Also
-recognizes when a failed git command was rejected because of those
+a repository's own ``.git/config`` or embedded in its remote URL. Every
+command that contacts the remote is also limited to the https transport.
+Also recognizes when a failed git command was rejected because of those
 credentials, so callers can raise a clear, token-free error instead of
 just forwarding git's raw failure message.
 """
@@ -22,6 +23,14 @@ AUTH_FAILURE_HINT = (
     "the configured GIT_REPO_USERNAME/GIT_REPO_TOKEN was rejected - it may "
     "be invalid or expired; check config.env"
 )
+
+#: Git options that refuse every transport except https.
+PROTOCOL_OPTIONS = [
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.https.allow=always",
+]
 
 #: Substrings that appear in git/GitLab's own stderr when HTTP credentials
 #: are rejected, matched case-insensitively. Deliberately specific (no bare
@@ -69,6 +78,23 @@ def auth_header_options(repo: RepoConfig) -> list[str]:
         f"http.extraHeader=Authorization: Basic "
         f"{_basic_auth_value(credentials)}",
     ]
+
+
+def remote_options(repo: RepoConfig) -> list[str]:
+    """
+    Build the one-off git options for a command that contacts the remote.
+
+    Only https is allowed, so a URL that is not https - ``file://``, a local
+    path, ``ssh://`` or ``ext::`` - is refused by git itself, even if it
+    got past :mod:`admin.git.config` or was edited into ``.git/config``.
+
+    Args:
+        repo: Repository configuration, possibly without credentials.
+
+    Returns:
+        The protocol restriction followed by :func:`auth_header_options`.
+    """
+    return [*PROTOCOL_OPTIONS, *auth_header_options(repo)]
 
 
 def is_auth_failure(stderr: str) -> bool:

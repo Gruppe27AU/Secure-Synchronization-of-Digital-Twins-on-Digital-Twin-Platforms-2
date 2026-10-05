@@ -138,8 +138,8 @@ keys are required in each section that is present.
 
 | Key | Meaning |
 | --- | ------- |
-| `GIT_REPO_URL` | HTTPS URL of the remote |
-| `GIT_REPO_BRANCH` | The one branch that is cloned and kept in sync |
+| `GIT_REPO_URL` | HTTPS URL of the remote. Must start with `https://` and must not contain a username or token (`user:token@`) |
+| `GIT_REPO_BRANCH` | The one branch that is cloned and kept in sync. Must be a valid git branch name, as checked by `git check-ref-format --branch` |
 | `GIT_REPO_USERNAME` | Username for HTTP Basic authentication |
 | `GIT_REPO_TOKEN` | Token for HTTP Basic authentication |
 | `GIT_DIR` | Git directory, relative to `WORKSPACE_DIR` |
@@ -182,6 +182,24 @@ fixed without reading any code. The cases are: the file cannot be read, it
 is not valid TOML, a required key is missing, a key holds something other
 than a quoted string, a key is present but empty, there is no `[assets]`
 section, or `[assets]` exists but holds neither `private` nor `common`.
+
+Two values are checked more strictly, because they end up on git's command
+line:
+
+- `GIT_REPO_BRANCH` must be a name `git check-ref-format --branch` accepts
+  and returns unchanged. This refuses a value starting with `-`, which git
+  would otherwise read as an option: `--upload-pack=<command>` runs a
+  command. It also refuses shorthands such as `@{-1}`.
+- `GIT_REPO_URL` must start with `https://`, have a host, contain no spaces
+  or control characters, and hold no `user:token@` part. Other transports
+  are where options like `--upload-pack` take effect, and a token in the
+  URL would be written into the clone's `.git/config` and into the log.
+  The URL is left out of the error message, since it may hold a token.
+
+As a second layer, every git command that contacts the remote runs with
+`-c protocol.allow=never -c protocol.https.allow=always`, and names the
+branch only as a full refspec after `--`. For example:
+`git fetch -- origin +refs/heads/<branch>:refs/remotes/origin/<branch>`.
 
 `ConfigError` is not fatal to the service. `bootstrap.py` logs it and
 carries on, so a broken git configuration costs the workspace its backup but
@@ -267,9 +285,10 @@ two: git commands run in the working tree find the git directory through it.
 3. **Run `git clone`:**
 
    ```bash
-   git -c http.extraHeader="Authorization: Basic <username:token, base64>" \
+   git -c protocol.allow=never -c protocol.https.allow=always \
+       -c http.extraHeader="Authorization: Basic <username:token, base64>" \
        clone --branch <GIT_REPO_BRANCH> --single-branch \
-       --separate-git-dir=<git dir> <GIT_REPO_URL> <working tree>
+       --separate-git-dir=<git dir> -- <GIT_REPO_URL> <working tree>
    ```
 
    - `--branch` and `--single-branch` fetch only the configured branch, so
@@ -280,13 +299,16 @@ two: git commands run in the working tree find the git directory through it.
      `GIT_REPO_TOKEN` as HTTP Basic credentials for this one command. They
      are not written into the git directory's config and not added to the
      remote URL, so the token is not stored anywhere in the clone.
+   - The `protocol.*` options make git refuse every transport except
+     https, and `--` stops the URL and path from being read as options.
 4. **Report the result.** A successful clone logs
    `Cloned repository 'private' (<url>, branch <branch>) into <working tree>`.
 
 ### Requirements for a clone to succeed
 
 - `GIT_REPO_URL` is an HTTPS URL. The credentials are sent as an HTTP
-  header, so they are not used for an SSH URL.
+  header, so they are not used for an SSH URL. Any other kind of URL is
+  refused when the configuration is loaded.
 - The token is accepted by the remote and allows reading the repository
   (on GitLab: the `read_repository` scope; the later backup also needs
   `write_repository` to push).
@@ -824,9 +846,10 @@ obvious test file:
 | `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
-| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format`, https-only URLs without credentials |
+| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 

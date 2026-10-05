@@ -386,6 +386,61 @@ def test_pull_changes_logs_the_conflict_and_its_resolution(
     assert caplog.text.count("shared.txt") >= 2
 
 
+def test_pull_changes_fetches_the_branch_with_an_explicit_refspec(
+    monkeypatch, repo
+):
+    """Test the fetch names the branch only as a refspec, after ``--``."""
+    fake_git = _install(monkeypatch, FakeGit(incoming=0))
+
+    pull_changes(repo)
+
+    assert fake_git.command_for("fetch")[-3:] == [
+        "--",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+    ]
+
+
+@pytest.mark.parametrize("step", ["fetch", "push"])
+def test_remote_commands_allow_only_https(monkeypatch, repo, step):
+    """Test fetch and push refuse every transport except https."""
+    fake_git = _install(monkeypatch, FakeGit(incoming=0, outgoing=1))
+
+    pull_changes(repo)
+    push_if_ahead(repo)
+
+    command = fake_git.command_for(step)
+    options = command[: command.index(step)]
+    assert "protocol.allow=never" in options
+    assert "protocol.https.allow=always" in options
+
+
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "--upload-pack=touch /tmp/pwned;git-upload-pack",
+        "--receive-pack=touch /tmp/pwned;git-receive-pack",
+    ],
+)
+def test_a_dash_led_branch_is_never_passed_as_an_option(monkeypatch, repo, branch):
+    """Test an option-shaped branch only ever appears after ``--``.
+
+    ``load_config`` refuses such a branch, but sync must not depend on
+    that: a value git reads as ``--upload-pack`` would run a command.
+    """
+    fake_git = _install(monkeypatch, FakeGit(incoming=0, outgoing=1))
+    repo = replace(repo, branch=branch)
+
+    pull_changes(repo)
+    push_if_ahead(repo)
+
+    for step in ("fetch", "push"):
+        command = fake_git.command_for(step)
+        separator = command.index("--")
+        assert not any(part.startswith("-") for part in command[separator + 1 :])
+        assert not any(branch in part for part in command[:separator])
+
+
 def test_pull_changes_raises_when_the_fetch_fails(monkeypatch, repo):
     """Test an unreachable remote is surfaced as SyncError."""
     _install(monkeypatch, FakeGit(failing="fetch"))
@@ -450,7 +505,11 @@ def test_push_if_ahead_pushes_when_the_remote_is_behind(monkeypatch, repo):
     fake_git = _install(monkeypatch, FakeGit(outgoing=2))
 
     assert push_if_ahead(repo) is True
-    assert fake_git.command_for("push")[-2:] == ["origin", repo.branch]
+    assert fake_git.command_for("push")[-3:] == [
+        "--",
+        "origin",
+        "refs/heads/main:refs/heads/main",
+    ]
 
 
 def test_push_if_ahead_skips_when_the_remote_is_level(monkeypatch, repo):

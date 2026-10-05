@@ -11,7 +11,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from admin.git.auth import AUTH_FAILURE_HINT, auth_header_options, is_auth_failure
+from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
 from admin.git.config import RepoConfig
 
 logger = logging.getLogger(__name__)
@@ -48,14 +48,17 @@ def _build_clone_command(repo: RepoConfig) -> list[str]:
     """
     # The auth header, when present, is a one-off ``-c`` override: applies
     # to this clone only and, unlike embedding credentials in the URL, is
-    # never written into the resulting .git/config.
-    command = ["git", *auth_header_options(repo)]
+    # never written into the resulting .git/config. The protocol options
+    # restrict the clone to https.
+    command = ["git", *remote_options(repo)]
     command += [
         "clone",
         "--branch",
         repo.branch,
         "--single-branch",
         f"--separate-git-dir={repo.git_dir}",
+        # Ends option parsing, so the URL and path cannot be read as options.
+        "--",
         repo.repo_url,
         str(repo.work_tree),
     ]

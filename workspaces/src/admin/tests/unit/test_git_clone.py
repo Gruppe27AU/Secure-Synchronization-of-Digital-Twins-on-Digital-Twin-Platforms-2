@@ -64,12 +64,29 @@ def test_clone_asset_success(monkeypatch, repo):
     assert clone_asset(repo) is True
     assert repo.work_tree.is_dir()
     command = captured_command["command"]
-    assert command[0:2] == ["git", "clone"]
-    assert "--branch" in command
-    assert repo.branch in command
+    assert command[0] == "git"
+    assert "clone" in command
+    assert command[command.index("--branch") + 1] == repo.branch
     assert f"--separate-git-dir={repo.git_dir}" in command
-    assert repo.repo_url in command
-    assert str(repo.work_tree) in command
+    assert command[-3:] == ["--", repo.repo_url, str(repo.work_tree)]
+
+
+def test_clone_asset_allows_only_https(monkeypatch, repo):
+    """Test the clone refuses every transport except https."""
+    captured_command = {}
+
+    def fake_run(command, **_kwargs):
+        captured_command["command"] = command
+        return _fake_run_success()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    clone_asset(repo)
+
+    command = captured_command["command"]
+    options = command[: command.index("clone")]
+    assert "protocol.allow=never" in options
+    assert "protocol.https.allow=always" in options
 
 
 def test_clone_asset_skips_when_already_cloned(monkeypatch, repo):
@@ -181,8 +198,9 @@ def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo
     clone_asset(repo)
 
     command = captured_command["command"]
-    assert "-c" in command
-    header_index = command.index("-c") + 1
-    assert command[header_index].startswith("http.extraHeader=Authorization: Basic ")
+    assert any(
+        part.startswith("http.extraHeader=Authorization: Basic ")
+        for part in command[: command.index("clone")]
+    )
     # The token must never appear in plain text in the command.
     assert "secret-token" not in " ".join(command)
