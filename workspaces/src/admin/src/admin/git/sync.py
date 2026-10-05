@@ -16,13 +16,17 @@ ever written to disk in the workspace:
 
 - the commit identity, without which ``git commit`` refuses to run,
 - the ``Authorization`` header, without which ``git push`` is anonymous.
+
+Every command that names the branch puts ``--`` before its positional
+arguments and spells the branch out as a full refspec, so a branch value can
+never be read as a git option such as ``--upload-pack``.
 """
 
 import logging
 import subprocess
 import time
 
-from admin.git.auth import AUTH_FAILURE_HINT, auth_header_options, is_auth_failure
+from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
 from admin.git.config import RepoConfig
 
 logger = logging.getLogger(__name__)
@@ -143,6 +147,37 @@ def _remote_ref(repo: RepoConfig) -> str:
     return f"origin/{repo.branch}"
 
 
+def _fetch_refspec(repo: RepoConfig) -> str:
+    """
+    Return the refspec that fetches the branch into its remote-tracking ref.
+
+    The leading ``+`` matches what ``git clone --single-branch`` writes into
+    the repository's config, so a force-push on the remote does not make
+    every fetch fail.
+
+    Args:
+        repo: Repository to build the refspec for.
+
+    Returns:
+        The refspec, for example
+        ``+refs/heads/main:refs/remotes/origin/main``.
+    """
+    return f"+refs/heads/{repo.branch}:refs/remotes/origin/{repo.branch}"
+
+
+def _push_refspec(repo: RepoConfig) -> str:
+    """
+    Return the refspec that pushes the local branch to the same remote branch.
+
+    Args:
+        repo: Repository to build the refspec for.
+
+    Returns:
+        The refspec, for example ``refs/heads/main:refs/heads/main``.
+    """
+    return f"refs/heads/{repo.branch}:refs/heads/{repo.branch}"
+
+
 def _count_commits(repo: RepoConfig, revision_range: str, action: str) -> int:
     """
     Count the commits in a revision range.
@@ -241,9 +276,9 @@ def pull_changes(repo: RepoConfig) -> list[str]:
     """
     _run_git(
         repo,
-        ["fetch", "origin", repo.branch],
+        ["fetch", "--", "origin", _fetch_refspec(repo)],
         "fetch from the remote",
-        options=auth_header_options(repo),
+        options=remote_options(repo),
     )
 
     remote_ref = _remote_ref(repo)
@@ -314,9 +349,9 @@ def push_if_ahead(repo: RepoConfig) -> bool:
 
     _run_git(
         repo,
-        ["push", "origin", repo.branch],
+        ["push", "--", "origin", _push_refspec(repo)],
         "push changes",
-        options=auth_header_options(repo),
+        options=remote_options(repo),
     )
     logger.info(
         "Pushed %d commit(s) from repository '%s' to branch %s",
