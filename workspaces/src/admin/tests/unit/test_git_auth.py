@@ -2,14 +2,20 @@
 Unit tests for shared git HTTP authentication.
 
 Covers :mod:`admin.git.auth`: building the credentials header, leaving it
-out when no credentials are configured, and recognizing rejected
+out when no credentials are configured, restricting remote commands to
+https, and recognizing rejected
 credentials in git's stderr without mistaking unrelated failures for them.
 """
 
 import base64
 from dataclasses import replace
 
-from admin.git.auth import auth_header_options, is_auth_failure
+from admin.git.auth import (
+    PROTOCOL_OPTIONS,
+    auth_header_options,
+    is_auth_failure,
+    remote_options,
+)
 from tests.helpers.repo_factory import make_repo
 
 
@@ -38,6 +44,23 @@ def test_auth_header_options_empty_when_only_username_set():
     repo = replace(make_repo(), username="git-user", token="")
 
     assert not auth_header_options(repo)
+
+
+def test_remote_options_restrict_to_https_without_credentials():
+    """Test the protocol restriction is applied even without credentials."""
+    assert remote_options(make_repo()) == [
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        "protocol.https.allow=always",
+    ]
+
+
+def test_remote_options_add_the_auth_header_after_the_restriction():
+    """Test credentials are appended to, not instead of, the restriction."""
+    repo = replace(make_repo(), username="git-user", token="secret-token")
+
+    assert remote_options(repo) == [*PROTOCOL_OPTIONS, *auth_header_options(repo)]
 
 
 def test_is_auth_failure_recognizes_gitlab_access_denied():
