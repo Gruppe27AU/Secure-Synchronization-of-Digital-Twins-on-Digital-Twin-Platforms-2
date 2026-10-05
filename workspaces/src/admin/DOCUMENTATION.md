@@ -354,6 +354,143 @@ repository whose git directory holds a clone. A repository that failed to
 clone is not backed up. See [Git Backup Flow](#git-backup-flow) for what
 the backup does.
 
+## Conflicts: What Is Automatic and What Is Manual
+
+Most of the time the backup needs nothing from the user. A few situations
+cannot be decided safely by a program, and there the backup stops for that
+repository, logs why, and tries again every interval until a person has
+sorted it out. It never guesses: nothing half finished is committed or
+pushed.
+
+| Situation | Handled by | What the backup does | To get sync going again |
+| --- | --- | --- | --- |
+| Both sides changed the same file | Backup | Keeps the workspace's version, merges everything else | Nothing to do |
+| One side changed a file the other deleted | You | Leaves the repository as it was and fails each interval | Merge, keep or delete the file, commit |
+| A merge, rebase, cherry-pick or revert you have started is unfinished | You | Waits: no commit, no pull, no push | Finish or abort the changes |
+| Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
+| A file holds conflict markers | You | Refuses to commit, unstages again | Remove the markers |
+
+Every command below is run in the repository's working tree, which with the
+example config is `/home/username/.workspace/assets/<name>`. The service can
+keep running while you work: as long as your merge is unfinished, the
+backup waits for it instead of interfering.
+
+If `git commit` asks who you are, add `-c user.name="Your Name" -c
+user.email="you@example.com"` right after `git`. The clone does not store an
+identity, so that nothing is written into the repository on your behalf.
+
+### Both sides changed the same file
+
+Handled automatically. The log names the files whose local version was kept:
+
+```text
+WARNING admin.git.sync Merge conflict in repository 'common' affecting 1 file(s): notes.md
+INFO admin.git.sync Resolved the conflict in repository 'common' by keeping the local version of: notes.md
+```
+
+The remote's version of those files is not lost: it is still in the
+history, in the commit that was merged in.
+
+### One side changed a file the other deleted
+
+Keeping "the local version" means nothing when one side has no version, so
+git cannot resolve this on its own. The backup aborts the merge, which
+leaves your files exactly as they were, and logs on every interval:
+
+```text
+ERROR admin.git.sync Failed to merge the remote's changes keeping local files for repository 'common': CONFLICT (modify/delete): notes.md deleted in origin/main and modified in HEAD. ...
+```
+
+Until it is resolved, that repository is neither pulled nor pushed.
+
+**To get sync going again**, start the merge yourself and decide whether
+the file stays:
+
+```bash
+git merge origin/main
+git add notes.md      # keep the file, or: git rm notes.md to accept the deletion
+git commit -m "Resolve notes.md"
+```
+
+The next interval pushes the result, and the error stops.
+
+### A merge or rebase you started is unfinished
+
+If you started a merge, rebase, cherry-pick or revert by hand and it stopped
+on a conflict, the backup leaves it alone:
+
+```text
+ERROR admin.git.scheduler Not synchronizing repository 'common': a git operation is in progress (MERGE_HEAD); finish or abort it first
+```
+
+Committing at this point would conclude your merge for you, conflict and
+all, and push it.
+
+**To get sync going again**, either finish what you started, after fixing
+the conflicted files and running `git add` on them:
+
+```bash
+git commit                  # a merge, cherry-pick or revert
+git rebase --continue       # a rebase
+```
+
+or give up on it, which puts everything back as it was before you started:
+
+```bash
+git merge --abort           # or: git rebase --abort, git cherry-pick --abort, git revert --abort
+```
+
+The name in brackets in the log (`MERGE_HEAD`, `rebase-merge`, ...) tells
+you which one you are in. The next interval synchronizes as normal.
+
+### Git still lists files as conflicted
+
+The same protection applies when git holds unresolved files without an
+operation in progress, for example after a `git stash pop` that conflicted:
+
+```text
+ERROR admin.git.scheduler Not synchronizing repository 'common': unresolved conflicts in notes.md
+```
+
+**To get sync going again**, open each file the log names, keep the content
+you want, and mark it resolved:
+
+```bash
+git add notes.md
+```
+
+The next interval commits and pushes it.
+
+### A file holds conflict markers
+
+A file can be marked resolved while it still contains the lines git writes
+around a conflict (`<<<<<<<`, `=======`, `>>>>>>>`). The backup checks what
+it is about to commit and refuses:
+
+```text
+ERROR admin.git.scheduler Not committing in repository 'common': conflict markers left in notes.md
+```
+
+Nothing is committed, and the files are unstaged again, so your working tree
+is as you left it.
+
+**To get sync going again**, open each file the log names. Between
+`<<<<<<<` and `=======` is one version, between `=======` and `>>>>>>>` the
+other. Keep the lines you want and delete the rest, the three marker lines
+included. Save the file, or delete it if you do not need it. No git command
+is needed: the next interval commits as normal.
+
+Only lines starting with `<<<<<<<` or `>>>>>>>` count. A line holding just
+`=======` is also how Markdown underlines a heading, so on its own it is
+committed as normal. A file that holds a line starting with `<<<<<<<` on
+purpose, such as notes about git, is refused all the same.
+
+### What the backup does not check
+
+The checks cover the commits the backup makes itself. A commit you make by
+hand is pushed as it is, conflict markers included, because it is your
+decision what goes into it.
+
 ## Architecture
 
 ### Service Discovery Flow
@@ -374,9 +511,13 @@ the backup does.
    HTTP server
 3. Every 5 minutes each cloned working tree goes through the same three
    steps, in this order:
-   1. **Commit** - `git status --porcelain` decides whether there is
-      anything to save. A clean tree is skipped; a dirty one is staged and
-      committed with a timestamped message
+   1. **Commit** - the repository is first checked for an unfinished
+      merge, rebase, cherry-pick or revert and for unresolved files, and
+      the whole cycle stops if it finds one. Then `git status --porcelain`
+      decides whether there is anything to save. A clean tree is skipped; a
+      dirty one is staged, checked for conflict markers, and committed with
+      a timestamped message (see
+      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Pull** - the remote is fetched and merged in. Local files win any
       conflict (see below)
    3. **Push** - the branch is pushed only when it actually holds commits
@@ -539,6 +680,54 @@ else the remote changed is merged in normally.
 background thread, and an exception escaping there would end the thread and
 stop all further backups while the service kept answering requests as if
 nothing had happened.
+
+### Implementation Report: Never Committing an Unfinished Conflict
+
+A review found that a conflict `-X ours` cannot resolve, such as a file
+changed on one side and deleted on the other, was committed and pushed one
+interval later. The failing `-X ours` merge raised without aborting, so the
+repository was left mid merge. The next `commit_local_changes()` saw the
+unmerged file in `git status`, and `git add -A` plus `git commit` concluded
+the merge as if someone had resolved it. The same path would have committed
+a merge or rebase the user had started by hand, conflict markers and all.
+
+The fix has two layers. The first removes the cause: `pull_changes()` now
+runs `git merge --abort` when the `-X ours` merge fails, then re-raises, so
+our own code never leaves a merge behind. The abort runs with
+`check=False`, so if it fails too, the error reported is still the one
+that explains the conflict.
+
+The second layer guards the commit itself, whatever led to the state, and
+lives in `commit_local_changes()`:
+
+- Before anything else, `_ensure_nothing_in_progress()` looks for the
+  entries git keeps while an operation is stopped (`MERGE_HEAD`,
+  `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`,
+  `rebase-apply`) and asks `git ls-files --unmerged` for unresolved files.
+  Either stops the cycle with `SyncError`. It runs before `has_changes()`
+  on purpose: with nothing to commit, the cycle would otherwise go on to
+  merge, and the abort after a failed merge would throw away the merge the
+  user was in the middle of.
+- The git directory is asked of git with `git rev-parse
+  --absolute-git-dir` instead of assumed to be `.git`. `clone.py` uses
+  `--separate-git-dir`, so the working tree only holds a `.git` *file*, and
+  a check against `.git/MERGE_HEAD` would never find anything.
+- After `git add -A`, `_staged_conflict_markers()` runs `git diff --cached
+  --check`. That command also reports trailing whitespace and a bare
+  `=======`, which is a Markdown heading underline, so only its "leftover
+  conflict marker" lines are kept, and only for files whose staged version
+  has a line starting with `<<<<<<<` or `>>>>>>>`. Taking every warning
+  would have stopped the backup for almost any user. When markers are
+  found, `git reset` unstages again, so deleting the file by hand does not
+  leave a staged addition that would fail the next commit.
+
+Refusing raises `SyncError` rather than returning `False`, so the reason
+reaches the log through the scheduler like any other failure instead of
+reading as "nothing to commit".
+
+Both layers were checked against real git as well as `FakeGit`: the
+modify/delete case from the review, a hand-started merge left on a
+conflict, markers in a file, and a Markdown heading.
 
 ### Package Layout
 

@@ -25,19 +25,30 @@ never be read as a git option such as ``--upload-pack``.
 import logging
 import subprocess
 import time
+from pathlib import Path
 
 from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
 from admin.git.config import RepoConfig
 
 logger = logging.getLogger(__name__)
 
-#: Identity used for automatic backup commits. Passed on the commit command
-#: itself, so it never ends up in the repository's ``.git/config``.
 COMMIT_AUTHOR_NAME = "workspace-admin"
 COMMIT_AUTHOR_EMAIL = "workspace-admin@localhost"
 
-#: Prefix of the generated commit messages, followed by a UTC timestamp.
 COMMIT_MESSAGE_PREFIX = "workspace backup"
+
+IN_PROGRESS_MARKERS = (
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "REBASE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+)
+
+CONFLICT_MARKER_WARNING = "leftover conflict marker"
+
+CONFLICT_MARKER_PREFIXES = ("<<<<<<<", ">>>>>>>")
 
 
 class SyncError(Exception):
@@ -218,6 +229,152 @@ def _conflicted_files(repo: RepoConfig) -> list[str]:
     return result.stdout.split()
 
 
+def _operation_in_progress(repo: RepoConfig) -> str | None:
+    """
+    Name the git operation the repository is stopped in the middle of.
+
+    The git directory is asked of git rather than assumed to be
+    ``.git``, because :mod:`admin.git.clone` keeps it apart from the
+    working tree.
+
+    Args:
+        repo: Repository to inspect.
+
+    Returns:
+        The first entry of ``IN_PROGRESS_MARKERS`` that exists, or None
+        when no operation is in progress.
+
+    Raises:
+        SyncError: If the git directory cannot be located.
+    """
+    result = _run_git(
+        repo, ["rev-parse", "--absolute-git-dir"], "locate the git directory"
+    )
+    git_dir = Path(result.stdout.strip())
+
+    for marker in IN_PROGRESS_MARKERS:
+        if (git_dir / marker).exists():
+            return marker
+    return None
+
+
+def _unmerged_files(repo: RepoConfig) -> list[str]:
+    """
+    List the files whose conflict git still considers unresolved.
+
+    Args:
+        repo: Repository to inspect.
+
+    Returns:
+        The unmerged paths, each once, in the order git reports them.
+
+    Raises:
+        SyncError: If the list cannot be read.
+    """
+    result = _run_git(
+        repo, ["ls-files", "--unmerged"], "list the unmerged files"
+    )
+
+    return list(
+        dict.fromkeys(
+            line.split("\t", 1)[1]
+            for line in result.stdout.splitlines()
+            if "\t" in line
+        )
+    )
+
+
+def _ensure_nothing_in_progress(repo: RepoConfig) -> None:
+    """
+    Refuse to touch a repository that is in the middle of a conflict.
+
+    This guards against every way of getting there, not just a failed
+    merge of our own: the user may have started a merge or rebase by
+    hand and not finished it yet. Committing would conclude it, conflict
+    and all, and the push would hand it on to the remote.
+
+    Args:
+        repo: Repository to inspect.
+
+    Raises:
+        SyncError: If an operation is in progress or files are unmerged.
+    """
+    marker = _operation_in_progress(repo)
+    if marker:
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': a git operation is "
+            f"in progress ({marker}); finish or abort it first"
+        )
+
+    unmerged = _unmerged_files(repo)
+    if unmerged:
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': unresolved "
+            f"conflicts in {', '.join(unmerged)}"
+        )
+
+
+def _staged_conflict_markers(repo: RepoConfig) -> list[str]:
+    """
+    List the staged files that still hold conflict markers.
+
+    ``git diff --check`` finds the candidates, but it also reports
+    whitespace errors and a bare ``=======``, so only its conflict marker
+    lines are kept, and only for files that contain a marker line no
+    Markdown heading would.
+
+    Args:
+        repo: Repository whose changes have just been staged.
+
+    Returns:
+        The affected paths, each once, in the order git reports them.
+
+    Raises:
+        SyncError: If the check or a staged file cannot be read.
+    """
+    result = _run_git(
+        repo,
+        ["diff", "--cached", "--check"],
+        "check the staged changes for conflict markers",
+        check=False,
+    )
+
+    if result.returncode not in (0, 2):
+        raise SyncError(
+            f"Failed to check the staged changes for conflict markers in "
+            f"repository '{repo.name}': {result.stderr.strip()}"
+        )
+
+    candidates = dict.fromkeys(
+        line.rsplit(":", 2)[0]
+        for line in result.stdout.splitlines()
+        if line.endswith(CONFLICT_MARKER_WARNING)
+    )
+
+    return [path for path in candidates if _has_conflict_marker(repo, path)]
+
+
+def _has_conflict_marker(repo: RepoConfig, path: str) -> bool:
+    """
+    Check whether the staged version of a file holds a conflict marker.
+
+    Args:
+        repo: Repository the file is staged in.
+        path: Path of the file, relative to the working tree.
+
+    Returns:
+        True if a line starts with ``<<<<<<<`` or ``>>>>>>>``.
+
+    Raises:
+        SyncError: If the staged file cannot be read.
+    """
+    result = _run_git(repo, ["show", f":{path}"], "read a staged file")
+    return any(
+        line.startswith(CONFLICT_MARKER_PREFIXES)
+        for line in result.stdout.splitlines()
+    )
+
+
 def commit_local_changes(repo: RepoConfig) -> bool:
     """
     Commit whatever the user changed in the working tree.
@@ -226,6 +383,11 @@ def commit_local_changes(repo: RepoConfig) -> bool:
     files, so an uncommitted working tree would make every pull fail as
     soon as the remote had anything to deliver.
 
+    Nothing is committed while the repository is in the middle of a
+    conflict, or while a staged file still holds conflict markers. The
+    first check runs before anything else, so a merge or rebase the user
+    has not finished is never pulled into or pushed either.
+
     Args:
         repo: Repository to commit in.
 
@@ -233,13 +395,28 @@ def commit_local_changes(repo: RepoConfig) -> bool:
         True if a commit was made, False if the working tree was clean.
 
     Raises:
-        SyncError: If staging or committing fails.
+        SyncError: If an unfinished conflict or conflict markers are found,
+            or if staging or committing fails.
     """
+    _ensure_nothing_in_progress(repo)
+
     if not has_changes(repo):
         logger.info("No changes in repository '%s'; nothing to commit", repo.name)
         return False
 
     _run_git(repo, ["add", "-A"], "stage changes")
+
+    marked = _staged_conflict_markers(repo)
+    if marked:
+        # Unstage again, so the next cycle sees the working tree as the user
+        # left it. Without this, deleting the refused file by hand leaves a
+        # staged addition behind and that cycle fails with nothing to commit.
+        _run_git(repo, ["reset", "--quiet"], "unstage the refused changes", check=False)
+        raise SyncError(
+            f"Not committing in repository '{repo.name}': conflict markers "
+            f"left in {', '.join(marked)}"
+        )
+
     _run_git(
         repo,
         ["commit", "-m", build_commit_message()],
@@ -312,12 +489,21 @@ def pull_changes(repo: RepoConfig) -> list[str]:
     )
 
     _run_git(repo, ["merge", "--abort"], "abort the conflicted merge")
-    _run_git(
-        repo,
-        ["merge", "-X", "ours", remote_ref],
-        "merge the remote's changes keeping local files",
-        options=_identity_options(),
-    )
+    try:
+        _run_git(
+            repo,
+            ["merge", "-X", "ours", remote_ref],
+            "merge the remote's changes keeping local files",   
+            options=_identity_options(),
+        )
+    except SyncError:
+        _run_git(
+            repo,
+            ["merge", "--abort"],
+            "abort the failed merge",
+            check=False)
+        raise
+
     logger.info(
         "Resolved the conflict in repository '%s' by keeping the local "
         "version of: %s",
