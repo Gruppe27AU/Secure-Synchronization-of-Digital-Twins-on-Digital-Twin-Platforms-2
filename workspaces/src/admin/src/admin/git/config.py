@@ -17,10 +17,12 @@ pushed, and the config file holds the tokens.
 """
 
 import itertools
+import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 #: Template shipped with the package, used when the user has no config file.
 EXAMPLE_CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.env.example"
@@ -123,6 +125,98 @@ def _require(values: dict[str, Any], key: str, where: str, source: Path) -> str:
         raise ConfigError(f"{source}: '{key}' in {where} is empty")
 
     return value
+
+
+def _validate_branch(branch: str, where: str, source: Path) -> str:
+    """
+    Accept only a literal, valid branch name.
+
+    The branch ends up on git's command line, so a value starting with ``-``
+    would be read as an option (``--upload-pack=<command>`` runs a command).
+    ``git check-ref-format --branch`` applies git's own naming rules. Inside
+    a repository it also expands shorthands such as ``@{-1}``, so the name
+    is only accepted when git hands it back unchanged.
+
+    Args:
+        branch: Value of ``GIT_REPO_BRANCH``.
+        where: Human-readable location, used in the error message.
+        source: File the value came from, used in the error message.
+
+    Returns:
+        The branch, unchanged.
+
+    Raises:
+        ConfigError: If the branch is not a valid branch name, or git
+            cannot be run to check it.
+    """
+    invalid = ConfigError(
+        f"{source}: 'GIT_REPO_BRANCH' in {where} is not a valid branch "
+        f"name: {branch!r}"
+    )
+    # Never hand a dash-led value to git, not even to the checker.
+    if branch.startswith("-"):
+        raise invalid
+
+    try:
+        result = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ConfigError(
+            f"{source}: could not run git to check 'GIT_REPO_BRANCH' in "
+            f"{where}: {error}"
+        ) from error
+
+    if result.returncode != 0 or result.stdout.strip() != branch:
+        raise invalid
+
+    return branch
+
+
+def _validate_url(url: str, where: str, source: Path) -> str:
+    """
+    Accept only an ``https://`` URL that carries no credentials.
+
+    Other transports are where git options such as ``--upload-pack`` take
+    effect, and ``ext::`` runs a command by design. Credentials belong in
+    ``GIT_REPO_USERNAME``/``GIT_REPO_TOKEN``: a ``user:token@`` in the URL
+    would be written into the clone's ``.git/config`` and into the log.
+
+    Args:
+        url: Value of ``GIT_REPO_URL``.
+        where: Human-readable location, used in the error message.
+        source: File the value came from, used in the error message.
+
+    Returns:
+        The URL, unchanged.
+
+    Raises:
+        ConfigError: If the URL is not https, has no host, contains
+            whitespace or control characters, or contains a username or
+            token.
+    """
+    # The URL is deliberately left out of these messages: it may hold a token.
+    if not url.startswith("https://") or any(
+        char.isspace() or not char.isprintable() for char in url
+    ):
+        raise ConfigError(
+            f"{source}: 'GIT_REPO_URL' in {where} must be an https:// URL "
+            "without spaces or control characters"
+        )
+
+    parts = urlsplit(url)
+    if "@" in parts.netloc:
+        raise ConfigError(
+            f"{source}: 'GIT_REPO_URL' in {where} must not contain a username "
+            "or token; set GIT_REPO_USERNAME and GIT_REPO_TOKEN instead"
+        )
+    if not parts.hostname:
+        raise ConfigError(f"{source}: 'GIT_REPO_URL' in {where} has no host")
+
+    return url
 
 
 def _resolve_inside(root: Path, key: str, value: str, where: str, source: Path) -> Path:
@@ -237,15 +331,20 @@ def _build_repo(
         The repository configuration, with both paths resolved.
 
     Raises:
-        ConfigError: If any required key is missing or empty, or a path
-            does not name a subdirectory of its root.
+        ConfigError: If any required key is missing or empty, if the URL
+            or branch is unsafe to hand to git, or if a path does not name
+            a subdirectory of its root.
     """
     where = f"[assets.{name}]"
 
     return RepoConfig(
         name=name,
-        repo_url=_require(asset, "GIT_REPO_URL", where, source),
-        branch=_require(asset, "GIT_REPO_BRANCH", where, source),
+        repo_url=_validate_url(
+            _require(asset, "GIT_REPO_URL", where, source), where, source
+        ),
+        branch=_validate_branch(
+            _require(asset, "GIT_REPO_BRANCH", where, source), where, source
+        ),
         username=_require(asset, "GIT_REPO_USERNAME", where, source),
         token=_require(asset, "GIT_REPO_TOKEN", where, source),
         git_dir=_resolve_inside(
@@ -301,9 +400,10 @@ def load_config(config_path: Path) -> list[RepoConfig]:
 
     Raises:
         ConfigError: If neither the config nor the template can be read, if
-            a required key is missing or empty, if no repository is
-            configured at all, if a path escapes its root, if two
-            directories overlap, or if a work tree contains the config file.
+            a required key is missing or empty, if a URL or branch is
+            unsafe to hand to git, if no repository is configured at all,
+            if a path escapes its root, if two directories overlap, or if
+            a work tree contains the config file.
     """
     source = config_path
     if not source.exists():

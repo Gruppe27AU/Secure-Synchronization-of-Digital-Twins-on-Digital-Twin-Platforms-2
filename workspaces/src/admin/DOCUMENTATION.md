@@ -138,8 +138,8 @@ keys are required in each section that is present.
 
 | Key | Meaning |
 | --- | ------- |
-| `GIT_REPO_URL` | HTTPS URL of the remote |
-| `GIT_REPO_BRANCH` | The one branch that is cloned and kept in sync |
+| `GIT_REPO_URL` | HTTPS URL of the remote. Must start with `https://` and must not contain a username or token (`user:token@`) |
+| `GIT_REPO_BRANCH` | The one branch that is cloned and kept in sync. Must be a valid git branch name, as checked by `git check-ref-format --branch` |
 | `GIT_REPO_USERNAME` | Username for HTTP Basic authentication |
 | `GIT_REPO_TOKEN` | Token for HTTP Basic authentication |
 | `GIT_DIR` | Git directory, relative to `WORKSPACE_DIR` |
@@ -193,6 +193,24 @@ fixed without reading any code. The cases are: the file cannot be read, it
 is not valid TOML, a required key is missing, a key holds something other
 than a quoted string, a key is present but empty, there is no `[assets]`
 section, or `[assets]` exists but holds neither `private` nor `common`.
+
+Two values are checked more strictly, because they end up on git's command
+line:
+
+- `GIT_REPO_BRANCH` must be a name `git check-ref-format --branch` accepts
+  and returns unchanged. This refuses a value starting with `-`, which git
+  would otherwise read as an option: `--upload-pack=<command>` runs a
+  command. It also refuses shorthands such as `@{-1}`.
+- `GIT_REPO_URL` must start with `https://`, have a host, contain no spaces
+  or control characters, and hold no `user:token@` part. Other transports
+  are where options like `--upload-pack` take effect, and a token in the
+  URL would be written into the clone's `.git/config` and into the log.
+  The URL is left out of the error message, since it may hold a token.
+
+As a second layer, every git command that contacts the remote runs with
+`-c protocol.allow=never -c protocol.https.allow=always`, and names the
+branch only as a full refspec after `--`. For example:
+`git fetch -- origin +refs/heads/<branch>:refs/remotes/origin/<branch>`.
 
 `ConfigError` is not fatal to the service. `bootstrap.py` logs it and
 carries on, so a broken git configuration costs the workspace its backup but
@@ -278,9 +296,10 @@ two: git commands run in the working tree find the git directory through it.
 3. **Run `git clone`:**
 
    ```bash
-   git -c http.extraHeader="Authorization: Basic <username:token, base64>" \
+   git -c protocol.allow=never -c protocol.https.allow=always \
+       -c http.extraHeader="Authorization: Basic <username:token, base64>" \
        clone --branch <GIT_REPO_BRANCH> --single-branch \
-       --separate-git-dir=<git dir> <GIT_REPO_URL> <working tree>
+       --separate-git-dir=<git dir> -- <GIT_REPO_URL> <working tree>
    ```
 
    - `--branch` and `--single-branch` fetch only the configured branch, so
@@ -291,13 +310,16 @@ two: git commands run in the working tree find the git directory through it.
      `GIT_REPO_TOKEN` as HTTP Basic credentials for this one command. They
      are not written into the git directory's config and not added to the
      remote URL, so the token is not stored anywhere in the clone.
+   - The `protocol.*` options make git refuse every transport except
+     https, and `--` stops the URL and path from being read as options.
 4. **Report the result.** A successful clone logs
    `Cloned repository 'private' (<url>, branch <branch>) into <working tree>`.
 
 ### Requirements for a clone to succeed
 
 - `GIT_REPO_URL` is an HTTPS URL. The credentials are sent as an HTTP
-  header, so they are not used for an SSH URL.
+  header, so they are not used for an SSH URL. Any other kind of URL is
+  refused when the configuration is loaded.
 - The token is accepted by the remote and allows reading the repository
   (on GitLab: the `read_repository` scope; the later backup also needs
   `write_repository` to push).
@@ -343,6 +365,143 @@ repository whose git directory holds a clone. A repository that failed to
 clone is not backed up. See [Git Backup Flow](#git-backup-flow) for what
 the backup does.
 
+## Conflicts: What Is Automatic and What Is Manual
+
+Most of the time the backup needs nothing from the user. A few situations
+cannot be decided safely by a program, and there the backup stops for that
+repository, logs why, and tries again every interval until a person has
+sorted it out. It never guesses: nothing half finished is committed or
+pushed.
+
+| Situation | Handled by | What the backup does | To get sync going again |
+| --- | --- | --- | --- |
+| Both sides changed the same file | Backup | Keeps the workspace's version, merges everything else | Nothing to do |
+| One side changed a file the other deleted | You | Leaves the repository as it was and fails each interval | Merge, keep or delete the file, commit |
+| A merge, rebase, cherry-pick or revert you have started is unfinished | You | Waits: no commit, no pull, no push | Finish or abort the changes |
+| Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
+| A file holds conflict markers | You | Refuses to commit, unstages again | Remove the markers |
+
+Every command below is run in the repository's working tree, which with the
+example config is `/home/username/.workspace/assets/<name>`. The service can
+keep running while you work: as long as your merge is unfinished, the
+backup waits for it instead of interfering.
+
+If `git commit` asks who you are, add `-c user.name="Your Name" -c
+user.email="you@example.com"` right after `git`. The clone does not store an
+identity, so that nothing is written into the repository on your behalf.
+
+### Both sides changed the same file
+
+Handled automatically. The log names the files whose local version was kept:
+
+```text
+WARNING admin.git.sync Merge conflict in repository 'common' affecting 1 file(s): notes.md
+INFO admin.git.sync Resolved the conflict in repository 'common' by keeping the local version of: notes.md
+```
+
+The remote's version of those files is not lost: it is still in the
+history, in the commit that was merged in.
+
+### One side changed a file the other deleted
+
+Keeping "the local version" means nothing when one side has no version, so
+git cannot resolve this on its own. The backup aborts the merge, which
+leaves your files exactly as they were, and logs on every interval:
+
+```text
+ERROR admin.git.sync Failed to merge the remote's changes keeping local files for repository 'common': CONFLICT (modify/delete): notes.md deleted in origin/main and modified in HEAD. ...
+```
+
+Until it is resolved, that repository is neither pulled nor pushed.
+
+**To get sync going again**, start the merge yourself and decide whether
+the file stays:
+
+```bash
+git merge origin/main
+git add notes.md      # keep the file, or: git rm notes.md to accept the deletion
+git commit -m "Resolve notes.md"
+```
+
+The next interval pushes the result, and the error stops.
+
+### A merge or rebase you started is unfinished
+
+If you started a merge, rebase, cherry-pick or revert by hand and it stopped
+on a conflict, the backup leaves it alone:
+
+```text
+ERROR admin.git.scheduler Not synchronizing repository 'common': a git operation is in progress (MERGE_HEAD); finish or abort it first
+```
+
+Committing at this point would conclude your merge for you, conflict and
+all, and push it.
+
+**To get sync going again**, either finish what you started, after fixing
+the conflicted files and running `git add` on them:
+
+```bash
+git commit                  # a merge, cherry-pick or revert
+git rebase --continue       # a rebase
+```
+
+or give up on it, which puts everything back as it was before you started:
+
+```bash
+git merge --abort           # or: git rebase --abort, git cherry-pick --abort, git revert --abort
+```
+
+The name in brackets in the log (`MERGE_HEAD`, `rebase-merge`, ...) tells
+you which one you are in. The next interval synchronizes as normal.
+
+### Git still lists files as conflicted
+
+The same protection applies when git holds unresolved files without an
+operation in progress, for example after a `git stash pop` that conflicted:
+
+```text
+ERROR admin.git.scheduler Not synchronizing repository 'common': unresolved conflicts in notes.md
+```
+
+**To get sync going again**, open each file the log names, keep the content
+you want, and mark it resolved:
+
+```bash
+git add notes.md
+```
+
+The next interval commits and pushes it.
+
+### A file holds conflict markers
+
+A file can be marked resolved while it still contains the lines git writes
+around a conflict (`<<<<<<<`, `=======`, `>>>>>>>`). The backup checks what
+it is about to commit and refuses:
+
+```text
+ERROR admin.git.scheduler Not committing in repository 'common': conflict markers left in notes.md
+```
+
+Nothing is committed, and the files are unstaged again, so your working tree
+is as you left it.
+
+**To get sync going again**, open each file the log names. Between
+`<<<<<<<` and `=======` is one version, between `=======` and `>>>>>>>` the
+other. Keep the lines you want and delete the rest, the three marker lines
+included. Save the file, or delete it if you do not need it. No git command
+is needed: the next interval commits as normal.
+
+Only lines starting with `<<<<<<<` or `>>>>>>>` count. A line holding just
+`=======` is also how Markdown underlines a heading, so on its own it is
+committed as normal. A file that holds a line starting with `<<<<<<<` on
+purpose, such as notes about git, is refused all the same.
+
+### What the backup does not check
+
+The checks cover the commits the backup makes itself. A commit you make by
+hand is pushed as it is, conflict markers included, because it is your
+decision what goes into it.
+
 ## Architecture
 
 ### Service Discovery Flow
@@ -363,9 +522,13 @@ the backup does.
    HTTP server
 3. Every 5 minutes each cloned working tree goes through the same three
    steps, in this order:
-   1. **Commit** - `git status --porcelain` decides whether there is
-      anything to save. A clean tree is skipped; a dirty one is staged and
-      committed with a timestamped message
+   1. **Commit** - the repository is first checked for an unfinished
+      merge, rebase, cherry-pick or revert and for unresolved files, and
+      the whole cycle stops if it finds one. Then `git status --porcelain`
+      decides whether there is anything to save. A clean tree is skipped; a
+      dirty one is staged, checked for conflict markers, and committed with
+      a timestamped message (see
+      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Pull** - the remote is fetched and merged in. Local files win any
       conflict (see below)
    3. **Push** - the branch is pushed only when it actually holds commits
@@ -529,6 +692,54 @@ background thread, and an exception escaping there would end the thread and
 stop all further backups while the service kept answering requests as if
 nothing had happened.
 
+### Implementation Report: Never Committing an Unfinished Conflict
+
+A review found that a conflict `-X ours` cannot resolve, such as a file
+changed on one side and deleted on the other, was committed and pushed one
+interval later. The failing `-X ours` merge raised without aborting, so the
+repository was left mid merge. The next `commit_local_changes()` saw the
+unmerged file in `git status`, and `git add -A` plus `git commit` concluded
+the merge as if someone had resolved it. The same path would have committed
+a merge or rebase the user had started by hand, conflict markers and all.
+
+The fix has two layers. The first removes the cause: `pull_changes()` now
+runs `git merge --abort` when the `-X ours` merge fails, then re-raises, so
+our own code never leaves a merge behind. The abort runs with
+`check=False`, so if it fails too, the error reported is still the one
+that explains the conflict.
+
+The second layer guards the commit itself, whatever led to the state, and
+lives in `commit_local_changes()`:
+
+- Before anything else, `_ensure_nothing_in_progress()` looks for the
+  entries git keeps while an operation is stopped (`MERGE_HEAD`,
+  `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`,
+  `rebase-apply`) and asks `git ls-files --unmerged` for unresolved files.
+  Either stops the cycle with `SyncError`. It runs before `has_changes()`
+  on purpose: with nothing to commit, the cycle would otherwise go on to
+  merge, and the abort after a failed merge would throw away the merge the
+  user was in the middle of.
+- The git directory is asked of git with `git rev-parse
+  --absolute-git-dir` instead of assumed to be `.git`. `clone.py` uses
+  `--separate-git-dir`, so the working tree only holds a `.git` *file*, and
+  a check against `.git/MERGE_HEAD` would never find anything.
+- After `git add -A`, `_staged_conflict_markers()` runs `git diff --cached
+  --check`. That command also reports trailing whitespace and a bare
+  `=======`, which is a Markdown heading underline, so only its "leftover
+  conflict marker" lines are kept, and only for files whose staged version
+  has a line starting with `<<<<<<<` or `>>>>>>>`. Taking every warning
+  would have stopped the backup for almost any user. When markers are
+  found, `git reset` unstages again, so deleting the file by hand does not
+  leave a staged addition that would fail the next commit.
+
+Refusing raises `SyncError` rather than returning `False`, so the reason
+reaches the log through the scheduler like any other failure instead of
+reading as "nothing to commit".
+
+Both layers were checked against real git as well as `FakeGit`: the
+modify/delete case from the review, a hand-started merge left on a
+conflict, markers in a file, and a Markdown heading.
+
 ### Package Layout
 
 The package is split by layer, so that transport concerns stay separate from
@@ -646,9 +857,10 @@ obvious test file:
 | `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
-| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format`, https-only URLs without credentials |
+| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 

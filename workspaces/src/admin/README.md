@@ -11,6 +11,9 @@ FastAPI service for workspace service discovery and management.
   every five minutes, so users never run a git command themselves
 - Conflict resolution that keeps the workspace's own version of a file when
   it and the remote have both changed
+- Never commits an unfinished merge or a file with conflict markers; those
+  wait for the user (see
+  [Conflicts](DOCUMENTATION.md#conflicts-what-is-automatic-and-what-is-manual))
 - Git assets configured in one TOML file, `config.env`, which is validated
   on startup so a mistake in it is reported by name instead of failing
   later inside git
