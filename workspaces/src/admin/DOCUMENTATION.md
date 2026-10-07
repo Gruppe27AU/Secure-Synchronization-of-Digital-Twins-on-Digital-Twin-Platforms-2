@@ -116,9 +116,21 @@ name ends in `.env`, but the contents are TOML: the file is parsed with
 rules. A file to copy and edit ships with the package as
 `src/admin/config/config.env.example`.
 
-If `$WORKSPACE_APP_DIR/config.env` does not exist, `load_config()` falls
-back to that bundled example, so a workspace without a user config still
-starts.
+If `$WORKSPACE_APP_DIR/config.env` does not exist, the git backup is
+disabled: nothing is cloned, nothing is synchronized, and the log shows
+`<path>/config.env not found; git backup is disabled`. The bundled example
+is never read at runtime. Its `GIT_REPO_URL`, `GIT_REPO_USERNAME` and
+`GIT_REPO_TOKEN` are placeholders, and `load_config()` refuses any
+repository still carrying one, so an unedited copy cannot send a request to
+a remote. `private` and `common` must also use different remotes (or at
+least different branches of one), since both would otherwise push to the
+same branch.
+
+In the workspace image, `custom_startup.sh` sets `WORKSPACE_APP_DIR` to
+`$PERSISTENT_DIR` (`/workspace`) unless it is already set, so the operator
+enables the backup by placing `config.env` in the user's persistent volume
+(with the bundled compose files, `files/<username>/config.env` on the
+host).
 
 ### Top-level keys
 
@@ -236,8 +248,7 @@ service (in the workspace container: restart the container).
 The configuration is read from `$WORKSPACE_APP_DIR/config.env`, where
 `WORKSPACE_APP_DIR` is the environment variable, or from `config.env` in the
 directory the service was started in if the variable is not set. If there is
-no file there, the bundled `config.env.example` is used instead (see
-[Configuration](#configuration)).
+no file there, nothing is cloned (see [Configuration](#configuration)).
 
 ### Where each repository ends up
 
@@ -632,10 +643,14 @@ and `common`. An `[assets]` table with only unknown names is refused rather
 than silently ignored, since a typo like `[assets.privat]` would otherwise
 look like a working config that backs nothing up.
 
-`load_config()` falling back to the bundled example when the user has no
-config file is deliberate. The workspace ships without a `config.env`, and a
-container that refused to start for that reason would be worse than one that
-starts with nothing to back up.
+`load_config()` originally fell back to the bundled example when the user
+had no config file. That was removed: with no `config.env` in the image, it
+made every unconfigured workspace clone
+`https://gitlab.com/username/repository.git` with the placeholder
+credentials, twice, and back up to it from then on. Whoever controlled that
+namespace would have had their content land in every such workspace. A
+missing file now disables the backup in `bootstrap.py` instead, the
+container still starts, and placeholder values are refused outright.
 
 ### Implementation Report: Committing, Pulling and Resolving Conflicts
 
@@ -826,7 +841,8 @@ module imports the layer above it, so each can be tested on its own.
 - `WORKSPACE_APP_DIR`: Directory that holds `config.env`, the git asset
   configuration file read by `admin.git.bootstrap` on startup, both to
   clone the assets and to schedule their backup (default: current
-  directory)
+  directory; `$PERSISTENT_DIR` in the workspace image). Without that file
+  the git backup is disabled
 
 ## Development
 

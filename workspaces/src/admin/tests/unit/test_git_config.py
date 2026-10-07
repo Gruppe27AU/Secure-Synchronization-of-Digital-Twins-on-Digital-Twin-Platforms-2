@@ -3,7 +3,7 @@ Unit tests for git backup configuration parsing.
 
 Covers :mod:`admin.git.config`: reading the TOML config file, resolving the
 two path roots, validating required keys, keeping the token out of the
-representation, and falling back to the bundled template.
+representation, and refusing placeholders copied from the bundled template.
 """
 
 import json
@@ -200,34 +200,59 @@ private = "not-a-section"
         load_config(write_config(tmp_path, content))
 
 
-def test_missing_file_falls_back_to_the_template(tmp_path):
-    """Test that a missing config file is served from the bundled template."""
-    repos = load_config(tmp_path / "does-not-exist.env")
-
-    assert [repo.name for repo in repos] == list(ASSET_NAMES)
-
-
-def test_missing_file_and_missing_template_is_reported(tmp_path, monkeypatch):
-    """Test that losing both the config and the template is an error."""
-    monkeypatch.setattr(
-        config_module,
-        "EXAMPLE_CONFIG_PATH",
-        tmp_path / "no-template.example",
-    )
-
-    with pytest.raises(ConfigError, match="does not exist"):
+def test_missing_file_does_not_fall_back_to_the_template(tmp_path):
+    """Test that a missing config file is an error, never the template."""
+    with pytest.raises(ConfigError, match="could not be read"):
         load_config(tmp_path / "does-not-exist.env")
 
 
-def test_bundled_template_is_usable():
-    """Test that the template shipped with the package parses and validates."""
-    repos = load_config(config_module.EXAMPLE_CONFIG_PATH)
+def test_bundled_template_is_rejected():
+    """Test that an unedited copy of the template can never reach a remote."""
+    with pytest.raises(ConfigError, match="placeholder"):
+        load_config(config_module.EXAMPLE_CONFIG_PATH)
 
-    assert [repo.name for repo in repos] == list(ASSET_NAMES)
-    for repo in repos:
-        assert repo.git_dir == Path("/workspace") / repo.name
-        assert repo.work_tree == Path("/home/username/.workspace/assets") / repo.name
-        assert repo.token
+
+@pytest.mark.parametrize(
+    ("key", "real_value", "placeholder"),
+    [
+        (
+            "GIT_REPO_URL",
+            "https://gitlab.com/user/private.git",
+            "https://gitlab.com/username/repository.git",
+        ),
+        ("GIT_REPO_USERNAME", "user", "gitlab-username"),
+        ("GIT_REPO_TOKEN", "private-token", "gitlab-api-token"),
+    ],
+)
+def test_placeholder_value_is_rejected(tmp_path, key, real_value, placeholder):
+    """Test that each placeholder is refused, naming the key and section."""
+    content = PRIVATE_ONLY_CONFIG.replace(
+        f'{key} = "{real_value}"', f'{key} = "{placeholder}"'
+    )
+
+    with pytest.raises(ConfigError, match=rf"{key}.*\[assets\.private\].*placeholder"):
+        load_config(write_config(tmp_path, content))
+
+
+def test_sections_sharing_a_remote_branch_are_rejected(tmp_path):
+    """Test that private and common cannot back up to the same branch."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com/user/private.git"
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    with pytest.raises(ConfigError, match="both use"):
+        load_config(write_config(tmp_path, content))
+
+
+def test_sections_sharing_a_url_on_different_branches_are_allowed(tmp_path):
+    """Test that one remote may hold both repositories on separate branches."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com/user/private.git"
+    )
+
+    repos = load_config(write_config(tmp_path, content))
+
+    assert [repo.branch for repo in repos] == ["main", "develop"]
 
 
 # --------------------------------------------------------------------------

@@ -9,10 +9,69 @@ cloning fails.
 
 from pathlib import Path
 
+import pytest
+
 from admin.git import bootstrap
+from admin.git import config as config_module
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
 from tests.helpers.repo_factory import make_repo
+
+
+@pytest.fixture(autouse=True)
+def config_file(tmp_path, monkeypatch):
+    """
+    Point $WORKSPACE_APP_DIR at a directory holding a config.env.
+
+    The file's contents do not matter, since the tests replace
+    ``load_config``; it only has to exist for the bootstrap to get that far.
+    """
+    config_path = tmp_path / bootstrap.DEFAULT_CONFIG_FILE
+    config_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("WORKSPACE_APP_DIR", str(tmp_path))
+    return config_path
+
+
+def _fail_if_called(*_args, **_kwargs):
+    """Stand in for a function the disabled git backup must never reach."""
+    raise AssertionError("must not be called when git backup is disabled")
+
+
+def test_missing_config_disables_cloning(config_file, monkeypatch, caplog):
+    """Test that without config.env nothing is loaded or cloned."""
+    config_file.unlink()
+    monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
+
+    with caplog.at_level("INFO"):
+        assert not bootstrap.clone_configured_repos()
+
+    assert "git backup is disabled" in caplog.text
+    assert "ERROR" not in caplog.text
+
+
+def test_missing_config_disables_sync(config_file, monkeypatch, caplog):
+    """Test that without config.env no sync thread is started or warned about."""
+    config_file.unlink()
+    monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_sync_scheduler", _fail_if_called)
+
+    with caplog.at_level("INFO"):
+        assert bootstrap.start_git_sync() is None
+
+    assert "git backup is disabled" in caplog.text
+    assert "git sync not started" not in caplog.text
+
+
+def test_unedited_template_clones_nothing(config_file, monkeypatch, caplog):
+    """Test that copying config.env.example unchanged sends nothing to a remote."""
+    config_file.write_bytes(config_module.EXAMPLE_CONFIG_PATH.read_bytes())
+    monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
+
+    with caplog.at_level("ERROR"):
+        assert not bootstrap.clone_configured_repos()
+
+    assert "placeholder" in caplog.text
 
 
 def test_clone_configured_repos_clones_every_entry(monkeypatch):
