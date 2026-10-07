@@ -151,6 +151,17 @@ remember which fragment belongs where. Leading `/` is treated as absolute on
 every platform, because the paths describe the container filesystem and not
 the machine the code happens to run on.
 
+Each fragment must name a subdirectory of its root. `load_config()` raises
+`ConfigError` when:
+
+- a fragment is absolute (`/etc`), contains `..`, or collapses to the root
+  itself (`.`)
+- two of the configured directories are equal or nested, which covers both
+  work trees, both git directories, and a git directory inside a work tree
+- a work tree contains the config file. Everything in a work tree is
+  committed and pushed, so this would publish the token, into the shared
+  repository if the section is `common`
+
 `GIT_REPO_TOKEN` is kept out of `RepoConfig.__repr__`, so printing or
 logging a configuration cannot leak it.
 
