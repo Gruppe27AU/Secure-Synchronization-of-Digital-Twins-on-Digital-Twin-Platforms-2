@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from admin.git.clone import CloneError, clone_asset, is_cloned
-from admin.git.config import ConfigError, load_config
+from admin.git.config import ConfigError, RepoConfig, load_config
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS, start_sync_scheduler
 
 logger = logging.getLogger(__name__)
@@ -28,36 +28,56 @@ def _config_path() -> Path:
     return app_dir / DEFAULT_CONFIG_FILE
 
 
+def _load_repos(failure_message: str) -> list[RepoConfig]:
+    """
+    Load the configured repositories, treating a missing file as "disabled".
+
+    A workspace nobody has configured for git backup has no ``config.env``,
+    and that is a normal state rather than an error: nothing is cloned and
+    nothing is synchronized.
+
+    Args:
+        failure_message: Prefix for the error logged when the file exists
+            but cannot be used.
+
+    Returns:
+        The configured repositories, or an empty list when the file is
+        missing or unusable.
+    """
+    config_path = _config_path()
+
+    if not config_path.is_file():
+        logger.info("%s not found; git backup is disabled", config_path)
+        return []
+
+    try:
+        return load_config(config_path)
+    except ConfigError as exc:
+        logger.error("%s: %s", failure_message, exc)
+        return []
+
+
 def clone_configured_repos() -> dict[str, bool]:
     """
     Clone every repository described in ``config.env``.
 
-    Reads the config file located at ``$WORKSPACE_APP_DIR/config.env``
-    (falling back to the bundled ``config.env.example`` when that file is
-    missing, per :func:`admin.git.config.load_config`), and clones each
-    configured repository (``private`` and/or ``common``) that is not
-    already present. Each repository is cloned independently: one that
-    fails to clone (bad credentials, unreachable remote, ...) is logged
-    and skipped rather than stopping the others, so a single broken
-    remote does not prevent the admin service from starting or the rest
-    of the workspace assets from being cloned.
+    Reads the config file located at ``$WORKSPACE_APP_DIR/config.env`` and
+    clones each configured repository (``private`` and/or ``common``) that
+    is not already present. When the file does not exist the git backup is
+    disabled and nothing is cloned. Each repository is cloned
+    independently: one that fails to clone (bad credentials, unreachable
+    remote, ...) is logged and skipped rather than stopping the others, so
+    a single broken remote does not prevent the admin service from
+    starting or the rest of the workspace assets from being cloned.
 
     Returns:
         One entry per configured repository, mapping its name to whether
         a clone was actually performed (False when skipped because it was
         already cloned, or because cloning failed). Empty when the config
-        file cannot be read at all.
+        file is missing or cannot be used at all.
     """
-    config_path = _config_path()
-
-    try:
-        repos = load_config(config_path)
-    except ConfigError as exc:
-        logger.error("Cannot clone git assets: %s", exc)
-        return {}
-
     results = {}
-    for repo in repos:
+    for repo in _load_repos("Cannot clone git assets"):
         try:
             results[repo.name] = clone_asset(repo)
         except CloneError as exc:
@@ -88,19 +108,15 @@ def start_git_sync(
         there is nothing to synchronize. The caller may drop both: the
         thread is a daemon, so it ends with the process either way.
     """
-    config_path = _config_path()
-
-    try:
-        repos = load_config(config_path)
-    except ConfigError as exc:
-        logger.error("Cannot start git sync: %s", exc)
+    repos = _load_repos("Cannot start git sync")
+    if not repos:
         return None
 
     cloned_repos = [repo for repo in repos if is_cloned(repo.git_dir)]
     if not cloned_repos:
         logger.warning(
             "No cloned repositories found for %s; git sync not started",
-            config_path,
+            _config_path(),
         )
         return None
 

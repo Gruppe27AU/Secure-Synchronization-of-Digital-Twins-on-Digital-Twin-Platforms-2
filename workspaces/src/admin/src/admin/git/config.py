@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-#: Template shipped with the package, used when the user has no config file.
+#: Template shipped with the package for the user to copy. Never read at
+#: runtime: its values are placeholders, and loading them would clone
+#: whatever happens to live at the placeholder URL.
 EXAMPLE_CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.env.example"
 
 #: Keys that must be present above any ``[assets]`` section.
@@ -30,6 +32,19 @@ REQUIRED_ASSET_KEYS = (
     "GIT_DIR",
     "GIT_WORK_TREE",
 )
+
+#: Values copied from ``config.env.example`` or the README without being
+#: filled in. A repository still carrying one of them is refused, so an
+#: unedited copy of the template can never send a request to a remote.
+PLACEHOLDER_VALUES = {
+    "GIT_REPO_URL": frozenset({
+        "https://gitlab.com/username/repository.git",
+        "https://gitlab.com/username/private-repo.git",
+        "https://gitlab.com/username/common-repo.git",
+    }),
+    "GIT_REPO_USERNAME": frozenset({"gitlab-username"}),
+    "GIT_REPO_TOKEN": frozenset({"gitlab-api-token", "gitlab-access-token"}),
+}
 
 #: Sections recognised under ``[assets]``. Each one is optional on its own,
 #: but at least one of them has to be configured.
@@ -139,11 +154,12 @@ def _build_repo(
         The repository configuration, with both paths resolved.
 
     Raises:
-        ConfigError: If any required key is missing or empty.
+        ConfigError: If any required key is missing or empty, or still
+            holds a placeholder from the template.
     """
     where = f"[assets.{name}]"
 
-    return RepoConfig(
+    repo = RepoConfig(
         name=name,
         repo_url=_require(asset, "GIT_REPO_URL", where, source),
         branch=_require(asset, "GIT_REPO_BRANCH", where, source),
@@ -152,6 +168,16 @@ def _build_repo(
         git_dir=workspace_dir / _require(asset, "GIT_DIR", where, source),
         work_tree=app_dir / _require(asset, "GIT_WORK_TREE", where, source),
     )
+
+    # Checked only now, once _require() has proven every value a string.
+    for key, placeholders in PLACEHOLDER_VALUES.items():
+        if asset[key] in placeholders:
+            raise ConfigError(
+                f"{source}: '{key}' in {where} is still the placeholder "
+                f"from config.env.example; fill in your own value"
+            )
+
+    return repo
 
 
 def _resolve_app_dir(home_dir: Path, app_dir_value: str) -> Path:
@@ -173,12 +199,39 @@ def _resolve_app_dir(home_dir: Path, app_dir_value: str) -> Path:
     return home_dir / app_dir_value
 
 
+def _check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:
+    """
+    Refuse two repositories that back up to the same remote branch.
+
+    Both working trees would push to that branch, each winning every
+    conflict against the other, so neither would hold the user's files.
+
+    Args:
+        repos: The configured repositories.
+        source: File they came from, used in the error message.
+
+    Raises:
+        ConfigError: If two repositories share a URL and branch.
+    """
+    seen: dict[tuple[str, str], str] = {}
+    for repo in repos:
+        remote = (repo.repo_url, repo.branch)
+        if remote in seen:
+            raise ConfigError(
+                f"{source}: [assets.{seen[remote]}] and [assets.{repo.name}] "
+                f"both use {repo.repo_url} (branch {repo.branch}); each "
+                f"needs a remote of its own"
+            )
+        seen[remote] = repo.name
+
+
 def load_config(config_path: Path) -> list[RepoConfig]:
     """
     Load the git backup configuration.
 
-    Falls back to the bundled ``config.env.example`` when ``config_path``
-    does not exist, so a workspace without a user config still starts.
+    There is no fallback: a missing file is an error here, and it is up to
+    the caller to treat an absent config as "git backup disabled" (see
+    :mod:`admin.git.bootstrap`).
 
     Args:
         config_path: The user's config file, normally
@@ -189,19 +242,11 @@ def load_config(config_path: Path) -> list[RepoConfig]:
         ``git_dir`` and ``work_tree`` resolved to absolute paths.
 
     Raises:
-        ConfigError: If neither the config nor the template can be read, if
-            a required key is missing or empty, or if no repository is
-            configured at all.
+        ConfigError: If the file cannot be read, if a required key is
+            missing, empty or a placeholder, if no repository is configured
+            at all, or if two repositories share a remote branch.
     """
     source = config_path
-    if not source.exists():
-        if not EXAMPLE_CONFIG_PATH.exists():
-            raise ConfigError(
-                f"{config_path} does not exist and the bundled template "
-                f"{EXAMPLE_CONFIG_PATH} is missing as well"
-            )
-        source = EXAMPLE_CONFIG_PATH
-
     config = _read_toml(source)
 
     home_dir = Path(_require(config, "HOME_DIR", _TOP_LEVEL, source))
@@ -231,5 +276,7 @@ def load_config(config_path: Path) -> list[RepoConfig]:
             f"{source}: no repositories configured, expected at least one of "
             + " or ".join(f"[assets.{name}]" for name in ASSET_NAMES)
         )
+
+    _check_distinct_remotes(repos, source)
 
     return repos

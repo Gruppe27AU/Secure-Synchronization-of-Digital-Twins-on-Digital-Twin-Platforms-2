@@ -89,6 +89,13 @@ users. Either can be left out. To set them up:
    export WORKSPACE_APP_DIR=/path/to/dir/holding/config.env
    ```
 
+   In the workspace container `WORKSPACE_APP_DIR` defaults to
+   `$PERSISTENT_DIR` (`/workspace`), so put the file in the user's
+   persistent volume, e.g. `files/<username>/config.env` with the bundled
+   compose files. Without the file the git backup is disabled, and a copy
+   of the example that still holds its placeholder URL, username or token
+   is refused.
+
 4. **Start the service.** Cloning happens once, on startup:
 
    ```bash
