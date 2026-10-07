@@ -346,9 +346,10 @@ def _build_repo(
         The repository configuration, with both paths resolved.
 
     Raises:
-        ConfigError: If any required key is missing or empty, if the URL
-            or branch is unsafe to hand to git, or if a path does not name
-            a subdirectory of its root.
+        ConfigError: If any required key is missing or empty, if a value
+            still holds a placeholder from the template, if the URL or
+            branch is unsafe to hand to git, or if a path does not name a
+            subdirectory of its root.
     """
     where = f"[assets.{name}]"
 
@@ -451,11 +452,12 @@ def load_config(config_path: Path) -> list[RepoConfig]:
         ``git_dir`` and ``work_tree`` resolved to absolute paths.
 
     Raises:
-        ConfigError: If neither the config nor the template can be read, if
-            a required key is missing or empty, if a URL or branch is
-            unsafe to hand to git, if no repository is configured at all,
-            if a path escapes its root, if two directories overlap, or if
-            a work tree contains the config file.
+        ConfigError: If the file cannot be read, if a required key is
+            missing, empty or a placeholder, if a URL or branch is unsafe
+            to hand to git, if no repository is configured at all, if two
+            repositories share a remote branch, if a path escapes its root,
+            if two directories overlap, or if a work tree contains the
+            config file.
     """
     source = config_path
     config = _read_toml(source)
@@ -488,6 +490,7 @@ def load_config(config_path: Path) -> list[RepoConfig]:
             + " or ".join(f"[assets.{name}]" for name in ASSET_NAMES)
         )
 
+    _check_distinct_remotes(repos, source)
     _check_disjoint(repos, source)
     _check_config_outside_work_trees(repos, source)
 
