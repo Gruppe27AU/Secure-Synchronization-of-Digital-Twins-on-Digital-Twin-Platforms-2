@@ -45,8 +45,12 @@ The main changes made so far are listed here.
   read from `$WORKSPACE_APP_DIR` by `admin/git/config.py`. It holds
   `HOME_DIR`, `WORKSPACE_DIR` and `WORKSPACE_APP_DIR` at the top level and
   one `[assets.private]` and/or `[assets.common]` table per repository.
-  `src/admin/config/config.env.example` ships as a file to copy, and is
-  also used as a fallback so a workspace without a config still starts
+  `src/admin/config/config.env.example` ships as a file to copy. It is
+  never read at runtime: without a `config.env` the git backup is disabled,
+  and placeholder URLs, usernames and tokens copied from the example are
+  refused, as are `private` and `common` sharing a remote branch. The
+  workspace image points `WORKSPACE_APP_DIR` at `$PERSISTENT_DIR` by
+  default
 * Validation of that file: every key is checked for presence, type and
   emptiness while it is read, and anything unusable raises `ConfigError`
   naming the file, the section and the key at fault. A `[assets]` section
