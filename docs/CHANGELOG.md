@@ -2,6 +2,41 @@
 
 The main changes made so far are listed here.
 
+## Week of 5-Oct-2026
+
+### Fixed
+
+* A conflict that `-X ours` cannot resolve, such as a file changed on one
+  side and deleted on the other, is no longer committed and pushed on the
+  next interval. The failed merge is now aborted, and the repository is
+  left as it was until the user resolves the conflict
+* The backup no longer commits while a merge, rebase, cherry-pick or revert
+  is unfinished or files are still unmerged. It does not pull or push
+  either, so a merge the user started by hand is never concluded or
+  aborted for them
+* Files with conflict markers left in them are not committed. Only
+  `<<<<<<<` and `>>>>>>>` lines count, so a Markdown heading underlined
+  with `=======` is committed as normal
+
+## Week of 28-Sep-2026
+
+### Security
+
+* `GIT_REPO_BRANCH` could be read by git as an option. `git fetch` and
+  `git push` received it as a bare argument, so a value such as
+  `--upload-pack=<command>` ran that command on every sync. The branch is
+  now checked with `git check-ref-format --branch` when `config.env` is
+  loaded, and fetch and push name it only as a full refspec after `--`
+* `GIT_REPO_URL` must start with `https://` and must not contain a
+  username or token. A token in the URL would have been written into the
+  clone's `.git/config` and into the log. `git clone` now also puts `--`
+  before the URL
+* Every git command that contacts the remote runs with
+  `-c protocol.allow=never -c protocol.https.allow=always`, so git itself
+  refuses `file://`, local paths, `ssh://` and `ext::`
+* Clones made before this change are not modified. A token already present
+  in a clone's `remote.origin.url` has to be removed by hand
+
 ## Week of 21-Sep-2026
 
 ### Added
