@@ -17,12 +17,13 @@ pushed, and the config file holds the tokens.
 """
 
 import itertools
-import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
+
+from admin.git.runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
 
 #: Template shipped with the package for the user to copy. Never read at
 #: runtime: its values are placeholders, and loading them would clone
@@ -173,13 +174,10 @@ def _validate_branch(branch: str, where: str, source: Path) -> str:
         raise invalid
 
     try:
-        result = subprocess.run(
-            ["git", "check-ref-format", "--branch", branch],
-            capture_output=True,
-            text=True,
-            check=False,
+        result = run_git(
+            ["git", "check-ref-format", "--branch", branch], LOCAL_TIMEOUT_SECONDS
         )
-    except OSError as error:
+    except (OSError, GitTimeoutError) as error:
         raise ConfigError(
             f"{source}: could not run git to check 'GIT_REPO_BRANCH' in "
             f"{where}: {error}"

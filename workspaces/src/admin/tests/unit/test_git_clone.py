@@ -3,15 +3,18 @@ Unit tests for cloning git-backed workspace assets.
 
 Covers :mod:`admin.git.clone`: skipping an already-cloned repository,
 performing a successful clone, and surfacing a failed clone as
-:class:`admin.git.clone.CloneError`.
+:class:`admin.git.clone.CloneError`. Real git is never invoked -
+:func:`admin.git.runner.run_git` is replaced for every test.
 """
 
 import subprocess
 
 import pytest
 
+from admin.git import clone
 from admin.git.clone import CloneError, clone_asset, is_cloned
 from admin.git.config import RepoConfig
+from admin.git.runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError
 
 
 @pytest.fixture(name="repo")
@@ -55,11 +58,11 @@ def test_clone_asset_success(monkeypatch, repo):
     """Test a successful clone creates directories and returns True."""
     captured_command = {}
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, _timeout):
         captured_command["command"] = command
         return _fake_run_success()
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(clone, "run_git", fake_run)
 
     assert clone_asset(repo) is True
     assert repo.work_tree.is_dir()
@@ -75,11 +78,11 @@ def test_clone_asset_allows_only_https(monkeypatch, repo):
     """Test the clone refuses every transport except https."""
     captured_command = {}
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, _timeout):
         captured_command["command"] = command
         return _fake_run_success()
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(clone, "run_git", fake_run)
 
     clone_asset(repo)
 
@@ -97,14 +100,14 @@ def test_clone_asset_skips_when_already_cloned(monkeypatch, repo):
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("subprocess.run should not be called when already cloned")
 
-    monkeypatch.setattr(subprocess, "run", fail_if_called)
+    monkeypatch.setattr(clone, "run_git", fail_if_called)
 
     assert clone_asset(repo) is False
 
 
 def test_clone_asset_raises_on_failure(monkeypatch, repo):
     """Test clone_asset raises CloneError when git clone fails."""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_failure())
+    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_failure())
 
     with pytest.raises(CloneError, match="repository not found"):
         clone_asset(repo)
@@ -135,7 +138,7 @@ def test_clone_asset_raises_clear_error_on_invalid_token(monkeypatch, repo):
         git_dir=repo.git_dir,
         work_tree=repo.work_tree,
     )
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_auth_failure())
+    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
     with pytest.raises(CloneError) as excinfo:
         clone_asset(repo)
@@ -156,7 +159,7 @@ def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
         git_dir=repo.git_dir,
         work_tree=repo.work_tree,
     )
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_auth_failure())
+    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
     with pytest.raises(CloneError) as excinfo:
         clone_asset(repo)
@@ -168,7 +171,7 @@ def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
 
 def test_clone_asset_raises_plain_error_without_credentials(monkeypatch, repo):
     """Test an auth-shaped failure without configured credentials gets no hint."""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_run_auth_failure())
+    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
     with pytest.raises(CloneError) as excinfo:
         clone_asset(repo)
@@ -189,11 +192,11 @@ def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo
     )
     captured_command = {}
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, _timeout):
         captured_command["command"] = command
         return _fake_run_success()
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(clone, "run_git", fake_run)
 
     clone_asset(repo)
 
@@ -204,3 +207,30 @@ def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo
     )
     # The token must never appear in plain text in the command.
     assert "secret-token" not in " ".join(command)
+
+
+def test_clone_asset_uses_the_remote_time_limit(monkeypatch, repo):
+    """Test the clone gets the long time limit meant for network commands."""
+    captured = {}
+
+    def fake_run(_command, timeout):
+        captured["timeout"] = timeout
+        return _fake_run_success()
+
+    monkeypatch.setattr(clone, "run_git", fake_run)
+
+    clone_asset(repo)
+
+    assert captured["timeout"] == REMOTE_TIMEOUT_SECONDS
+
+
+def test_clone_asset_raises_clone_error_on_timeout(monkeypatch, repo):
+    """Test a clone that hangs is reported as a failed clone."""
+
+    def fake_run(_command, _timeout):
+        raise GitTimeoutError("git did not finish within 900 seconds and was stopped")
+
+    monkeypatch.setattr(clone, "run_git", fake_run)
+
+    with pytest.raises(CloneError, match="did not finish within 900 seconds"):
+        clone_asset(repo)

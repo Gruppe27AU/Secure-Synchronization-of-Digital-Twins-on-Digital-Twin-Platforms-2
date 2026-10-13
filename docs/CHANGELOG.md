@@ -27,6 +27,24 @@ The main changes made so far are listed here.
 * Files with conflict markers left in them are not committed. Only
   `<<<<<<<` and `>>>>>>>` lines count, so a Markdown heading underlined
   with `=======` is committed as normal
+* The admin service could hang at startup and never serve `/health`. The
+  clone ran before the HTTP server started, and a git command could wait
+  forever: on a stalled network, or for a credential prompt nobody would
+  answer (a terminal, an askpass helper such as VS Code's, or a credential
+  helper such as Git Credential Manager). The startup monitor only checks
+  that the process is alive, so it never restarted anything. Now:
+  * cloning and starting the sync run on a background thread
+    (`start_git_backup()`), and the HTTP server starts at once
+  * every git command runs through `admin/git/runner.py`, with
+    `GIT_TERMINAL_PROMPT=0`, an empty `GIT_ASKPASS` and empty standard input
+  * every command has a time limit: 900 seconds for clone, fetch and push,
+    300 seconds for local commands. A command that overruns it is sent
+    `SIGTERM`, so an interrupted clone still cleans up after itself, then
+    `SIGKILL`, together with the processes it started
+  * commands that talk to the remote also get `-c credential.helper=`, so
+    no credential helper is asked, and
+    `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=60`, so a transfer that
+    stalls after connecting is abandoned after a minute
 
 ## Week of 28-Sep-2026
 
