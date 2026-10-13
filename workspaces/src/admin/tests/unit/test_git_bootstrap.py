@@ -16,6 +16,7 @@ from admin.git import bootstrap
 from admin.git import config as config_module
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
+from admin.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
 
 
@@ -53,14 +54,16 @@ def test_missing_config_disables_cloning(config_file, monkeypatch, caplog):
 
 def test_missing_config_disables_sync(config_file, monkeypatch, caplog):
     """Test that without config.env no sync thread is started or warned about."""
+    status = SyncStatus()
     config_file.unlink()
     monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
     monkeypatch.setattr(bootstrap, "start_sync_scheduler", _fail_if_called)
 
     with caplog.at_level("INFO"):
-        assert bootstrap.start_git_sync() is None
+        assert bootstrap.start_git_sync(status) is None
 
     assert "git backup is disabled" in caplog.text
+    assert status.snapshot()["enabled"] is False
     assert "git sync not started" not in caplog.text
 
 
@@ -183,10 +186,11 @@ def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
 
     scheduled = {}
 
-    def fake_start_sync_scheduler(repos, interval_seconds, stop_event):
+    def fake_start_sync_scheduler(repos, interval_seconds, stop_event, status):
         scheduled["repos"] = repos
         scheduled["interval_seconds"] = interval_seconds
         scheduled["stop_event"] = stop_event
+        scheduled["status"] = status
         return "thread"
 
     monkeypatch.setattr(
@@ -196,13 +200,15 @@ def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
     common_repo.git_dir = "cloned"
     private_repo.git_dir = "not-cloned"
 
-    thread, stop_event = bootstrap.start_git_sync(60)
+    status = SyncStatus()
+    thread, stop_event = bootstrap.start_git_sync(status, 60)
 
     assert thread == "thread"
     assert scheduled["repos"] == [common_repo]
     assert scheduled["interval_seconds"] == 60
     # The caller gets the event back, so the loop can actually be stopped.
     assert stop_event is scheduled["stop_event"]
+    assert scheduled["status"] is status
 
 
 def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog):
@@ -212,22 +218,26 @@ def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog)
         raise ConfigError("config.env: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
+    status = SyncStatus()
 
     with caplog.at_level("ERROR"):
-        assert bootstrap.start_git_sync() is None
+        assert bootstrap.start_git_sync(status) is None
 
     assert "Cannot start git sync" in caplog.text
+    assert status.snapshot()["enabled"] is False
 
 
 def test_start_git_sync_returns_none_when_nothing_is_cloned(monkeypatch, caplog):
     """Test the sync is not started when there is nothing to sync."""
     monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: False)
+    status = SyncStatus()
 
     with caplog.at_level("WARNING"):
-        assert bootstrap.start_git_sync() is None
+        assert bootstrap.start_git_sync(status) is None
 
     assert "git sync not started" in caplog.text
+    assert status.snapshot()["enabled"] is False
 
 
 def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
@@ -242,9 +252,14 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
         release_clone.wait(timeout=30)
 
     monkeypatch.setattr(bootstrap, "clone_configured_repos", slow_clone)
-    monkeypatch.setattr(bootstrap, "start_git_sync", steps.append)
+    monkeypatch.setattr(
+        bootstrap,
+        "start_git_sync",
+        lambda status, interval: steps.append((status, interval)),
+    )
+    status = SyncStatus()
 
-    thread = bootstrap.start_git_backup(60)
+    thread = bootstrap.start_git_backup(status, 60)
 
     assert clone_started.wait(timeout=30)
     # Back in the caller while the clone is still blocked.
@@ -254,16 +269,16 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
     release_clone.set()
     thread.join(timeout=30)
 
-    # The sync is only started once the clone is done.
-    assert steps == ["clone", 60]
+    # The sync is only started once the clone is done, with the same status.
+    assert steps == ["clone", (status, 60)]
 
 
 def test_start_git_backup_runs_on_a_named_daemon_thread(monkeypatch):
     """Test the thread cannot keep the process alive and is recognisable."""
     monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda: {})
-    monkeypatch.setattr(bootstrap, "start_git_sync", lambda interval: None)
+    monkeypatch.setattr(bootstrap, "start_git_sync", lambda status, interval: None)
 
-    thread = bootstrap.start_git_backup(60)
+    thread = bootstrap.start_git_backup(SyncStatus(), 60)
     thread.join(timeout=30)
 
     assert thread.daemon
@@ -279,7 +294,7 @@ def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
     monkeypatch.setattr(bootstrap, "clone_configured_repos", broken_clone)
 
     with caplog.at_level("ERROR"):
-        bootstrap.start_git_backup(60).join(timeout=30)
+        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
 
     assert "Unexpected error while starting the git backup" in caplog.text
     assert "disk on fire" in caplog.text

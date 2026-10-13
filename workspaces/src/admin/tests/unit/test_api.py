@@ -1,8 +1,9 @@
 """
 Unit tests for the HTTP API layer.
 
-Covers the routes exposed by :mod:`admin.api` (``/``, ``/services`` and
-``/health``) and the path prefix handling used for multi-user deployments.
+Covers the routes exposed by :mod:`admin.api` (``/``, ``/services``,
+``/health`` and ``/git/status``) and the path prefix handling used for
+multi-user deployments.
 """
 
 from importlib.metadata import version
@@ -11,6 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
+from admin.git.status import SyncStatus
+from admin.git.sync import SyncErrorKind
 
 
 @pytest.fixture(name='test_client')
@@ -182,3 +185,50 @@ def test_create_app_with_various_prefixes():
 def test_normalize_path_prefix(raw_prefix, expected):
     """Test that path prefixes are normalized to a single leading slash."""
     assert normalize_path_prefix(raw_prefix) == expected
+
+
+def test_git_status_reports_disabled_without_a_status(test_client):
+    """Test /git/status works, and says disabled, when no backup runs."""
+    response = test_client.get("/git/status")
+    assert response.status_code == 200
+    assert response.json() == {"enabled": False, "repositories": {}}
+
+
+def test_git_status_serves_the_recorded_outcome():
+    """Test /git/status serves what the scheduler recorded, kind only."""
+    status = SyncStatus()
+    status.enable(["private", "common"])
+    status.record_failure("private", SyncErrorKind.AUTH_FAILED)
+    status.record_success("common")
+    client = TestClient(create_app(sync_status=status))
+
+    data = client.get("/git/status").json()
+
+    assert data["enabled"] is True
+    assert data["repositories"]["private"]["last_error"]["kind"] == "auth_failed"
+    assert data["repositories"]["common"]["last_error"] is None
+    assert data["repositories"]["common"]["last_success"] is not None
+
+
+def test_git_status_reflects_later_records():
+    """Test the route reads the live status, not a copy taken at startup."""
+    status = SyncStatus()
+    client = TestClient(create_app(sync_status=status))
+    status.enable(["private"])
+
+    assert client.get("/git/status").json()["enabled"] is True
+
+
+def test_git_status_with_prefix():
+    """Test /git/status is served under the path prefix only."""
+    client = TestClient(create_app(path_prefix="user1"))
+
+    assert client.get("/user1/git/status").status_code == 200
+    assert client.get("/git/status").status_code == 404
+
+
+@pytest.mark.parametrize("method", ["post", "put", "delete"])
+def test_git_status_is_read_only(test_client, method):
+    """Test the status cannot be changed or a backup triggered over HTTP."""
+    response = getattr(test_client, method)("/git/status")
+    assert response.status_code == 405

@@ -16,6 +16,7 @@ from pathlib import Path
 from admin.git.clone import CloneError, clone_asset, is_cloned
 from admin.git.config import ConfigError, RepoConfig, load_config
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS, start_sync_scheduler
+from admin.git.status import SyncStatus
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ def clone_configured_repos() -> dict[str, bool]:
 
 
 def start_git_sync(
+    status: SyncStatus,
     interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
 ) -> tuple[threading.Thread, threading.Event] | None:
     """
@@ -105,6 +107,8 @@ def start_git_sync(
     not prevent the admin service from starting.
 
     Args:
+        status: Where the outcome of every synchronization is recorded.
+            Left disabled when nothing is scheduled.
         interval_seconds: Seconds to wait between synchronizations.
 
     Returns:
@@ -125,12 +129,14 @@ def start_git_sync(
         return None
 
     stop_event = threading.Event()
-    thread = start_sync_scheduler(cloned_repos, interval_seconds, stop_event)
+    thread = start_sync_scheduler(
+        cloned_repos, interval_seconds, stop_event, status
+    )
 
     return thread, stop_event
 
 
-def _clone_then_sync(interval_seconds: int) -> None:
+def _clone_then_sync(status: SyncStatus, interval_seconds: int) -> None:
     """
     Clone the configured repositories, then start syncing the cloned ones.
 
@@ -139,16 +145,18 @@ def _clone_then_sync(interval_seconds: int) -> None:
     too, because an exception escaping a thread is easy to miss.
 
     Args:
+        status: Where the outcome of every synchronization is recorded.
         interval_seconds: Seconds to wait between synchronizations.
     """
     try:
         clone_configured_repos()
-        start_git_sync(interval_seconds)
+        start_git_sync(status, interval_seconds)
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("Unexpected error while starting the git backup")
 
 
 def start_git_backup(
+    status: SyncStatus,
     interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
 ) -> threading.Thread:
     """
@@ -157,9 +165,11 @@ def start_git_backup(
     Cloning talks to the network and can take minutes, so it runs on a
     background daemon thread, followed by :func:`start_git_sync` once it is
     done. The HTTP API therefore comes up straight away, whatever the
-    remotes are doing.
+    remotes are doing. Until the clones are done, ``status`` still reports
+    the backup as disabled.
 
     Args:
+        status: Where the outcome of every synchronization is recorded.
         interval_seconds: Seconds to wait between synchronizations.
 
     Returns:
@@ -168,7 +178,7 @@ def start_git_backup(
     """
     thread = threading.Thread(
         target=_clone_then_sync,
-        args=(interval_seconds,),
+        args=(status, interval_seconds),
         name=BOOTSTRAP_THREAD_NAME,
         daemon=True,
     )

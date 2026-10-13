@@ -43,6 +43,8 @@ on URL paths:
 - VNC Desktop: `/tools/vnc`
 - Admin/Services API: `/{path-prefix}/services` (service discovery
   endpoint)
+- Git backup status: `/{path-prefix}/git/status` (exact match only; no
+  other admin route is proxied)
 
 The routing configuration is templated in `startup/nginx.conf` and
 processed by `startup/configure_nginx.py:12-59` which substitutes
@@ -57,6 +59,9 @@ that provides:
 - `/{path-prefix}/services` - Path-prefixed route for multi-user
   deployments
 - `/health` - Health check endpoint
+- `/git/status` - Outcome of the most recent git backups. Read-only and
+  secret-free, because the API is unauthenticated: it reports error kinds,
+  never messages
 - Command-line interface via `workspace-admin` command
 
 The service supports path prefixes for multi-user deployments,
@@ -321,7 +326,10 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
   apart
 - `sync.py`: one cycle for a cloned tree: commit, pull, push. Local files
   win a conflict
-- `scheduler.py`: runs the cycle on a background daemon thread
+- `scheduler.py`: runs the cycle on a background daemon thread and records
+  each outcome in a `SyncStatus`
+- `status.py`: thread-safe record of the last attempt, success and error
+  kind per repository, served by `/git/status`
 - `bootstrap.py`: called once from `main.cli()` on startup; clones and
   starts the sync on a background thread, so the HTTP API never waits
 - `runner.py`: runs every git command with prompts off, empty stdin and a

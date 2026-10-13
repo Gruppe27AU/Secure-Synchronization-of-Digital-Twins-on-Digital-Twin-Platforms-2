@@ -100,10 +100,17 @@ def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
     calls = []
     monkeypatch.setattr(sys, "argv", ["workspace-admin", "--sync-interval", "42"])
     monkeypatch.setattr(
-        main, "start_git_backup", lambda interval: calls.append(("backup", interval))
+        main,
+        "start_git_backup",
+        lambda status, interval: calls.append(("backup", status, interval)),
     )
-    monkeypatch.setattr(main, "_serve", lambda _args: calls.append(("serve",)))
+    monkeypatch.setattr(
+        main, "_serve", lambda _args, status: calls.append(("serve", status))
+    )
 
     cli()
 
-    assert calls == [("backup", 42), ("serve",)]
+    assert [call[0] for call in calls] == ["backup", "serve"]
+    assert calls[0][2] == 42
+    # The API reports on the very status object the backup writes to.
+    assert calls[0][1] is calls[1][1]
