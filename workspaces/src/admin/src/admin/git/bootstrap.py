@@ -15,6 +15,7 @@ from pathlib import Path
 from admin.git.clone import CloneError, clone_asset, is_cloned
 from admin.git.config import ConfigError, RepoConfig, load_config
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS, start_sync_scheduler
+from admin.git.status import SyncStatus
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ def clone_configured_repos() -> dict[str, bool]:
 
 
 def start_git_sync(
+    status: SyncStatus,
     interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
 ) -> tuple[threading.Thread, threading.Event] | None:
     """
@@ -101,6 +103,8 @@ def start_git_sync(
     not prevent the admin service from starting.
 
     Args:
+        status: Where the outcome of every synchronization is recorded.
+            Left disabled when nothing is scheduled.
         interval_seconds: Seconds to wait between synchronizations.
 
     Returns:
@@ -121,6 +125,8 @@ def start_git_sync(
         return None
 
     stop_event = threading.Event()
-    thread = start_sync_scheduler(cloned_repos, interval_seconds, stop_event)
+    thread = start_sync_scheduler(
+        cloned_repos, interval_seconds, stop_event, status
+    )
 
     return thread, stop_event

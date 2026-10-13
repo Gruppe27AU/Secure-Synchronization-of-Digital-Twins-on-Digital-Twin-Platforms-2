@@ -10,7 +10,8 @@ import logging
 import threading
 
 from admin.git.config import RepoConfig
-from admin.git.sync import SyncError, sync_once
+from admin.git.status import SyncStatus
+from admin.git.sync import SyncError, SyncErrorKind, sync_once
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +22,13 @@ DEFAULT_SYNC_INTERVAL_SECONDS = 300
 SYNC_THREAD_NAME = "git-sync"
 
 
-def sync_all(repos: list[RepoConfig]) -> None:
+def sync_all(repos: list[RepoConfig], status: SyncStatus) -> None:
     """
-    Synchronize every repository once.
+    Synchronize every repository once and record how each one went.
 
     A repository that fails is logged and skipped, so one broken remote
-    cannot stop the others from being backed up.
+    cannot stop the others from being backed up. The full error goes to the
+    log only; the status gets its kind, which is safe to serve.
 
     Every exception is caught, not just :class:`SyncError`. This runs on a
     background thread, where an escaping exception would end the thread and
@@ -35,22 +37,28 @@ def sync_all(repos: list[RepoConfig]) -> None:
 
     Args:
         repos: Repositories to synchronize.
+        status: Where the outcome of each repository is recorded.
     """
     for repo in repos:
         try:
             sync_once(repo)
         except SyncError as error:
             logger.error("%s", error)
+            status.record_failure(repo.name, error.kind)
         except Exception:  # pylint: disable=broad-exception-caught
             logger.exception(
                 "Unexpected error while syncing repository '%s'", repo.name
             )
+            status.record_failure(repo.name, SyncErrorKind.UNEXPECTED)
+        else:
+            status.record_success(repo.name)
 
 
 def _sync_loop(
     repos: list[RepoConfig],
     interval_seconds: int,
     stop_event: threading.Event,
+    status: SyncStatus,
 ) -> None:
     """
     Synchronize the repositories until the stop event is set.
@@ -62,15 +70,17 @@ def _sync_loop(
         repos: Repositories to synchronize.
         interval_seconds: Seconds to wait between synchronizations.
         stop_event: Set this to end the loop.
+        status: Where the outcome of each repository is recorded.
     """
     while not stop_event.wait(interval_seconds):
-        sync_all(repos)
+        sync_all(repos, status)
 
 
 def start_sync_scheduler(
     repos: list[RepoConfig],
     interval_seconds: int,
     stop_event: threading.Event,
+    status: SyncStatus,
 ) -> threading.Thread:
     """
     Start synchronizing the repositories on a background thread.
@@ -83,13 +93,17 @@ def start_sync_scheduler(
         repos: Repositories to synchronize.
         interval_seconds: Seconds to wait between synchronizations.
         stop_event: Set this to end the loop.
+        status: Where the outcome of each repository is recorded. The
+            repositories are listed in it as soon as the thread starts.
 
     Returns:
         The started thread.
     """
+    status.enable([repo.name for repo in repos])
+
     thread = threading.Thread(
         target=_sync_loop,
-        args=(repos, interval_seconds, stop_event),
+        args=(repos, interval_seconds, stop_event, status),
         name=SYNC_THREAD_NAME,
         daemon=True,
     )

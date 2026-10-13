@@ -25,6 +25,7 @@ never be read as a git option such as ``--upload-pack``.
 import logging
 import subprocess
 import time
+from enum import StrEnum
 from pathlib import Path
 
 from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
@@ -51,8 +52,34 @@ CONFLICT_MARKER_WARNING = "leftover conflict marker"
 CONFLICT_MARKER_PREFIXES = ("<<<<<<<", ">>>>>>>")
 
 
+class SyncErrorKind(StrEnum):
+    """
+    Why a synchronization failed, coarse enough to show to anyone.
+
+    The message of a :class:`SyncError` can hold git's own output and the
+    names of the user's files. The kind holds neither, so it is the only
+    part of a failure that may leave the process through the HTTP API.
+    """
+
+    AUTH_FAILED = "auth_failed"
+    GIT_FAILED = "git_failed"
+    OPERATION_IN_PROGRESS = "operation_in_progress"
+    UNRESOLVED_CONFLICTS = "unresolved_conflicts"
+    CONFLICT_MARKERS = "conflict_markers"
+    UNEXPECTED = "unexpected"
+
+
 class SyncError(Exception):
-    """Raised when committing or pushing a repository fails."""
+    """
+    Raised when committing or pushing a repository fails.
+
+    Attributes:
+        kind: Why it failed, safe to expose where the message is not.
+    """
+
+    def __init__(self, message: str, kind: SyncErrorKind = SyncErrorKind.GIT_FAILED):
+        super().__init__(message)
+        self.kind = kind
 
 
 def _identity_options() -> list[str]:
@@ -108,9 +135,12 @@ def _run_git(
             "Failed to %s for repository '%s': %s", action, repo.name, reason
         )
         message = f"Failed to {action} for repository '{repo.name}': {reason}"
-        if repo.username and repo.token and is_auth_failure(reason):
-            message += f" ({AUTH_FAILURE_HINT})"
-        raise SyncError(message)
+        kind = SyncErrorKind.GIT_FAILED
+        if is_auth_failure(reason):
+            kind = SyncErrorKind.AUTH_FAILED
+            if repo.username and repo.token:
+                message += f" ({AUTH_FAILURE_HINT})"
+        raise SyncError(message, kind)
 
     return result
 
@@ -303,14 +333,16 @@ def _ensure_nothing_in_progress(repo: RepoConfig) -> None:
     if marker:
         raise SyncError(
             f"Not synchronizing repository '{repo.name}': a git operation is "
-            f"in progress ({marker}); finish or abort it first"
+            f"in progress ({marker}); finish or abort it first",
+            SyncErrorKind.OPERATION_IN_PROGRESS,
         )
 
     unmerged = _unmerged_files(repo)
     if unmerged:
         raise SyncError(
             f"Not synchronizing repository '{repo.name}': unresolved "
-            f"conflicts in {', '.join(unmerged)}"
+            f"conflicts in {', '.join(unmerged)}",
+            SyncErrorKind.UNRESOLVED_CONFLICTS,
         )
 
 
@@ -414,7 +446,8 @@ def commit_local_changes(repo: RepoConfig) -> bool:
         _run_git(repo, ["reset", "--quiet"], "unstage the refused changes", check=False)
         raise SyncError(
             f"Not committing in repository '{repo.name}': conflict markers "
-            f"left in {', '.join(marked)}"
+            f"left in {', '.join(marked)}",
+            SyncErrorKind.CONFLICT_MARKERS,
         )
 
     _run_git(

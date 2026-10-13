@@ -81,6 +81,79 @@ curl http://localhost:8091/{path-prefix}/health
 }
 ```
 
+### GET /git/status
+
+Reports how the git backup of each repository went last. Before this
+endpoint existed, a failing backup only showed up as a line in the
+service's log, which the workspace user never sees.
+
+**Request**:
+
+```bash
+# Without path prefix
+curl http://localhost:8091/git/status
+
+# With path prefix
+curl http://localhost:8091/{path-prefix}/git/status
+
+# Through nginx, as the user's browser reaches it
+curl http://localhost/{path-prefix}/git/status
+```
+
+nginx proxies this exact path to the admin service, next to
+`/{path-prefix}/services`. Other admin routes, such as `/health`, are not
+reachable through nginx.
+
+**Response**: Status 200 OK
+
+```json
+{
+  "enabled": true,
+  "repositories": {
+    "private": {
+      "last_attempt": "2026-10-09T12:05:00+00:00",
+      "last_success": "2026-10-09T12:00:00+00:00",
+      "last_error": {
+        "kind": "auth_failed",
+        "at": "2026-10-09T12:05:00+00:00"
+      }
+    },
+    "common": {
+      "last_attempt": "2026-10-09T12:05:00+00:00",
+      "last_success": "2026-10-09T12:05:00+00:00",
+      "last_error": null
+    }
+  }
+}
+```
+
+- `enabled` is `false`, with no repositories, when the backup is not
+  running: `config.env` is missing or unusable, or nothing has been cloned
+- A repository is listed as soon as the backup starts, with every field
+  `null` until its first sync, which happens after one interval
+- `last_error` is kept after a later success. If `last_success` is newer
+  than `last_error.at`, the error has since cleared
+- Timestamps are UTC, in ISO 8601
+
+`last_error.kind` is one of a fixed set of values:
+
+| Kind | Meaning |
+| --- | --- |
+| `auth_failed` | The remote rejected the credentials. Check `GIT_REPO_USERNAME` and `GIT_REPO_TOKEN` |
+| `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
+| `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
+| `conflict_markers` | A file about to be committed holds conflict markers (see [Conflicts](#a-file-holds-conflict-markers)) |
+| `git_failed` | Any other failing git command, for example an unreachable remote or a merge `-X ours` cannot resolve |
+| `unexpected` | An error that is not a git failure, for example `git` missing from the image |
+
+The endpoint never returns an error message, a file name, a URL, a branch
+or a username. The admin API has no authentication and listens on every
+interface, so anyone who can reach the port can read this response. The
+full reason is in the service's log, next to the same timestamp.
+
+The endpoint is read-only. There is deliberately no route that starts a
+backup: without authentication, anyone could trigger pushes.
+
 ### GET /
 
 Root endpoint providing service metadata and available endpoints.
@@ -103,7 +176,8 @@ curl http://localhost:8091/{path-prefix}
   "version": "0.1.1",
   "endpoints": {
     "/services": "Get list of available workspace services",
-    "/health": "Health check endpoint"
+    "/health": "Health check endpoint",
+    "/git/status": "Outcome of the most recent git backups"
   }
 }
 ```
@@ -382,7 +456,9 @@ Most of the time the backup needs nothing from the user. A few situations
 cannot be decided safely by a program, and there the backup stops for that
 repository, logs why, and tries again every interval until a person has
 sorted it out. It never guesses: nothing half finished is committed or
-pushed.
+pushed. While it waits, [`/git/status`](#get-gitstatus) shows the
+repository's `last_error.kind`, so the user can tell that something needs
+doing without reading the log.
 
 | Situation | Handled by | What the backup does | To get sync going again |
 | --- | --- | --- | --- |
@@ -551,6 +627,9 @@ decision what goes into it.
    not stop the others from being backed up. Unexpected errors are caught
    too: an exception escaping the background thread would end the backup
    silently while the service carried on serving requests
+6. The outcome of every repository is recorded in a `SyncStatus` and
+   served by [`/git/status`](#get-gitstatus): the time, and on failure
+   only the error's kind. The full error goes to the log
 
 The user never runs a git command: saving a file in Jupyter or VS Code is
 enough for it to reach the remote within one interval.
@@ -755,6 +834,46 @@ Both layers were checked against real git as well as `FakeGit`: the
 modify/delete case from the review, a hand-started merge left on a
 conflict, markers in a file, and a Markdown heading.
 
+### Implementation Report: Reporting Backup Failures
+
+A review found that a failing backup was silent: the only trace was a log
+line the user never sees, so a revoked token could stop the backup for
+days without anyone noticing.
+
+`/git/status` now reports the last attempt, last success and last error of
+each repository. The admin API has no authentication and binds to
+`0.0.0.0`, so the response must not reveal anything an outsider could use,
+and that drove the design:
+
+- **Only an error kind leaves the process.** A `SyncError` message holds
+  git's own stderr, which can contain a remote URL or a path, and the names
+  of the user's files. Filtering that text was rejected: git can print
+  something new at any time, and a filter only removes what it knows
+  about. Instead `SyncError` carries a `SyncErrorKind` from a fixed list,
+  chosen where the error is raised, and only that kind is stored. There is
+  no field for a message in `RepoStatus`, so one cannot be added by
+  accident.
+- **A separate route rather than `/health`.** `/health` answers "is the
+  process alive?". Health checks act on that answer, for example by
+  restarting a container. A broken backup is no reason to restart a
+  workspace the user is working in.
+- **Read-only.** No route starts a backup or changes the status. A
+  "sync now" button needs authentication first.
+- **No global state.** `main.cli()` creates one `SyncStatus` and passes it
+  to both `start_git_sync()` and `create_app()`. The sync thread writes and
+  request handlers read, so every access goes through one lock, and
+  `snapshot()` returns a copy.
+
+An auth failure is now classified as `auth_failed` even when no
+credentials are configured. The hint about an invalid or expired token is
+still only added to the message when there is a token to blame.
+
+**Not covered:** a repository that fails to *clone* on startup is never
+scheduled, so it does not appear in `/git/status`, and if no repository
+was cloned the endpoint reports `enabled: false`. A wrong token on first
+start is therefore still only visible in the log. This is left for a
+separate issue.
+
 ### Package Layout
 
 The package is split by layer, so that transport concerns stay separate from
@@ -776,6 +895,7 @@ src/admin/
     ├── clone.py                   # Clones a single RepoConfig
     ├── sync.py                    # Commits and pushes one working tree
     ├── scheduler.py               # Runs the sync on a timer, in the background
+    ├── status.py                  # Outcome of recent syncs, for /git/status
     └── bootstrap.py               # Wires the above together on startup
 ```
 
@@ -785,8 +905,8 @@ module imports the layer above it, so each can be tested on its own.
 ### Components
 
 - **HTTP API** (`src/admin/api.py`): FastAPI application factory
-  (`create_app`), the router holding the `/`, `/services` and `/health`
-  routes, path prefix normalization, and `APP_VERSION`. Contains transport
+  (`create_app`), the router holding the `/`, `/services`, `/health` and
+  `/git/status` routes, path prefix normalization, and `APP_VERSION`. Contains transport
   logic only
 - **Service Discovery** (`src/admin/services.py`): `load_services()`, which
   reads the service catalogue from the JSON template
@@ -828,7 +948,12 @@ module imports the layer above it, so each can be tested on its own.
     `DEFAULT_SYNC_INTERVAL_SECONDS` (300) seconds. A failing repository is
     logged and skipped rather than stopping the loop, and `sync_all()`
     deliberately catches every exception, not just `SyncError`, because
-    the thread is the only thing keeping the backup alive
+    the thread is the only thing keeping the backup alive. Each
+    repository's outcome is recorded in the `SyncStatus` it is given
+  - `status.py`: `SyncStatus` holds the last attempt, success and error
+    kind of every scheduled repository behind one lock, written by the
+    sync thread and read by `/git/status`. It stores a `SyncErrorKind`,
+    never an error message
   - `bootstrap.py`: `clone_configured_repos()` and `start_git_sync()` wire
     the other modules together and are called once from `admin.main.cli()`
     on startup. `clone_configured_repos()` clones every repository
@@ -870,14 +995,15 @@ obvious test file:
 
 | Test file             | Module under test  | Covers                                     |
 | --------------------- | ------------------ | ------------------------------------------ |
-| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling     |
+| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/git/status` serving the live status and refusing writes |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
 | `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format`, https-only URLs without credentials |
 | `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped |
+| `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message |
+| `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
