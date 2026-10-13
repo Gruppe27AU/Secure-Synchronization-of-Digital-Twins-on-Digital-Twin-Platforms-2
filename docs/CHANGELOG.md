@@ -2,6 +2,18 @@
 
 The main changes made so far are listed here.
 
+## Week of 12-Oct-2026
+
+### Fixed
+
+* A file changed on one side and deleted on the other no longer stops the
+  git backup. Local files win: a file changed in the workspace is kept and
+  pushed back, a file deleted in the workspace stays deleted. Before, the
+  merge failed on every interval and nothing was pushed
+* A conflicted file now keeps the workspace's whole version. `-X ours`
+  kept the local side only for the conflicting lines and merged the rest of
+  the remote's changes into the file, which could break a notebook
+
 ## Week of 5-Oct-2026
 
 ### Added

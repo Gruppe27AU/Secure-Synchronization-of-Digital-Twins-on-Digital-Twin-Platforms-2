@@ -238,25 +238,67 @@ def _count_commits(repo: RepoConfig, revision_range: str, action: str) -> int:
     return int(result.stdout.strip() or "0")
 
 
-def _conflicted_files(repo: RepoConfig) -> list[str]:
+def _local_side_of_conflicts(repo: RepoConfig) -> tuple[list[str], list[str]]:
     """
-    List the files a failed merge left unresolved.
+    Split the conflicted files by whether the workspace still has them.
+
+    Git keeps the workspace's version of a conflicted file as stage 2.
+    Without one, the workspace deleted the file.
 
     Args:
         repo: Repository in the middle of a conflicted merge.
 
     Returns:
-        The conflicted paths, in the order git reports them.
+        The paths to keep, and the paths to delete.
 
     Raises:
         SyncError: If the list cannot be read.
     """
     result = _run_git(
-        repo,
-        ["diff", "--name-only", "--diff-filter=U"],
-        "list the conflicted files",
+        repo, ["ls-files", "--unmerged", "-z"], "list the conflicted files"
     )
-    return result.stdout.split()
+
+    stages: dict[str, set[str]] = {}
+    for entry in result.stdout.split("\0"):
+        if "\t" not in entry:
+            continue
+        info, path = entry.split("\t", 1)
+        stages.setdefault(path, set()).add(info.split()[-1])
+
+    kept = [path for path, found in stages.items() if "2" in found]
+    removed = [path for path, found in stages.items() if "2" not in found]
+    return kept, removed
+
+
+def _take_local_side(
+    repo: RepoConfig, kept: list[str], removed: list[str]
+) -> None:
+    """
+    Resolve the conflicted files by taking the whole local version.
+
+    Args:
+        repo: Repository in the middle of a conflicted merge.
+        kept: Paths whose local version is kept.
+        removed: Paths the workspace deleted.
+
+    Raises:
+        SyncError: If a file cannot be resolved.
+    """
+    if kept:
+        _run_git(
+            repo,
+            ["checkout", "--ours", "--", *kept],
+            "take the local version of the conflicted files",
+        )
+        _run_git(
+            repo, ["add", "--", *kept], "mark the conflicted files resolved"
+        )
+    if removed:
+        _run_git(
+            repo,
+            ["rm", "--quiet", "--", *removed],
+            "keep the local deletion of the conflicted files",
+        )
 
 
 def _operation_in_progress(repo: RepoConfig) -> str | None:
@@ -465,20 +507,16 @@ def pull_changes(repo: RepoConfig) -> list[str]:
     """
     Merge the remote's changes in, keeping local files on conflict.
 
-    The merge is attempted twice on purpose. The first attempt is an
-    ordinary merge, whose only job is to *detect* conflicts: git names
-    every file it could not resolve, which a merge using the ``ours``
-    strategy would silently swallow. That attempt is then thrown away and
-    the merge redone preferring the local side, so the conflicted files
-    keep the workspace's version while the rest of the remote's work is
-    still merged in.
+    A conflicted file keeps its whole local version, or stays deleted if
+    the workspace deleted it. Files without a conflict get the remote's
+    changes.
 
     Args:
         repo: Repository to pull into.
 
     Returns:
-        The files whose local version was kept. Empty when the merge was
-        clean or there was nothing to merge.
+        The conflicted files. Empty when the merge was clean or there was
+        nothing to merge.
 
     Raises:
         SyncError: If fetching or merging fails for any reason other than
@@ -513,20 +551,29 @@ def pull_changes(repo: RepoConfig) -> list[str]:
         )
         return []
 
-    conflicted = _conflicted_files(repo)
-    logger.warning(
-        "Merge conflict in repository '%s' affecting %d file(s): %s",
-        repo.name,
-        len(conflicted),
-        ", ".join(conflicted),
-    )
-
-    _run_git(repo, ["merge", "--abort"], "abort the conflicted merge")
     try:
+        kept, removed = _local_side_of_conflicts(repo)
+        if not kept and not removed:
+            # Stopped without a conflict, e.g. an untracked file in the way.
+            reason = attempt.stderr.strip() or attempt.stdout.strip()
+            raise SyncError(
+                f"Failed to merge the remote's changes for repository "
+                f"'{repo.name}': {reason}"
+            )
+
+        conflicted = kept + removed
+        logger.warning(
+            "Merge conflict in repository '%s' affecting %d file(s): %s",
+            repo.name,
+            len(conflicted),
+            ", ".join(conflicted),
+        )
+
+        _take_local_side(repo, kept, removed)
         _run_git(
             repo,
-            ["merge", "-X", "ours", remote_ref],
-            "merge the remote's changes keeping local files",   
+            ["commit", "--no-edit"],
+            "conclude the merge keeping local files",
             options=_identity_options(),
         )
     except SyncError:
