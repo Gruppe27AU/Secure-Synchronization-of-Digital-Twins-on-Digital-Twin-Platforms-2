@@ -45,6 +45,11 @@ function start_vscode_server {
 
 function start_admin_server {
     local path_prefix="${MAIN_USER:-}"
+    # The git backup reads ${WORKSPACE_APP_DIR}/config.env and stays disabled
+    # when that file is absent. Defaulting to the persistent dir lets the
+    # operator provision it from the host volume. Set here rather than as a
+    # Dockerfile ENV, which .docker_set_envs would pin over runtime values.
+    export WORKSPACE_APP_DIR="${WORKSPACE_APP_DIR:-${PERSISTENT_DIR}}"
     if [[ -n "${path_prefix}" ]]; then
         workspace-admin --host 0.0.0.0 --port "${ADMIN_SERVER_PORT}" --path-prefix "${path_prefix}" &
     else
