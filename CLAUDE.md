@@ -310,7 +310,8 @@ The package is layered, and the test files mirror it:
 Dependencies point one way only: `main` → `api` → `services`.
 
 The `git/` package backs the workspace up to its remotes and is layered the
-same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`:
+same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
+→ `runner`:
 
 - `config.py`: reads `config.env` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
@@ -321,7 +322,10 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
 - `sync.py`: one cycle for a cloned tree: commit, pull, push. Local files
   win a conflict
 - `scheduler.py`: runs the cycle on a background daemon thread
-- `bootstrap.py`: called once from `main.cli()` on startup
+- `bootstrap.py`: called once from `main.cli()` on startup; clones and
+  starts the sync on a background thread, so the HTTP API never waits
+- `runner.py`: runs every git command with prompts off, empty stdin and a
+  time limit, stopping an overrunning command and its child processes
 
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.

@@ -8,11 +8,11 @@ locations, as required by the workspace's persistence layout.
 """
 
 import logging
-import subprocess
 from pathlib import Path
 
 from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
 from admin.git.config import RepoConfig
+from admin.git.runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError, run_git
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,8 @@ def clone_asset(repo: RepoConfig) -> bool:
         ``repo.git_dir`` already holds a clone.
 
     Raises:
-        CloneError: If ``git clone`` fails.
+        CloneError: If ``git clone`` fails or does not finish within
+            :data:`admin.git.runner.REMOTE_TIMEOUT_SECONDS`.
     """
     if is_cloned(repo.git_dir):
         logger.info(
@@ -89,12 +90,19 @@ def clone_asset(repo: RepoConfig) -> bool:
     repo.git_dir.parent.mkdir(parents=True, exist_ok=True)
     repo.work_tree.mkdir(parents=True, exist_ok=True)
 
-    result = subprocess.run(
-        _build_clone_command(repo),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = run_git(_build_clone_command(repo), REMOTE_TIMEOUT_SECONDS)
+    except GitTimeoutError as error:
+        logger.error(
+            "Timed out cloning repository '%s' (%s, branch %s): %s",
+            repo.name,
+            repo.repo_url,
+            repo.branch,
+            error,
+        )
+        raise CloneError(
+            f"git clone failed for repository '{repo.name}': {error}"
+        ) from error
 
     if result.returncode != 0:
         stderr = result.stderr.strip()

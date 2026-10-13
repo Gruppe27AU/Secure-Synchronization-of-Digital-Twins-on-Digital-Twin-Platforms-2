@@ -3,9 +3,9 @@ Unit tests for synchronizing a workspace repository with its remote.
 
 Covers :mod:`admin.git.sync`: committing what the user changed, merging
 the remote's work in, keeping local files when the two sides collide, and
-pushing the result. Real git is never invoked - ``subprocess.run`` is
-replaced by :class:`FakeGit`, which records the commands and answers them
-with canned results.
+pushing the result. Real git is never invoked -
+:func:`admin.git.runner.run_git` is replaced by :class:`FakeGit`, which
+records the commands and answers them with canned results.
 """
 
 import re
@@ -14,6 +14,12 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
+from admin.git import sync
+from admin.git.runner import (
+    LOCAL_TIMEOUT_SECONDS,
+    REMOTE_TIMEOUT_SECONDS,
+    GitTimeoutError,
+)
 from admin.git.sync import (
     SyncError,
     build_commit_message,
@@ -83,7 +89,7 @@ def _command_key(command):
 @dataclass
 class FakeGit:  # pylint: disable=too-many-instance-attributes
     """
-    Stands in for ``subprocess.run`` and records every git call.
+    Stands in for :func:`admin.git.runner.run_git` and records every git call.
 
     Args:
         status_output: What ``git status --porcelain`` prints. Empty means
@@ -112,10 +118,12 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
     marker_output: str = ""
     staged_files: dict = field(default_factory=dict)
     commands: list = field(default_factory=list)
+    timeouts: list = field(default_factory=list)
 
-    def run(self, command, **_kwargs):
-        """Record the command and answer it."""
+    def run(self, command, timeout):
+        """Record the command and its time limit, and answer it."""
         self.commands.append(command)
+        self.timeouts.append(timeout)
         key = _command_key(command)
 
         if key == self.failing:
@@ -166,7 +174,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
 
 def _install(monkeypatch, fake_git):
     """Make admin.git.sync use the fake instead of real git."""
-    monkeypatch.setattr(subprocess, "run", fake_git.run)
+    monkeypatch.setattr(sync, "run_git", fake_git.run)
     return fake_git
 
 
@@ -531,7 +539,7 @@ def test_push_if_ahead_raises_when_the_push_fails(monkeypatch, repo):
 def _fake_run_push_auth_failure(auth_failure_stderr):
     """Build a fake subprocess.run: one outgoing commit, then a failed push."""
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, _timeout):
         key = _command_key(command)
         if key == "push":
             return subprocess.CompletedProcess(command, 1, "", auth_failure_stderr)
@@ -552,7 +560,7 @@ def test_push_if_ahead_raises_clear_error_on_invalid_token(
         "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
     )
     monkeypatch.setattr(
-        subprocess, "run", _fake_run_push_auth_failure(auth_failure_stderr)
+        sync, "run_git", _fake_run_push_auth_failure(auth_failure_stderr)
     )
 
     with pytest.raises(SyncError) as excinfo:
@@ -571,7 +579,7 @@ def test_push_if_ahead_raises_plain_error_without_credentials_on_auth_shaped_fai
         "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
     )
     monkeypatch.setattr(
-        subprocess, "run", _fake_run_push_auth_failure(auth_failure_stderr)
+        sync, "run_git", _fake_run_push_auth_failure(auth_failure_stderr)
     )
 
     with pytest.raises(SyncError) as excinfo:
@@ -605,6 +613,51 @@ def test_push_has_no_auth_header_without_credentials(monkeypatch, repo):
     assert not any(
         "http.extraHeader" in part for part in fake_git.command_for("push")
     )
+
+
+# --------------------------------------------------------------------------
+# Time limits
+# --------------------------------------------------------------------------
+
+
+def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):
+    """Test fetch and push may take longer than the local commands."""
+    fake_git = _install(
+        monkeypatch, FakeGit(status_output=" M file.txt", incoming=1, outgoing=1)
+    )
+
+    sync_once(repo)
+
+    for key, timeout in zip(fake_git.keys, fake_git.timeouts):
+        expected = (
+            REMOTE_TIMEOUT_SECONDS if key in ("fetch", "push") else LOCAL_TIMEOUT_SECONDS
+        )
+        assert timeout == expected, key
+
+
+@pytest.mark.parametrize(
+    ("stuck", "fake_git", "action"),
+    [
+        ("fetch", FakeGit(), "fetch from the remote"),
+        ("push", FakeGit(outgoing=1), "push changes"),
+        # The detecting merge is allowed to fail, but not to hang.
+        ("merge", FakeGit(incoming=1), "merge the remote's changes"),
+    ],
+)
+def test_a_command_that_times_out_raises_sync_error(
+    monkeypatch, repo, stuck, fake_git, action
+):
+    """Test a hung git command ends the cycle with SyncError."""
+
+    def run(command, timeout):
+        if _command_key(command) == stuck:
+            raise GitTimeoutError("git did not finish within 1 seconds and was stopped")
+        return fake_git.run(command, timeout)
+
+    monkeypatch.setattr(sync, "run_git", run)
+
+    with pytest.raises(SyncError, match=f"{action}.*did not finish"):
+        sync_once(repo)
 
 
 # --------------------------------------------------------------------------

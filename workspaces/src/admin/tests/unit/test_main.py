@@ -1,8 +1,8 @@
 """
 Unit tests for the command-line entry point.
 
-Covers :mod:`admin.main`: argument parsing and the CLI flags that exit
-without starting the HTTP server.
+Covers :mod:`admin.main`: argument parsing, the CLI flags that exit
+without starting the HTTP server, and the order of the startup sequence.
 """
 
 import json
@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
+from admin import main
 from admin.main import build_parser, cli
 
 
@@ -92,3 +93,17 @@ def test_build_parser_rejects_an_unusable_sync_interval(value, capsys):
         build_parser().parse_args(["--sync-interval", value])
 
     assert "--sync-interval" in capsys.readouterr().err
+
+
+def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
+    """Test startup hands the git backup off before serving, not after a clone."""
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["workspace-admin", "--sync-interval", "42"])
+    monkeypatch.setattr(
+        main, "start_git_backup", lambda interval: calls.append(("backup", interval))
+    )
+    monkeypatch.setattr(main, "_serve", lambda _args: calls.append(("serve",)))
+
+    cli()
+
+    assert calls == [("backup", 42), ("serve",)]

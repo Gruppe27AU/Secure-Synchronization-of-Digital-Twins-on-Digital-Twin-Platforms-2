@@ -13,6 +13,7 @@ import pytest
 
 from admin.git import config as config_module
 from admin.git.config import ASSET_NAMES, ConfigError, load_config
+from admin.git.runner import GitTimeoutError
 
 VALID_CONFIG = """\
 HOME_DIR = "/home/dtaas-user"
@@ -333,3 +334,15 @@ def test_url_without_host_is_rejected(tmp_path):
 
     with pytest.raises(ConfigError, match="has no host"):
         load_config(write_config(tmp_path, content))
+
+
+def test_branch_check_that_hangs_is_reported(tmp_path, monkeypatch):
+    """Test a git that never answers the branch check fails the config load."""
+
+    def fake_run(_command, _timeout):
+        raise GitTimeoutError("git did not finish within 300 seconds and was stopped")
+
+    monkeypatch.setattr(config_module, "run_git", fake_run)
+
+    with pytest.raises(ConfigError, match="could not run git to check"):
+        load_config(write_config(tmp_path, VALID_CONFIG))

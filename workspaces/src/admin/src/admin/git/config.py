@@ -10,12 +10,13 @@ against ``WORKSPACE_APP_DIR``, so callers receive absolute paths and never
 have to know which fragment belongs to which root.
 """
 
-import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from admin.git.runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
 
 #: Template shipped with the package, used when the user has no config file.
 EXAMPLE_CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.env.example"
@@ -151,13 +152,10 @@ def _validate_branch(branch: str, where: str, source: Path) -> str:
         raise invalid
 
     try:
-        result = subprocess.run(
-            ["git", "check-ref-format", "--branch", branch],
-            capture_output=True,
-            text=True,
-            check=False,
+        result = run_git(
+            ["git", "check-ref-format", "--branch", branch], LOCAL_TIMEOUT_SECONDS
         )
-    except OSError as error:
+    except (OSError, GitTimeoutError) as error:
         raise ConfigError(
             f"{source}: could not run git to check 'GIT_REPO_BRANCH' in "
             f"{where}: {error}"

@@ -5,7 +5,9 @@ Builds the one-off ``-c http.extraHeader=...`` option that
 :mod:`admin.git.clone` and :mod:`admin.git.sync` pass to ``git``, so
 credentials are authenticated per command without ever being written into
 a repository's own ``.git/config`` or embedded in its remote URL. Every
-command that contacts the remote is also limited to the https transport.
+command that contacts the remote is also limited to the https transport,
+cannot fall back to a credential helper that might prompt, and gives up on a
+transfer that has stalled.
 Also recognizes when a failed git command was rejected because of those
 credentials, so callers can raise a clear, token-free error instead of
 just forwarding git's raw failure message.
@@ -30,6 +32,25 @@ PROTOCOL_OPTIONS = [
     "protocol.allow=never",
     "-c",
     "protocol.https.allow=always",
+]
+
+#: Git options that stop a command which talks to the remote from waiting
+#: on anything but the remote itself. Resetting ``credential.helper`` to an
+#: empty list matters because a helper such as Git Credential Manager can
+#: prompt even with ``GIT_TERMINAL_PROMPT=0``; credentials only ever come
+#: from :func:`auth_header_options`. Once the connection is up, the
+#: ``lowSpeed`` pair aborts a transfer that has moved less than 1 byte per
+#: second for 60 seconds, well before
+#: :data:`admin.git.runner.REMOTE_TIMEOUT_SECONDS` would. It does not cover
+#: a stall while connecting, such as a TLS handshake that never completes;
+#: that is left to the time limit.
+NO_WAIT_OPTIONS = [
+    "-c",
+    "credential.helper=",
+    "-c",
+    "http.lowSpeedLimit=1",
+    "-c",
+    "http.lowSpeedTime=60",
 ]
 
 #: Substrings that appear in git/GitLab's own stderr when HTTP credentials
@@ -87,14 +108,17 @@ def remote_options(repo: RepoConfig) -> list[str]:
     Only https is allowed, so a URL that is not https - ``file://``, a local
     path, ``ssh://`` or ``ext::`` - is refused by git itself, even if it
     got past :mod:`admin.git.config` or was edited into ``.git/config``.
+    No credential helper is consulted and a stalled transfer is abandoned
+    (:data:`NO_WAIT_OPTIONS`).
 
     Args:
         repo: Repository configuration, possibly without credentials.
 
     Returns:
-        The protocol restriction followed by :func:`auth_header_options`.
+        The protocol restriction and :data:`NO_WAIT_OPTIONS`, followed by
+        :func:`auth_header_options`.
     """
-    return [*PROTOCOL_OPTIONS, *auth_header_options(repo)]
+    return [*PROTOCOL_OPTIONS, *NO_WAIT_OPTIONS, *auth_header_options(repo)]
 
 
 def is_auth_failure(stderr: str) -> bool:

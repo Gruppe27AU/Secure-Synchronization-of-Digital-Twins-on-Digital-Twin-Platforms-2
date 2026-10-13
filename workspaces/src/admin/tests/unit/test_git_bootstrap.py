@@ -3,10 +3,11 @@ Unit tests for the git asset startup bootstrap.
 
 Covers :mod:`admin.git.bootstrap`: cloning every configured repository on
 startup and starting the periodic sync for the repositories that are
-actually cloned, without crashing the service when config loading or
-cloning fails.
+actually cloned, both on a background thread so the caller is never held
+up, without crashing the service when config loading or cloning fails.
 """
 
+import threading
 from pathlib import Path
 
 from admin.git import bootstrap
@@ -168,3 +169,58 @@ def test_start_git_sync_returns_none_when_nothing_is_cloned(monkeypatch, caplog)
         assert bootstrap.start_git_sync() is None
 
     assert "git sync not started" in caplog.text
+
+
+def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
+    """Test a slow clone does not hold up the caller, i.e. the HTTP API."""
+    clone_started = threading.Event()
+    release_clone = threading.Event()
+    steps = []
+
+    def slow_clone():
+        steps.append("clone")
+        clone_started.set()
+        release_clone.wait(timeout=30)
+
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", slow_clone)
+    monkeypatch.setattr(bootstrap, "start_git_sync", steps.append)
+
+    thread = bootstrap.start_git_backup(60)
+
+    assert clone_started.wait(timeout=30)
+    # Back in the caller while the clone is still blocked.
+    assert thread.is_alive()
+    assert steps == ["clone"]
+
+    release_clone.set()
+    thread.join(timeout=30)
+
+    # The sync is only started once the clone is done.
+    assert steps == ["clone", 60]
+
+
+def test_start_git_backup_runs_on_a_named_daemon_thread(monkeypatch):
+    """Test the thread cannot keep the process alive and is recognisable."""
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda: {})
+    monkeypatch.setattr(bootstrap, "start_git_sync", lambda interval: None)
+
+    thread = bootstrap.start_git_backup(60)
+    thread.join(timeout=30)
+
+    assert thread.daemon
+    assert thread.name == bootstrap.BOOTSTRAP_THREAD_NAME
+
+
+def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
+    """Test an error on the background thread is logged, not lost."""
+
+    def broken_clone():
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", broken_clone)
+
+    with caplog.at_level("ERROR"):
+        bootstrap.start_git_backup(60).join(timeout=30)
+
+    assert "Unexpected error while starting the git backup" in caplog.text
+    assert "disk on fire" in caplog.text
