@@ -16,6 +16,7 @@ import pytest
 
 from admin.git.sync import (
     SyncError,
+    SyncErrorKind,
     build_commit_message,
     commit_local_changes,
     has_changes,
@@ -221,8 +222,10 @@ def test_commit_refuses_while_an_operation_is_in_progress(
         monkeypatch, FakeGit(git_dir=str(git_dir), status_output="UD f.txt")
     )
 
-    with pytest.raises(SyncError, match=marker):
+    with pytest.raises(SyncError, match=marker) as excinfo:
         commit_local_changes(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.OPERATION_IN_PROGRESS
 
     assert "add" not in fake_git.keys
     assert "commit" not in fake_git.keys
@@ -240,8 +243,12 @@ def test_commit_refuses_unmerged_files(monkeypatch, repo):
         ),
     )
 
-    with pytest.raises(SyncError, match=r"unresolved conflicts in f\.txt$"):
+    with pytest.raises(
+        SyncError, match=r"unresolved conflicts in f\.txt$"
+    ) as excinfo:
         commit_local_changes(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.UNRESOLVED_CONFLICTS
 
     assert "add" not in fake_git.keys
 
@@ -263,8 +270,12 @@ def test_commit_refuses_staged_conflict_markers(monkeypatch, repo):
         ),
     )
 
-    with pytest.raises(SyncError, match=r"conflict markers left in notes\.md$"):
+    with pytest.raises(
+        SyncError, match=r"conflict markers left in notes\.md$"
+    ) as excinfo:
         commit_local_changes(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.CONFLICT_MARKERS
 
     assert "commit" not in fake_git.keys
     # Unstaged again, so the working tree is left as the user had it.
@@ -445,8 +456,10 @@ def test_pull_changes_raises_when_the_fetch_fails(monkeypatch, repo):
     """Test an unreachable remote is surfaced as SyncError."""
     _install(monkeypatch, FakeGit(failing="fetch"))
 
-    with pytest.raises(SyncError, match="fetch from the remote"):
+    with pytest.raises(SyncError, match="fetch from the remote") as excinfo:
         pull_changes(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.GIT_FAILED
 
 
 def test_pull_changes_raises_when_the_resolving_merge_fails(monkeypatch, repo):
@@ -561,6 +574,7 @@ def test_push_if_ahead_raises_clear_error_on_invalid_token(
     message = str(excinfo.value)
     assert "invalid or expired" in message
     assert "secret-token" not in message
+    assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
 
 
 def test_push_if_ahead_raises_plain_error_without_credentials_on_auth_shaped_failure(
@@ -578,6 +592,8 @@ def test_push_if_ahead_raises_plain_error_without_credentials_on_auth_shaped_fai
         push_if_ahead(repo)
 
     assert "invalid or expired" not in str(excinfo.value)
+    # Still an auth failure, even with no hint to give.
+    assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
 
 
 def test_push_sends_auth_header_without_exposing_the_token(

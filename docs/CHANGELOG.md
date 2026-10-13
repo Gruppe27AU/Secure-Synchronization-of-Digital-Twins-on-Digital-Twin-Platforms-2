@@ -4,6 +4,16 @@ The main changes made so far are listed here.
 
 ## Week of 5-Oct-2026
 
+### Added
+
+* A failing git backup is no longer silent. The admin service has a new
+  read-only `/git/status` endpoint that reports, for each repository, the
+  last attempt, the last success and the kind of the last error, such as
+  `auth_failed` or `unresolved_conflicts`. The endpoint is
+  unauthenticated, so it never returns an error message, a file name or a
+  URL; those stay in the log. A repository that fails to clone on startup
+  is not reported yet
+
 ### Fixed
 
 * A conflict that `-X ours` cannot resolve, such as a file changed on one

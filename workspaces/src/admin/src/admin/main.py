@@ -26,6 +26,7 @@ import uvicorn
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
 from admin.git.bootstrap import clone_configured_repos, start_git_sync
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
+from admin.git.status import SyncStatus
 from admin.services import load_services
 
 #: Format of the log records written to the console by the git backup.
@@ -138,7 +139,7 @@ def _print_service_catalogue() -> None:
     print(json.dumps(load_services(), indent=2))
 
 
-def _start_git_backup(interval_seconds: int) -> None:
+def _start_git_backup(interval_seconds: int, status: SyncStatus) -> None:
     """
     Bring the git-backed workspace assets up before the server starts.
 
@@ -149,9 +150,10 @@ def _start_git_backup(interval_seconds: int) -> None:
 
     Args:
         interval_seconds: Seconds to wait between backups.
+        status: Where the outcome of every backup is recorded.
     """
     clone_configured_repos()
-    start_git_sync(interval_seconds)
+    start_git_sync(status, interval_seconds)
 
 
 def _print_startup_banner(host: str, port: int, prefix: str) -> None:
@@ -167,22 +169,24 @@ def _print_startup_banner(host: str, port: int, prefix: str) -> None:
     print("Service endpoints:")
     print(f"  - http://{host}:{port}{prefix}/services")
     print(f"  - http://{host}:{port}{prefix}/health")
+    print(f"  - http://{host}:{port}{prefix}/git/status")
     print(f"  - http://{host}:{port}{prefix}/")
 
 
-def _serve(args: argparse.Namespace) -> None:
+def _serve(args: argparse.Namespace, status: SyncStatus) -> None:
     """
     Build the application and serve it until the process is stopped.
 
     Args:
         args: The parsed command-line arguments.
+        status: Outcome of the git backups, served by ``/git/status``.
     """
     _print_startup_banner(
         args.host, args.port, normalize_path_prefix(args.path_prefix)
     )
 
     uvicorn.run(
-        create_app(args.path_prefix),
+        create_app(args.path_prefix, status),
         host=args.host,
         port=args.port,
         reload=args.reload
@@ -204,8 +208,9 @@ def cli() -> None:
         _print_service_catalogue()
         sys.exit(0)
 
-    _start_git_backup(args.sync_interval)
-    _serve(args)
+    status = SyncStatus()
+    _start_git_backup(args.sync_interval, status)
+    _serve(args, status)
 
 
 if __name__ == "__main__":
