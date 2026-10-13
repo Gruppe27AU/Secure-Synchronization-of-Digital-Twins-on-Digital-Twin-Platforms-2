@@ -19,8 +19,8 @@ from admin.git.config import ConfigError
 from tests.helpers.repo_factory import make_repo
 
 
-@pytest.fixture(autouse=True)
-def config_file(tmp_path, monkeypatch):
+@pytest.fixture(name="config_file", autouse=True)
+def fixture_config_file(tmp_path, monkeypatch):
     """
     Point $WORKSPACE_APP_DIR at a directory holding a config.env.
 
