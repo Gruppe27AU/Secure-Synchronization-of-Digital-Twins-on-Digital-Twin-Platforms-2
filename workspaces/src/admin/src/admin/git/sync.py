@@ -30,6 +30,12 @@ from pathlib import Path
 
 from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
 from admin.git.config import RepoConfig
+from admin.git.runner import (
+    LOCAL_TIMEOUT_SECONDS,
+    REMOTE_TIMEOUT_SECONDS,
+    GitTimeoutError,
+    run_git,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,26 +103,22 @@ def _identity_options() -> list[str]:
     ]
 
 
-def _run_git(
+def _execute(
     repo: RepoConfig,
-    args: list[str],
+    command: list[str],
     action: str,
-    options: list[str] | None = None,
-    check: bool = True,
+    check: bool,
+    timeout: float,
 ) -> subprocess.CompletedProcess[str]:
     """
-    Run one git command inside the repository's working tree.
+    Run a built git command and turn its failures into :class:`SyncError`.
 
     Args:
-        repo: Repository to run the command for.
-        args: The git subcommand and its arguments, for example
-            ``["push", "origin", "main"]``.
+        repo: Repository the command is for.
+        command: The full command, starting with ``git``.
         action: What the command is doing, used in error messages.
-        options: Git options placed before the subcommand, such as the
-            credentials header.
-        check: Raise when git fails. Pass False for a command whose
-            failure is an expected outcome rather than an error, such as
-            the merge that is used to detect conflicts.
+        check: Raise when git exits with a non-zero status.
+        timeout: Seconds the command may take.
 
     Returns:
         The completed process. When ``check`` is False, this may describe
@@ -124,10 +126,17 @@ def _run_git(
 
     Raises:
         SyncError: If git exits with a non-zero status and ``check`` is
-            True.
+            True, or does not finish in time whatever ``check`` is.
     """
-    command = ["git", "-C", str(repo.work_tree), *(options or []), *args]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = run_git(command, timeout)
+    except GitTimeoutError as error:
+        logger.error(
+            "Failed to %s for repository '%s': %s", action, repo.name, error
+        )
+        raise SyncError(
+            f"Failed to {action} for repository '{repo.name}': {error}"
+        ) from error
 
     if check and result.returncode != 0:
         reason = result.stderr.strip() or result.stdout.strip()
@@ -143,6 +152,75 @@ def _run_git(
         raise SyncError(message, kind)
 
     return result
+
+
+def _run_git(
+    repo: RepoConfig,
+    args: list[str],
+    action: str,
+    options: list[str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Run one local git command inside the repository's working tree.
+
+    Args:
+        repo: Repository to run the command for.
+        args: The git subcommand and its arguments, for example
+            ``["status", "--porcelain"]``.
+        action: What the command is doing, used in error messages.
+        options: Git options placed before the subcommand, such as the
+            commit identity.
+        check: Raise when git fails. Pass False for a command whose
+            failure is an expected outcome rather than an error, such as
+            the merge that is used to detect conflicts.
+
+    Returns:
+        The completed process. When ``check`` is False, this may describe
+        a failed command.
+
+    Raises:
+        SyncError: If git exits with a non-zero status and ``check`` is
+            True, or does not finish within
+            :data:`admin.git.runner.LOCAL_TIMEOUT_SECONDS` whatever
+            ``check`` is.
+    """
+    command = ["git", "-C", str(repo.work_tree), *(options or []), *args]
+    return _execute(repo, command, action, check, LOCAL_TIMEOUT_SECONDS)
+
+
+def _run_remote_git(
+    repo: RepoConfig,
+    args: list[str],
+    action: str,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Run one git command that talks to the remote.
+
+    Always adds :func:`admin.git.auth.remote_options` - https only, no
+    credential helpers, stalled transfers abandoned, the credentials
+    header - and allows :data:`admin.git.runner.REMOTE_TIMEOUT_SECONDS`.
+
+    Args:
+        repo: Repository to run the command for.
+        args: The git subcommand and its arguments, for example
+            ``["push", "--", "origin", "refs/heads/main:refs/heads/main"]``.
+        action: What the command is doing, used in error messages.
+
+    Returns:
+        The completed, successful process.
+
+    Raises:
+        SyncError: If git fails or does not finish in time.
+    """
+    command = [
+        "git",
+        "-C",
+        str(repo.work_tree),
+        *remote_options(repo),
+        *args,
+    ]
+    return _execute(repo, command, action, True, REMOTE_TIMEOUT_SECONDS)
 
 
 def has_changes(repo: RepoConfig) -> bool:
@@ -522,11 +600,10 @@ def pull_changes(repo: RepoConfig) -> list[str]:
         SyncError: If fetching or merging fails for any reason other than
             a conflict.
     """
-    _run_git(
+    _run_remote_git(
         repo,
         ["fetch", "--", "origin", _fetch_refspec(repo)],
         "fetch from the remote",
-        options=remote_options(repo),
     )
 
     remote_ref = _remote_ref(repo)
@@ -613,11 +690,10 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     if not outgoing:
         return False
 
-    _run_git(
+    _run_remote_git(
         repo,
         ["push", "--", "origin", _push_refspec(repo)],
         "push changes",
-        options=remote_options(repo),
     )
     logger.info(
         "Pushed %d commit(s) from repository '%s' to branch %s",

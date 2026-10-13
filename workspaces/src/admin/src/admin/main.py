@@ -24,7 +24,7 @@ import sys
 import uvicorn
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
-from admin.git.bootstrap import clone_configured_repos, start_git_sync
+from admin.git.bootstrap import start_git_backup
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.git.status import SyncStatus
 from admin.services import load_services
@@ -141,19 +141,19 @@ def _print_service_catalogue() -> None:
 
 def _start_git_backup(interval_seconds: int, status: SyncStatus) -> None:
     """
-    Bring the git-backed workspace assets up before the server starts.
+    Start bringing the git-backed workspace assets up, without waiting.
 
     Clones whatever the git config describes and is not on disk yet, then
-    leaves a background thread committing and pushing those clones. Both
-    steps report their own failures and never raise, so a broken git
-    configuration delays nothing and the HTTP API still comes up.
+    leaves a thread committing and pushing those clones. All of it happens
+    on a background thread and reports its own failures, so neither a
+    broken git configuration nor a slow or unreachable remote delays the
+    HTTP API.
 
     Args:
         interval_seconds: Seconds to wait between backups.
         status: Where the outcome of every backup is recorded.
     """
-    clone_configured_repos()
-    start_git_sync(status, interval_seconds)
+    start_git_backup(status, interval_seconds)
 
 
 def _print_startup_banner(host: str, port: int, prefix: str) -> None:

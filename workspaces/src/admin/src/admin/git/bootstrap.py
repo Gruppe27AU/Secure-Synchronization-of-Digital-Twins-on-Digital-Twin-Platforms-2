@@ -4,7 +4,8 @@ Startup bootstrap for git-backed workspace assets.
 Wires :mod:`admin.git.config` (reading ``config.env``) to
 :mod:`admin.git.clone` (cloning a repository) and
 :mod:`admin.git.scheduler` (committing and pushing the clones from then
-on), so :mod:`admin.main` only has to make two calls at startup.
+on), so :mod:`admin.main` only has to make one call at startup:
+:func:`start_git_backup`, which does both on a background thread.
 """
 
 import logging
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 #: Filename of the config file, resolved against ``$WORKSPACE_APP_DIR``.
 DEFAULT_CONFIG_FILE = "config.env"
+
+#: Name of the thread that clones on startup, recognisable in a stack dump.
+BOOTSTRAP_THREAD_NAME = "git-bootstrap"
 
 
 def _config_path() -> Path:
@@ -130,3 +134,53 @@ def start_git_sync(
     )
 
     return thread, stop_event
+
+
+def _clone_then_sync(status: SyncStatus, interval_seconds: int) -> None:
+    """
+    Clone the configured repositories, then start syncing the cloned ones.
+
+    Runs on the thread started by :func:`start_git_backup`. Both steps
+    already log their own failures; anything unexpected is caught here
+    too, because an exception escaping a thread is easy to miss.
+
+    Args:
+        status: Where the outcome of every synchronization is recorded.
+        interval_seconds: Seconds to wait between synchronizations.
+    """
+    try:
+        clone_configured_repos()
+        start_git_sync(status, interval_seconds)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Unexpected error while starting the git backup")
+
+
+def start_git_backup(
+    status: SyncStatus,
+    interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
+) -> threading.Thread:
+    """
+    Start the git backup without holding up the caller.
+
+    Cloning talks to the network and can take minutes, so it runs on a
+    background daemon thread, followed by :func:`start_git_sync` once it is
+    done. The HTTP API therefore comes up straight away, whatever the
+    remotes are doing. Until the clones are done, ``status`` still reports
+    the backup as disabled.
+
+    Args:
+        status: Where the outcome of every synchronization is recorded.
+        interval_seconds: Seconds to wait between synchronizations.
+
+    Returns:
+        The started thread. It ends once the clones are done and the
+        periodic sync has been handed to its own thread.
+    """
+    thread = threading.Thread(
+        target=_clone_then_sync,
+        args=(status, interval_seconds),
+        name=BOOTSTRAP_THREAD_NAME,
+        daemon=True,
+    )
+    thread.start()
+    return thread

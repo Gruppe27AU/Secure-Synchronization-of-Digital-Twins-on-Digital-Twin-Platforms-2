@@ -3,14 +3,16 @@ Unit tests for shared git HTTP authentication.
 
 Covers :mod:`admin.git.auth`: building the credentials header, leaving it
 out when no credentials are configured, restricting remote commands to
-https, and recognizing rejected
-credentials in git's stderr without mistaking unrelated failures for them.
+https without waiting on credential helpers or stalled transfers, and
+recognizing rejected credentials in git's stderr without mistaking
+unrelated failures for them.
 """
 
 import base64
 from dataclasses import replace
 
 from admin.git.auth import (
+    NO_WAIT_OPTIONS,
     PROTOCOL_OPTIONS,
     auth_header_options,
     is_auth_failure,
@@ -53,14 +55,30 @@ def test_remote_options_restrict_to_https_without_credentials():
         "protocol.allow=never",
         "-c",
         "protocol.https.allow=always",
+        *NO_WAIT_OPTIONS,
     ]
+
+
+def test_remote_options_never_wait_for_a_helper_or_a_stalled_transfer():
+    """Test credential helpers are switched off and stalls are abandoned."""
+    options = remote_options(make_repo())
+
+    # An empty value resets the list, so no helper configured on the
+    # machine (such as Git Credential Manager) is ever asked.
+    assert "credential.helper=" in options
+    assert "http.lowSpeedLimit=1" in options
+    assert "http.lowSpeedTime=60" in options
 
 
 def test_remote_options_add_the_auth_header_after_the_restriction():
     """Test credentials are appended to, not instead of, the restriction."""
     repo = replace(make_repo(), username="git-user", token="secret-token")
 
-    assert remote_options(repo) == [*PROTOCOL_OPTIONS, *auth_header_options(repo)]
+    assert remote_options(repo) == [
+        *PROTOCOL_OPTIONS,
+        *NO_WAIT_OPTIONS,
+        *auth_header_options(repo),
+    ]
 
 
 def test_is_auth_failure_recognizes_gitlab_access_denied():

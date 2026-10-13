@@ -128,7 +128,10 @@ reachable through nginx.
 ```
 
 - `enabled` is `false`, with no repositories, when the backup is not
-  running: `config.env` is missing or unusable, or nothing has been cloned
+  running: `config.env` is missing or unusable, or nothing has been cloned.
+  It is also `false` right after startup, while the first clones are still
+  running in the background (up to 900 seconds per repository, see
+  [Time limits and prompts](#time-limits-and-prompts))
 - A repository is listed as soon as the backup starts, with every field
   `null` until its first sync, which happens after one interval
 - `last_error` is kept after a later success. If `last_success` is newer
@@ -325,8 +328,11 @@ be there. When both are configured, `private` is cloned first.
 
 ### When cloning happens
 
-`admin.main.cli()` calls `clone_configured_repos()` once on startup, before
-the HTTP server starts. There is no endpoint or command that clones later,
+`admin.main.cli()` calls `start_git_backup()` once on startup. That starts a
+background thread, `git-bootstrap`, which runs `clone_configured_repos()` and
+then `start_git_sync()`, while the HTTP server starts straight away. A slow or
+unreachable remote therefore delays the backup, never `/health` or the rest
+of the API. There is no endpoint or command that clones later,
 so after adding a repository to `config.env` or changing one, restart the
 service (in the workspace container: restart the container).
 
@@ -391,6 +397,10 @@ two: git commands run in the working tree find the git directory through it.
      the clone never contains the remote's other branches.
    - `--separate-git-dir` is what puts the git directory and the working
      tree in the two places described above.
+   - The command also gets `-c credential.helper=` and
+     `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=60` (left out above for
+     readability), and runs without prompts and within a time limit. See
+     [Time limits and prompts](#time-limits-and-prompts).
    - The `-c http.extraHeader=...` option carries `GIT_REPO_USERNAME` and
      `GIT_REPO_TOKEN` as HTTP Basic credentials for this one command. They
      are not written into the git directory's config and not added to the
@@ -438,7 +448,39 @@ ERROR admin.git.bootstrap git clone failed for repository 'common': <git's messa
 - A failed clone is not retried while the service runs. It is tried again
   the next time the service starts. Git cleans up after a failed clone, so
   the git directory and working tree are left empty and do not block the
-  next attempt.
+  next attempt. This includes a clone stopped for taking too long: it is
+  sent `SIGTERM` first so git can clean up, and only killed if it has not
+  stopped 5 seconds later.
+- A clone that runs out of time is logged as
+  `Timed out cloning repository 'common' (<url>, branch main): git did not
+  finish within 900 seconds and was stopped`.
+
+### Time limits and prompts
+
+Every git command goes through `run_git()` in `runner.py`, so none of them
+can wait forever:
+
+- **No prompts.** `GIT_TERMINAL_PROMPT=0` and an empty `GIT_ASKPASS` stop git
+  from asking for a username or password, on a terminal or through an
+  askpass helper such as the ones VS Code and desktop sessions set up. The
+  empty `GIT_ASKPASS` also overrides `core.askPass` and `SSH_ASKPASS`.
+  Credential helpers, such as Git Credential Manager, ignore both settings,
+  so every command that talks to the remote also gets `-c credential.helper=`,
+  which empties the list of helpers. Credentials only ever come from
+  `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN`. Standard input is empty as well.
+- **Time limits.** Commands that talk to the remote (clone, fetch, push) get
+  900 seconds (`REMOTE_TIMEOUT_SECONDS`), and everything else 300 seconds
+  (`LOCAL_TIMEOUT_SECONDS`). A command that runs out of time is sent
+  `SIGTERM`, then `SIGKILL` 5 seconds later if it is still running. It runs
+  in its own process group, so helpers it started, such as
+  `git-remote-https`, are stopped with it. The clone fails with
+  `CloneError`, and a sync step with `SyncError`. The next sync cycle tries
+  again.
+- **Stalled transfers.** `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=60`
+  make git give up by itself once a connection has moved less than 1 byte
+  per second for 60 seconds. This does not cover a connection that stalls
+  before it is set up, such as a TLS handshake that never completes. Only
+  the time limit stops that.
 
 In none of these cases does the admin service stop: the HTTP API starts as
 normal.
@@ -590,10 +632,11 @@ decision what goes into it.
 
 ### Git Backup Flow
 
-1. On startup, `admin.main.cli()` clones every configured git asset
+1. On startup, `admin.main.cli()` calls `start_git_backup()`, which, on a
+   background thread, clones every configured git asset
    (`clone_configured_repos()`, one clone per `[assets.private]` and/or
    `[assets.common]` entry in `config.env`) and then starts the backup
-   scheduler (`start_git_sync()`)
+   scheduler (`start_git_sync()`). The HTTP server does not wait for either
 2. The scheduler runs on a background daemon thread, so it never blocks the
    HTTP server
 3. Every 5 minutes each cloned working tree goes through the same three
@@ -909,6 +952,7 @@ src/admin/
 │   └── config.env.example        # Example git asset configuration
 └── git/
     ├── __init__.py                # Git backup of workspace directories
+    ├── runner.py                  # Runs git without prompts, within a time limit
     ├── config.py                  # Reads config.env into RepoConfig objects
     ├── auth.py                    # Shared HTTP auth header and failure detection
     ├── clone.py                   # Clones a single RepoConfig
@@ -934,6 +978,11 @@ module imports the layer above it, so each can be tested on its own.
   prints the catalogue or serves the API with uvicorn
 - **Git Backup** (`src/admin/git/`): Configuration, cloning, authentication
   and working tree synchronization for shared and private git assets
+  - `runner.py`: `run_git()` runs every git command of the backup with
+    prompts switched off, empty standard input and a time limit, and stops
+    a command that overruns it together with the processes it started,
+    raising `GitTimeoutError`. See
+    [Time limits and prompts](#time-limits-and-prompts)
   - `config.py`: `load_config()` reads the TOML-formatted `config.env` file
     at `$WORKSPACE_APP_DIR/config.env` and returns a `RepoConfig` per
     `[assets.<name>]` table (currently `private` and `common`)
@@ -973,9 +1022,12 @@ module imports the layer above it, so each can be tested on its own.
     kind of every scheduled repository behind one lock, written by the
     sync thread and read by `/git/status`. It stores a `SyncErrorKind`,
     never an error message
-  - `bootstrap.py`: `clone_configured_repos()` and `start_git_sync()` wire
-    the other modules together and are called once from `admin.main.cli()`
-    on startup. `clone_configured_repos()` clones every repository
+  - `bootstrap.py`: `start_git_backup()` is called once from
+    `admin.main.cli()` on startup and returns at once, running
+    `clone_configured_repos()` and then `start_git_sync()` on the
+    `git-bootstrap` daemon thread, so the HTTP API never waits for a
+    remote. Until the clones are done, `/git/status` reports the backup as
+    disabled. `clone_configured_repos()` clones every repository
     `load_config()` returns - `private` and/or `common` - independently:
     one repository that fails to clone (bad credentials, unreachable
     remote, ...) is logged and skipped without blocking the others.
@@ -1016,14 +1068,15 @@ obvious test file:
 | --------------------- | ------------------ | ------------------------------------------ |
 | `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/git/status` serving the live status and refusing writes |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
-| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing and CLI flags              |
-| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format`, https-only URLs without credentials |
-| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports |
+| `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials |
+| `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message |
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
-| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
+| `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
+| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
 | `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
