@@ -323,3 +323,51 @@ def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
 
     assert "Unexpected error while starting the git backup" in caplog.text
     assert "disk on fire" in caplog.text
+
+
+def test_template_path_is_none_without_the_variable(monkeypatch):
+    """Test that outside the image no template is assumed."""
+    monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
+
+    assert bootstrap._template_path() is None  # pylint: disable=protected-access
+
+
+def test_template_path_uses_the_variable(monkeypatch):
+    """Test the template is taken from $WORKSPACE_CONFIG_TEMPLATE."""
+    monkeypatch.setenv("WORKSPACE_CONFIG_TEMPLATE", "/some/template.toml")
+
+    path = bootstrap._template_path()  # pylint: disable=protected-access
+
+    assert path == Path("/some/template.toml")
+
+
+def test_start_git_backup_creates_a_missing_config_and_clones_nothing(
+    config_file, monkeypatch, tmp_path
+):
+    """Test a freshly created config, still all placeholders, is not cloned."""
+    config_file.unlink()
+    template = tmp_path / "template.toml"
+    template.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
+    monkeypatch.setenv("WORKSPACE_CONFIG_TEMPLATE", str(template))
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
+
+    bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert config_file.read_bytes() == EXAMPLE_CONFIG_PATH.read_bytes()
+
+
+def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch):
+    """Test an existing config file goes straight on to cloning."""
+    assert config_file.is_file()
+    steps = []
+    monkeypatch.setattr(
+        bootstrap, "clone_configured_repos", lambda: steps.append("clone")
+    )
+    monkeypatch.setattr(
+        bootstrap, "start_git_sync", lambda status, interval: steps.append("sync")
+    )
+
+    bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert steps == ["clone", "sync"]
