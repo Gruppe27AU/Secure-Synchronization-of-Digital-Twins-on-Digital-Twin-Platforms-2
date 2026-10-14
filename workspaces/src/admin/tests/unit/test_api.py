@@ -232,3 +232,21 @@ def test_git_status_is_read_only(test_client, method):
     """Test the status cannot be changed or a backup triggered over HTTP."""
     response = getattr(test_client, method)("/git/status")
     assert response.status_code == 405
+
+
+def test_on_shutdown_runs_when_the_server_stops_not_before():
+    """Test the shutdown hook runs once, as the application shuts down."""
+    calls = []
+    app = create_app(on_shutdown=lambda: calls.append("stopped"))
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert not calls
+
+    assert calls == ["stopped"]
+
+
+def test_the_app_shuts_down_without_a_shutdown_hook():
+    """Test the hook is optional."""
+    with TestClient(create_app()) as client:
+        assert client.get("/health").status_code == 200

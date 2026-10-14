@@ -20,10 +20,17 @@ ever written to disk in the workspace:
 Every command that names the branch puts ``--`` before its positional
 arguments and spells the branch out as a full refspec, so a branch value can
 never be read as a git option such as ``--upload-pack``.
+
+The user works in the same repository with their own git commands, so a
+cycle only starts when the repository can be left to it for a moment: on
+the configured branch, with no operation half finished and no other git
+process holding the index. Anything else stops the cycle before it changes
+a thing, and the next cycle tries again.
 """
 
 import logging
 import subprocess
+import threading
 import time
 from enum import StrEnum
 from pathlib import Path
@@ -57,6 +64,14 @@ CONFLICT_MARKER_WARNING = "leftover conflict marker"
 
 CONFLICT_MARKER_PREFIXES = ("<<<<<<<", ">>>>>>>")
 
+#: Lock file every git command that writes the index creates first.
+INDEX_LOCK_FILE = "index.lock"
+
+#: Age in seconds after which an ``index.lock`` is taken to be left behind
+#: by a git process that was killed, and is removed. Kept long, because a
+#: live ``git commit`` holds the lock for as long as its editor is open.
+STALE_LOCK_SECONDS = 3600
+
 
 class SyncErrorKind(StrEnum):
     """
@@ -70,6 +85,9 @@ class SyncErrorKind(StrEnum):
     AUTH_FAILED = "auth_failed"
     GIT_FAILED = "git_failed"
     OPERATION_IN_PROGRESS = "operation_in_progress"
+    WRONG_BRANCH = "wrong_branch"
+    DETACHED_HEAD = "detached_head"
+    INDEX_LOCKED = "index_locked"
     UNRESOLVED_CONFLICTS = "unresolved_conflicts"
     CONFLICT_MARKERS = "conflict_markers"
     UNEXPECTED = "unexpected"
@@ -86,6 +104,16 @@ class SyncError(Exception):
     def __init__(self, message: str, kind: SyncErrorKind = SyncErrorKind.GIT_FAILED):
         super().__init__(message)
         self.kind = kind
+
+
+class SyncStopped(Exception):
+    """
+    Raised when a cycle is given up between two steps because the service
+    is stopping.
+
+    Not a :class:`SyncError`: nothing went wrong, and every step leaves the
+    repository consistent, so the next start carries on from there.
+    """
 
 
 def _identity_options() -> list[str]:
@@ -337,20 +365,18 @@ def _conflicted_files(repo: RepoConfig) -> list[str]:
     return result.stdout.split()
 
 
-def _operation_in_progress(repo: RepoConfig) -> str | None:
+def _git_dir(repo: RepoConfig) -> Path:
     """
-    Name the git operation the repository is stopped in the middle of.
+    Locate the repository's git directory.
 
-    The git directory is asked of git rather than assumed to be
-    ``.git``, because :mod:`admin.git.clone` keeps it apart from the
-    working tree.
+    Asked of git rather than assumed to be ``.git``, because
+    :mod:`admin.git.clone` keeps it apart from the working tree.
 
     Args:
         repo: Repository to inspect.
 
     Returns:
-        The first entry of ``IN_PROGRESS_MARKERS`` that exists, or None
-        when no operation is in progress.
+        The absolute path of the git directory.
 
     Raises:
         SyncError: If the git directory cannot be located.
@@ -358,12 +384,124 @@ def _operation_in_progress(repo: RepoConfig) -> str | None:
     result = _run_git(
         repo, ["rev-parse", "--absolute-git-dir"], "locate the git directory"
     )
-    git_dir = Path(result.stdout.strip())
+    return Path(result.stdout.strip())
 
+
+def _operation_in_progress(git_dir: Path) -> str | None:
+    """
+    Name the git operation the repository is stopped in the middle of.
+
+    Args:
+        git_dir: The repository's git directory.
+
+    Returns:
+        The first entry of ``IN_PROGRESS_MARKERS`` that exists, or None
+        when no operation is in progress.
+    """
     for marker in IN_PROGRESS_MARKERS:
         if (git_dir / marker).exists():
             return marker
     return None
+
+
+def _ensure_index_unlocked(repo: RepoConfig, git_dir: Path) -> None:
+    """
+    Refuse to start while another git process holds the index.
+
+    A lock older than :data:`STALE_LOCK_SECONDS` is removed instead: it was
+    left behind by a git process that was killed before it could clean up,
+    and as long as it exists every command that writes the index fails, so
+    the backup would never run again.
+
+    Args:
+        repo: Repository the lock belongs to.
+        git_dir: The repository's git directory.
+
+    Raises:
+        SyncError: If the lock is recent, or old but cannot be removed.
+    """
+    lock = git_dir / INDEX_LOCK_FILE
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': cannot inspect "
+            f"{lock}: {error}",
+            SyncErrorKind.INDEX_LOCKED,
+        ) from error
+
+    if age < STALE_LOCK_SECONDS:
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': another git "
+            f"process holds {lock}; trying again next cycle",
+            SyncErrorKind.INDEX_LOCKED,
+        )
+
+    try:
+        lock.unlink(missing_ok=True)
+    except OSError as error:
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': cannot remove the "
+            f"stale {lock}: {error}",
+            SyncErrorKind.INDEX_LOCKED,
+        ) from error
+
+    logger.warning(
+        "Removed %s from repository '%s': it was %d seconds old, so the git "
+        "process that created it is gone",
+        lock,
+        repo.name,
+        age,
+    )
+
+
+def _ensure_on_branch(repo: RepoConfig) -> None:
+    """
+    Refuse to touch a working tree that is not on the configured branch.
+
+    The push always sends ``refs/heads/<branch>``, but a commit or merge
+    lands on whatever ``HEAD`` is. After the user switched branches the
+    backup commits would go to their branch and never be pushed, and on a
+    detached ``HEAD`` - a checked-out tag or commit, ``git bisect`` - they
+    would not be on any branch at all.
+
+    Args:
+        repo: Repository to inspect.
+
+    Raises:
+        SyncError: If ``HEAD`` is detached or names another branch.
+    """
+    result = _run_git(
+        repo,
+        ["symbolic-ref", "--quiet", "HEAD"],
+        "read the checked-out branch",
+        check=False,
+    )
+
+    # With --quiet, exit status 1 and no output means a detached HEAD;
+    # anything else non-zero is a real failure.
+    if result.returncode == 1 and not result.stderr.strip():
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': HEAD is detached; "
+            f"check out branch '{repo.branch}' to resume the backup",
+            SyncErrorKind.DETACHED_HEAD,
+        )
+    if result.returncode != 0:
+        raise SyncError(
+            f"Failed to read the checked-out branch for repository "
+            f"'{repo.name}': {result.stderr.strip()}"
+        )
+
+    checked_out = result.stdout.strip()
+    if checked_out != f"refs/heads/{repo.branch}":
+        raise SyncError(
+            f"Not synchronizing repository '{repo.name}': "
+            f"'{checked_out.removeprefix('refs/heads/')}' is checked out, not "
+            f"'{repo.branch}'; check out '{repo.branch}' to resume the backup",
+            SyncErrorKind.WRONG_BRANCH,
+        )
 
 
 def _unmerged_files(repo: RepoConfig) -> list[str]:
@@ -392,28 +530,37 @@ def _unmerged_files(repo: RepoConfig) -> list[str]:
     )
 
 
-def _ensure_nothing_in_progress(repo: RepoConfig) -> None:
+def _ensure_safe_to_sync(repo: RepoConfig) -> None:
     """
-    Refuse to touch a repository that is in the middle of a conflict.
+    Refuse to touch a repository the user is in the middle of using.
 
     This guards against every way of getting there, not just a failed
     merge of our own: the user may have started a merge or rebase by
-    hand and not finished it yet. Committing would conclude it, conflict
-    and all, and the push would hand it on to the remote.
+    hand and not finished it yet, switched to another branch, or be
+    running a git command right now. Committing would conclude a merge,
+    conflict and all, or land on the wrong branch, and the push would hand
+    it on to the remote.
 
     Args:
         repo: Repository to inspect.
 
     Raises:
-        SyncError: If an operation is in progress or files are unmerged.
+        SyncError: If another git process holds the index, an operation is
+            in progress, the configured branch is not checked out or files
+            are unmerged.
     """
-    marker = _operation_in_progress(repo)
+    git_dir = _git_dir(repo)
+    _ensure_index_unlocked(repo, git_dir)
+
+    marker = _operation_in_progress(git_dir)
     if marker:
         raise SyncError(
             f"Not synchronizing repository '{repo.name}': a git operation is "
             f"in progress ({marker}); finish or abort it first",
             SyncErrorKind.OPERATION_IN_PROGRESS,
         )
+
+    _ensure_on_branch(repo)
 
     unmerged = _unmerged_files(repo)
     if unmerged:
@@ -493,10 +640,10 @@ def commit_local_changes(repo: RepoConfig) -> bool:
     files, so an uncommitted working tree would make every pull fail as
     soon as the remote had anything to deliver.
 
-    Nothing is committed while the repository is in the middle of a
-    conflict, or while a staged file still holds conflict markers. The
-    first check runs before anything else, so a merge or rebase the user
-    has not finished is never pulled into or pushed either.
+    Nothing is committed while the user is in the middle of something -
+    see :func:`_ensure_safe_to_sync` - or while a staged file still holds
+    conflict markers. The first check runs before anything else, so a
+    repository the user is busy with is never pulled into or pushed either.
 
     Args:
         repo: Repository to commit in.
@@ -505,10 +652,10 @@ def commit_local_changes(repo: RepoConfig) -> bool:
         True if a commit was made, False if the working tree was clean.
 
     Raises:
-        SyncError: If an unfinished conflict or conflict markers are found,
-            or if staging or committing fails.
+        SyncError: If the repository is not safe to touch, conflict
+            markers are found, or staging or committing fails.
     """
-    _ensure_nothing_in_progress(repo)
+    _ensure_safe_to_sync(repo)
 
     if not has_changes(repo):
         logger.info("No changes in repository '%s'; nothing to commit", repo.name)
@@ -560,7 +707,8 @@ def pull_changes(repo: RepoConfig) -> list[str]:
 
     Raises:
         SyncError: If fetching or merging fails for any reason other than
-            a conflict.
+            a conflict, or the configured branch is no longer checked out
+            once the fetch is done.
     """
     _run_remote_git(
         repo,
@@ -573,6 +721,10 @@ def pull_changes(repo: RepoConfig) -> list[str]:
     if not incoming:
         logger.info("Repository '%s' is already up to date", repo.name)
         return []
+
+    # The fetch can take minutes, long enough for the user to switch
+    # branches, and the merge goes into whatever is checked out.
+    _ensure_on_branch(repo)
 
     attempt = _run_git(
         repo,
@@ -628,6 +780,9 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     """
     Push the local branch when it has commits the remote does not.
 
+    The branch is counted by name rather than through ``HEAD``, so what is
+    counted is exactly what the push sends, whatever is checked out.
+
     Args:
         repo: Repository to push.
 
@@ -638,7 +793,9 @@ def push_if_ahead(repo: RepoConfig) -> bool:
         SyncError: If the push fails.
     """
     outgoing = _count_commits(
-        repo, f"{_remote_ref(repo)}..HEAD", "count outgoing commits"
+        repo,
+        f"{_remote_ref(repo)}..refs/heads/{repo.branch}",
+        "count outgoing commits",
     )
     if not outgoing:
         return False
@@ -658,7 +815,28 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     return True
 
 
-def sync_once(repo: RepoConfig) -> bool:
+def _stop_if_requested(
+    repo: RepoConfig, stop_event: threading.Event | None, next_step: str
+) -> None:
+    """
+    End the cycle here when the service is stopping.
+
+    Args:
+        repo: Repository being synchronized.
+        stop_event: Set when the service is stopping; None never stops.
+        next_step: The step that would have run next, for the message.
+
+    Raises:
+        SyncStopped: If ``stop_event`` is set.
+    """
+    if stop_event is not None and stop_event.is_set():
+        raise SyncStopped(
+            f"Stopped synchronizing repository '{repo.name}' before it could "
+            f"{next_step}; the service is stopping"
+        )
+
+
+def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bool:
     """
     Run one full synchronization of the repository.
 
@@ -666,11 +844,17 @@ def sync_once(repo: RepoConfig) -> bool:
     tree is clean, then merge the remote in, then push the result. A
     conflict is resolved in favour of the workspace's own files.
 
+    ``stop_event`` is checked between the steps, so a stopping service
+    waits for at most the git command already running. A commit left
+    unpushed that way is pushed by the first cycle after the restart.
+
     Assumes the repository has already been cloned by
     :func:`admin.git.clone.clone_asset`.
 
     Args:
         repo: Repository to synchronize.
+        stop_event: Set when the service is stopping. None runs the whole
+            cycle.
 
     Returns:
         True if anything changed - a commit, a merge or a push - and
@@ -678,9 +862,12 @@ def sync_once(repo: RepoConfig) -> bool:
 
     Raises:
         SyncError: If any git step fails.
+        SyncStopped: If ``stop_event`` was set before the cycle finished.
     """
     committed = commit_local_changes(repo)
+    _stop_if_requested(repo, stop_event, "pull")
     merged = bool(pull_changes(repo))
+    _stop_if_requested(repo, stop_event, "push")
     pushed = push_if_ahead(repo)
 
     return committed or merged or pushed

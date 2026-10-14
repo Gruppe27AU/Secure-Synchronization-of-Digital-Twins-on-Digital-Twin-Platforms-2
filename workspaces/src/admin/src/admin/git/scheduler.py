@@ -11,7 +11,7 @@ import threading
 
 from admin.git.config import RepoConfig
 from admin.git.status import SyncStatus
-from admin.git.sync import SyncError, SyncErrorKind, sync_once
+from admin.git.sync import SyncError, SyncErrorKind, SyncStopped, sync_once
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,11 @@ DEFAULT_SYNC_INTERVAL_SECONDS = 300
 SYNC_THREAD_NAME = "git-sync"
 
 
-def sync_all(repos: list[RepoConfig], status: SyncStatus) -> None:
+def sync_all(
+    repos: list[RepoConfig],
+    status: SyncStatus,
+    stop_event: threading.Event | None = None,
+) -> None:
     """
     Synchronize every repository once and record how each one went.
 
@@ -35,13 +39,23 @@ def sync_all(repos: list[RepoConfig], status: SyncStatus) -> None:
     silently stop all further backups while the service kept serving
     requests as if nothing were wrong.
 
+    Once ``stop_event`` is set, no further step or repository is started
+    and nothing more is recorded: the round was cut short, it did not fail.
+
     Args:
         repos: Repositories to synchronize.
         status: Where the outcome of each repository is recorded.
+        stop_event: Set when the service is stopping. None runs every
+            repository to the end.
     """
     for repo in repos:
+        if stop_event is not None and stop_event.is_set():
+            return
         try:
-            sync_once(repo)
+            sync_once(repo, stop_event)
+        except SyncStopped as stopped:
+            logger.info("%s", stopped)
+            return
         except SyncError as error:
             logger.error("%s", error)
             status.record_failure(repo.name, error.kind)
@@ -64,7 +78,9 @@ def _sync_loop(
     Synchronize the repositories until the stop event is set.
 
     Waiting on the event rather than sleeping means the loop can be shut
-    down immediately instead of only at the end of an interval.
+    down immediately instead of only at the end of an interval. A round
+    already running is handed the event too, and ends after the git command
+    it is in.
 
     Args:
         repos: Repositories to synchronize.
@@ -73,7 +89,7 @@ def _sync_loop(
         status: Where the outcome of each repository is recorded.
     """
     while not stop_event.wait(interval_seconds):
-        sync_all(repos, status)
+        sync_all(repos, status, stop_event)
 
 
 def start_sync_scheduler(

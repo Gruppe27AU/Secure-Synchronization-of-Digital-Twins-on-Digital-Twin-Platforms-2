@@ -12,6 +12,9 @@ interfaces, so nothing here may change state or reveal a secret; in
 particular there is no route that triggers a git backup.
 """
 
+import asyncio
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
@@ -104,7 +107,9 @@ def create_router(sync_status: SyncStatus) -> APIRouter:
 
 
 def create_app(
-    path_prefix: str = "", sync_status: SyncStatus | None = None
+    path_prefix: str = "",
+    sync_status: SyncStatus | None = None,
+    on_shutdown: Callable[[], object] | None = None,
 ) -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -113,14 +118,25 @@ def create_app(
         path_prefix: Optional path prefix for all routes (e.g., "dtaas-user")
         sync_status: Outcome of the git backups. Without one, ``/git/status``
             reports the backup as disabled.
+        on_shutdown: Called once when the server stops, for example on
+            SIGTERM, before the process exits. It may block; it runs off
+            the event loop.
 
     Returns:
         Configured FastAPI application instance.
     """
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+        if on_shutdown is not None:
+            await asyncio.to_thread(on_shutdown)
+
     fastapi_app = FastAPI(
         title=APP_TITLE,
         description=APP_DESCRIPTION,
-        version=APP_VERSION
+        version=APP_VERSION,
+        lifespan=lifespan,
     )
     fastapi_app.include_router(
         create_router(sync_status or SyncStatus()),
