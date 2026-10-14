@@ -146,7 +146,7 @@ reachable through nginx.
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
 | `conflict_markers` | A file about to be committed holds conflict markers (see [Conflicts](#a-file-holds-conflict-markers)) |
-| `git_failed` | Any other failing git command, for example an unreachable remote or a merge `-X ours` cannot resolve |
+| `git_failed` | Any other failing git command, for example an unreachable remote or a merge stopped by an untracked file |
 | `unexpected` | An error that is not a git failure, for example `git` missing from the image |
 
 The endpoint never returns an error message, a file name, a URL, a branch
@@ -504,8 +504,8 @@ doing without reading the log.
 
 | Situation | Handled by | What the backup does | To get sync going again |
 | --- | --- | --- | --- |
-| Both sides changed the same file | Backup | Keeps the workspace's version, merges everything else | Nothing to do |
-| One side changed a file the other deleted | You | Leaves the repository as it was and fails each interval | Merge, keep or delete the file, commit |
+| Both sides changed the same file | Backup | Keeps the workspace's whole file, merges every other file | Nothing to do |
+| One side changed a file the other deleted | Backup | Keeps the workspace's side: a file changed here is kept, a file deleted here stays deleted | Nothing to do |
 | A merge, rebase, cherry-pick or revert you have started is unfinished | You | Waits: no commit, no pull, no push | Finish or abort the changes |
 | Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
 | A file holds conflict markers | You | Refuses to commit, unstages again | Remove the markers |
@@ -521,7 +521,8 @@ identity, so that nothing is written into the repository on your behalf.
 
 ### Both sides changed the same file
 
-Handled automatically. The log names the files whose local version was kept:
+Handled automatically. The conflicted file keeps the workspace's whole
+version: no line from the remote is mixed into it. The log names the files:
 
 ```text
 WARNING admin.git.sync Merge conflict in repository 'common' affecting 1 file(s): notes.md
@@ -533,26 +534,14 @@ history, in the commit that was merged in.
 
 ### One side changed a file the other deleted
 
-Keeping "the local version" means nothing when one side has no version, so
-git cannot resolve this on its own. The backup aborts the merge, which
-leaves your files exactly as they were, and logs on every interval:
+Handled automatically, in favour of the workspace:
 
-```text
-ERROR admin.git.sync Failed to merge the remote's changes keeping local files for repository 'common': CONFLICT (modify/delete): notes.md deleted in origin/main and modified in HEAD. ...
-```
+- Changed here, deleted on the remote: the file is kept and pushed back.
+- Deleted here, changed on the remote: the file stays deleted, and the
+  deletion is pushed.
 
-Until it is resolved, that repository is neither pulled nor pushed.
-
-**To get sync going again**, start the merge yourself and decide whether
-the file stays:
-
-```bash
-git merge origin/main
-git add notes.md      # keep the file, or: git rm notes.md to accept the deletion
-git commit -m "Resolve notes.md"
-```
-
-The next interval pushes the result, and the error stops.
+The log is the same as above. The other side's version is still in the
+history.
 
 ### A merge or rebase you started is unfinished
 
@@ -660,7 +649,8 @@ decision what goes into it.
       a timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Pull** - the remote is fetched and merged in. Local files win any
-      conflict (see below)
+      conflict, whole file (see
+      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    3. **Push** - the branch is pushed only when it actually holds commits
       the remote does not
 4. Committing happens *before* merging on purpose: git refuses to merge over
@@ -822,7 +812,9 @@ whose only job is to fail and name the conflicted files through
 the same tree `-X ours` would have produced on its own, but the conflicted
 paths are known and get logged by name, and `pull_changes()` returns them to
 its caller. Only the conflicted files keep the local version; everything
-else the remote changed is merged in normally.
+else the remote changed is merged in normally. `-X ours` was later
+replaced, see
+[Local Files Win the Whole File](#implementation-report-local-files-win-the-whole-file).
 
 `sync_all()` catches every exception, not only `SyncError`. It runs on the
 background thread, and an exception escaping there would end the thread and
@@ -916,6 +908,33 @@ scheduled, so it does not appear in `/git/status`, and if no repository
 was cloned the endpoint reports `enabled: false`. A wrong token on first
 start is therefore still only visible in the log. This is left for a
 separate issue.
+
+### Implementation Report: Local Files Win the Whole File
+
+A review found two problems with `git merge -X ours`:
+
+- **It cannot resolve modify/delete.** When one side changed a file and the
+  other deleted it, the merge failed on every interval, so the push never
+  ran and the user's work never left the container.
+- **It works per hunk, not per file.** Lines from the remote that did not
+  conflict were merged into the "kept" file, so a notebook could end up
+  mixed or unparsable.
+
+The review proposed dropping automatic resolution. We kept the rule that
+local files win, but per whole file. `pull_changes()` runs an ordinary
+merge, and when it stops on a conflict, `git ls-files --unmerged -z` lists
+the versions git holds of each conflicted file. If the workspace's version
+(stage 2) exists, `git checkout --ours` takes it whole; if not, the
+workspace deleted the file and `git rm` keeps it deleted. `git commit
+--no-edit` then concludes the merge. Any failure on the way aborts the
+merge, as before.
+
+The old `_conflicted_files()` split git's output on whitespace, so a file
+name with a space would have been read as two files. `-z` avoids that.
+
+`tests/integration/test_git_sync_conflicts.py` runs this against real git,
+with a local bare repository as the remote. Four of its five tests fail on
+the old `-X ours` code.
 
 ### Package Layout
 
@@ -1058,6 +1077,7 @@ obvious test file:
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
+| `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
 it builds the `RepoConfig` objects the git tests need, so no test module has

@@ -59,32 +59,41 @@ _PLAIN_KEYS = {
     "ls-files": "unmerged",
     "show": "staged-file",
     "reset": "unstage",
+    "checkout": "take-local",
+    "rm": "remove-local",
+    "merge": "merge",
+    "diff": "marker-check",
 }
+
+#: Subcommands run more than one way, told apart by one of their arguments.
+#: Checked before ``_PLAIN_KEYS``.
+_ARGUMENT_KEYS = (
+    ("ls-files", "-z", "conflicted-files"),
+    ("add", "--", "mark-resolved"),
+    ("commit", "--no-edit", "merge-commit"),
+    ("merge", "--abort", "merge-abort"),
+)
 
 
 def _command_key(command):
-    """
-    Name the git command in a way the tests can assert on.
+    """Name the git command in a way the tests can assert on."""
+    if "rev-list" in command:
+        return "incoming" if command[-1].startswith("HEAD..") else "outgoing"
 
-    The three merges are told apart, because the order of detect, abort
-    and resolve is the whole point of the conflict handling.
-    """
+    for word, argument, key in _ARGUMENT_KEYS:
+        if word in command and argument in command:
+            return key
+
     for word, key in _PLAIN_KEYS.items():
         if word in command:
             return key
 
-    if "rev-list" in command:
-        return "incoming" if command[-1].startswith("HEAD..") else "outgoing"
-
-    if "merge" in command:
-        if "--abort" in command:
-            return "merge-abort"
-        return "merge-ours" if "ours" in command else "merge"
-
-    if "diff" in command:
-        return "marker-check" if "--check" in command else "conflicted-files"
-
     return None
+
+
+def _unmerged_entries(path, stages):
+    """What ``git ls-files --unmerged -z`` prints for one conflicted path."""
+    return "".join(f"100644 {'0' * 40} {stage}\t{path}\0" for stage in stages)
 
 
 @dataclass
@@ -97,8 +106,9 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
             the working tree is clean.
         incoming: Commits the remote has that the workspace does not.
         outgoing: Commits the workspace has that the remote does not.
-        conflicts: Files the first merge attempt cannot resolve. A
-            non-empty list makes that attempt fail, as real git does.
+        conflicts: Conflicted files the workspace still has. Any conflict
+            makes the merge fail, as real git does.
+        deleted_locally: Conflicted files the workspace deleted.
         failing: Command key that should fail, for example ``"push"``.
         git_dir: What ``git rev-parse --absolute-git-dir`` prints. The
             default does not exist, so no operation is in progress.
@@ -113,6 +123,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
     incoming: int = 0
     outgoing: int = 0
     conflicts: list = field(default_factory=list)
+    deleted_locally: list = field(default_factory=list)
     failing: str | None = None
     git_dir: str = "/nonexistent/git-dir"
     unmerged_output: str = ""
@@ -132,9 +143,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
                 command, 1, "", f"fatal: {key} was rejected"
             )
 
-        # The plain merge is what detects a conflict, so it has to fail
-        # exactly as real git does when it cannot resolve one.
-        if key == "merge" and self.conflicts:
+        if key == "merge" and (self.conflicts or self.deleted_locally):
             return subprocess.CompletedProcess(
                 command, 1, "", "CONFLICT (content): Merge conflict"
             )
@@ -151,11 +160,16 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
             # The last argument is ":<path>".
             return self.staged_files.get(command[-1][1:], "")
 
+        if key == "conflicted-files":
+            return "".join(
+                [_unmerged_entries(path, "123") for path in self.conflicts]
+                + [_unmerged_entries(path, "13") for path in self.deleted_locally]
+            )
+
         return {
             "status": self.status_output,
             "incoming": str(self.incoming),
             "outgoing": str(self.outgoing),
-            "conflicted-files": "\n".join(self.conflicts),
             "git-dir": self.git_dir,
             "unmerged": self.unmerged_output,
         }.get(key, "")
@@ -372,23 +386,62 @@ def test_pull_changes_merges_cleanly_when_there_is_no_conflict(
     assert "without conflicts" in caplog.text
 
 
-def test_pull_changes_keeps_local_files_on_conflict(monkeypatch, repo):
-    """Test a conflict is detected, abandoned, and redone keeping local files."""
+def test_pull_changes_keeps_whole_local_files_on_conflict(monkeypatch, repo):
+    """Test conflicted files take the local version and the merge is concluded."""
     fake_git = _install(
         monkeypatch, FakeGit(incoming=1, conflicts=["shared.txt", "notes.md"])
     )
 
     assert pull_changes(repo) == ["shared.txt", "notes.md"]
-    # Detect, inspect, undo, then resolve - in that order.
     assert fake_git.keys == [
         "fetch",
         "incoming",
         "merge",
         "conflicted-files",
-        "merge-abort",
-        "merge-ours",
+        "take-local",
+        "mark-resolved",
+        "merge-commit",
     ]
-    assert "ours" in fake_git.command_for("merge-ours")
+    assert fake_git.command_for("take-local")[-4:] == [
+        "--ours", "--", "shared.txt", "notes.md"
+    ]
+    # No hunk-level resolution, which mixes the remote into local files.
+    assert not any("ours" in command for command in fake_git.commands
+                   if _command_key(command) == "merge")
+
+
+def test_pull_changes_keeps_a_local_deletion_on_conflict(monkeypatch, repo):
+    """Test a file deleted locally but changed remotely stays deleted."""
+    fake_git = _install(
+        monkeypatch, FakeGit(incoming=1, deleted_locally=["old.txt"])
+    )
+
+    assert pull_changes(repo) == ["old.txt"]
+    assert "take-local" not in fake_git.keys
+    assert fake_git.command_for("remove-local")[-2:] == ["--", "old.txt"]
+    assert fake_git.keys[-1] == "merge-commit"
+
+
+def test_pull_changes_resolves_both_kinds_of_conflict_at_once(monkeypatch, repo):
+    """Test kept and deleted files are each resolved their own way."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(incoming=1, conflicts=["model.txt"], deleted_locally=["old.txt"]),
+    )
+
+    assert pull_changes(repo) == ["model.txt", "old.txt"]
+    assert fake_git.command_for("take-local")[-1] == "model.txt"
+    assert fake_git.command_for("remove-local")[-1] == "old.txt"
+
+
+def test_pull_changes_keeps_a_file_name_with_spaces_intact(monkeypatch, repo):
+    """Test a conflicted path with spaces is passed to git as one path."""
+    fake_git = _install(
+        monkeypatch, FakeGit(incoming=1, conflicts=["my notes.ipynb"])
+    )
+
+    assert pull_changes(repo) == ["my notes.ipynb"]
+    assert fake_git.command_for("take-local")[-1] == "my notes.ipynb"
 
 
 def test_pull_changes_logs_the_conflict_and_its_resolution(
@@ -470,34 +523,55 @@ def test_pull_changes_raises_when_the_fetch_fails(monkeypatch, repo):
     assert excinfo.value.kind is SyncErrorKind.GIT_FAILED
 
 
-def test_pull_changes_raises_when_the_resolving_merge_fails(monkeypatch, repo):
-    """Test a merge that fails even with 'ours' is not swallowed."""
-    _install(
-        monkeypatch,
-        FakeGit(incoming=1, conflicts=["shared.txt"], failing="merge-ours"),
-    )
-
-    with pytest.raises(SyncError, match="keeping local files"):
-        pull_changes(repo)
-
-def test_pull_changes_aborts_the_merge_when_the_resolving_fails(monkeypatch, repo):
-    """Test a failed 'ours' merge is aborted so no half merge is left behind."""
+@pytest.mark.parametrize(
+    ("failing", "message"),
+    [
+        ("take-local", "take the local version"),
+        ("mark-resolved", "mark the conflicted files resolved"),
+        ("merge-commit", "conclude the merge"),
+    ],
+)
+def test_pull_changes_aborts_the_merge_when_resolving_fails(
+    monkeypatch, repo, failing, message
+):
+    """Test a failed resolution is aborted so no half merge is left behind."""
     fake_git = _install(
         monkeypatch,
-        FakeGit(incoming=1, conflicts=["shared.txt"], failing="merge-ours"),
+        FakeGit(incoming=1, conflicts=["shared.txt"], failing=failing),
     )
 
-    with pytest.raises(SyncError):
+    with pytest.raises(SyncError, match=message):
+        pull_changes(repo)
+
+    assert fake_git.keys[-2:] == [failing, "merge-abort"]
+
+
+def test_pull_changes_aborts_when_a_local_deletion_cannot_be_kept(
+    monkeypatch, repo
+):
+    """Test a failed removal is aborted like any other failed resolution."""
+    fake_git = _install(
+        monkeypatch,
+        FakeGit(incoming=1, deleted_locally=["old.txt"], failing="remove-local"),
+    )
+
+    with pytest.raises(SyncError, match="keep the local deletion"):
+        pull_changes(repo)
+
+    assert fake_git.keys[-2:] == ["remove-local", "merge-abort"]
+
+
+def test_pull_changes_aborts_a_merge_that_stops_without_a_conflict(
+    monkeypatch, repo
+):
+    """Test a merge git refuses for another reason is aborted and raised."""
+    fake_git = _install(monkeypatch, FakeGit(incoming=1, failing="merge"))
+
+    with pytest.raises(SyncError, match="merge was rejected"):
         pull_changes(repo)
 
     assert fake_git.keys == [
-        "fetch",
-        "incoming",
-        "merge",
-        "conflicted-files",
-        "merge-abort",
-        "merge-ours",
-        "merge-abort"
+        "fetch", "incoming", "merge", "conflicted-files", "merge-abort"
     ]
 
 def test_fetch_sends_auth_header_without_exposing_the_token(
