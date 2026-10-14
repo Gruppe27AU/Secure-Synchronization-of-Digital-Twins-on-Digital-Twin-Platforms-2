@@ -147,7 +147,7 @@ def _execute(
         kind = SyncErrorKind.GIT_FAILED
         if is_auth_failure(reason):
             kind = SyncErrorKind.AUTH_FAILED
-            if repo.username and repo.token:
+            if repo.token:
                 message += f" ({AUTH_FAILURE_HINT})"
         raise SyncError(message, kind)
 

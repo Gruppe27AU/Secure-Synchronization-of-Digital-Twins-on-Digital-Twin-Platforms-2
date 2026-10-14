@@ -1,7 +1,7 @@
 """
 Shared :class:`admin.git.config.RepoConfig` builder for the git tests.
 
-Keeps the test modules from each repeating the same seven-field
+Keeps the test modules from each repeating the same six-field
 construction, and lets every test spell out only the fields it actually
 cares about.
 """
@@ -12,7 +12,6 @@ from admin.git.config import RepoConfig
 DEFAULTS = {
     "repo_url": "https://example.com/org/repo.git",
     "branch": "main",
-    "username": "",
     "token": "",
     "git_dir": None,
     "work_tree": None,

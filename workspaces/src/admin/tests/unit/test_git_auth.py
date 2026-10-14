@@ -30,22 +30,15 @@ def test_auth_header_options_empty_without_credentials():
 
 def test_auth_header_options_builds_basic_auth_header():
     """Test the header is a correctly base64-encoded Basic auth value."""
-    repo = replace(make_repo(), username="git-user", token="secret-token")
+    repo = replace(make_repo(), token="secret-token")
 
     options = auth_header_options(repo)
 
     assert options[0] == "-c"
-    expected = base64.b64encode(b"git-user:secret-token").decode("ascii")
+    expected = base64.b64encode(b"oauth2:secret-token").decode("ascii")
     assert options[1] == f"http.extraHeader=Authorization: Basic {expected}"
     # The token must never appear in plain text in the built options.
     assert "secret-token" not in options[1]
-
-
-def test_auth_header_options_empty_when_only_username_set():
-    """Test a username without a token still yields no auth options."""
-    repo = replace(make_repo(), username="git-user", token="")
-
-    assert not auth_header_options(repo)
 
 
 def test_remote_options_restrict_to_https_without_credentials():
@@ -72,7 +65,7 @@ def test_remote_options_never_wait_for_a_helper_or_a_stalled_transfer():
 
 def test_remote_options_add_the_auth_header_after_the_restriction():
     """Test credentials are appended to, not instead of, the restriction."""
-    repo = replace(make_repo(), username="git-user", token="secret-token")
+    repo = replace(make_repo(), token="secret-token")
 
     assert remote_options(repo) == [
         *PROTOCOL_OPTIONS,

@@ -22,8 +22,8 @@ from admin.git.config import RepoConfig
 #: message for a token that is simply wrong as for one that has expired,
 #: so the two cannot be told apart from the failure text alone.
 AUTH_FAILURE_HINT = (
-    "the configured GIT_REPO_USERNAME/GIT_REPO_TOKEN was rejected - it may "
-    "be invalid or expired; check config.env"
+    "the configured GIT_REPO_TOKEN was rejected - it may "
+    "be invalid or expired; check config.toml"
 )
 
 #: Git options that refuse every transport except https.
@@ -66,6 +66,11 @@ _AUTH_FAILURE_MARKERS = (
 )
 
 
+#: Username sent with the token. HTTP Basic needs one, but the forge
+#: identifies the user by the token alone; GitLab documents ``oauth2``.
+TOKEN_USERNAME = "oauth2"
+
+
 def _basic_auth_value(credentials: str) -> str:
     """
     Base64-encode ``username:token`` for an HTTP Basic auth header.
@@ -90,10 +95,10 @@ def auth_header_options(repo: RepoConfig) -> list[str]:
         The ``-c http.extraHeader=...`` pair, or an empty list when no
         credentials are configured.
     """
-    if not repo.username or not repo.token:
+    if not repo.token:
         return []
 
-    credentials = f"{repo.username}:{repo.token}"
+    credentials = f"{TOKEN_USERNAME}:{repo.token}"
     return [
         "-c",
         f"http.extraHeader=Authorization: Basic "

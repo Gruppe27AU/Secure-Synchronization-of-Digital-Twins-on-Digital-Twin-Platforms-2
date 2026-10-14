@@ -44,8 +44,8 @@ def fixture_repo(tmp_path):
 
 @pytest.fixture(name="repo_with_credentials")
 def fixture_repo_with_credentials(repo):
-    """The same repository, but with a username and token configured."""
-    return replace(repo, username="git-user", token="secret-token")
+    """The same repository, but with a token configured."""
+    return replace(repo, token="secret-token")
 
 
 #: Key for each git subcommand that is only ever run one way.
