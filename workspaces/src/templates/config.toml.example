@@ -3,6 +3,11 @@ HOME_DIR = "/home/username"
 WORKSPACE_DIR = "/workspace"
 WORKSPACE_APP_DIR = ".workspace"
 
+# Seconds between two backups, from 1 to 86400 (one day). Optional:
+# without it the backup runs every 300 seconds. Keep it above the
+# [assets] sections, or TOML reads it as part of the section before it.
+SYNC_INTERVAL_SECONDS = 300
+
 # Git repository configuration. The section name decides where each
 # repository lives: its git directory in WORKSPACE_DIR/<name> and its
 # files in WORKSPACE_APP_DIR/assets/<name>.
