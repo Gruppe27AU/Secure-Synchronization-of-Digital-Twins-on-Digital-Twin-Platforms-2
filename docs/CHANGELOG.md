@@ -6,6 +6,14 @@ The main changes made so far are listed here.
 
 ### Changed
 
+* The git backup no longer commits everything it finds. Caches, virtual
+  environments and common credential files (`.env`, `*.pem`, `*.key`,
+  `id_rsa`, ...) are excluded by default through the repository's
+  `info/exclude`, which is never pushed. Files over 50 MiB are left out of
+  the backup's commits and named in the log on every interval; git never
+  stores a copy of them. The limit is a placeholder until the GitLab
+  instance's limits are confirmed
+
 * The git backup config file is now `config.toml`, since it is TOML. A
   `config.env` is no longer read, so rename an existing one
 * `GIT_REPO_USERNAME`, `GIT_DIR` and `GIT_WORK_TREE` are gone from the

@@ -315,8 +315,8 @@ The package is layered, and the test files mirror it:
 Dependencies point one way only: `main` → `api` → `services`.
 
 The `git/` package backs the workspace up to its remotes and is layered the
-same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
-→ `runner`:
+same way, `bootstrap` → `scheduler` → `sync`/`clone` → `staging`/`auth` →
+`config` → `runner`:
 
 - `config.py`: reads `config.toml` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
@@ -329,6 +329,9 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
   merge, another branch or detached HEAD, or a fresh `index.lock`
 - `scheduler.py`: runs the cycle on a background daemon thread and records
   each outcome in a `SyncStatus`
+- `staging.py`: what a backup commit leaves out, without running git:
+  default excludes kept in `info/exclude`, and files over
+  `MAX_FILE_SIZE_BYTES` (50 MiB) picked out before staging
 - `status.py`: thread-safe record of the last attempt, success and error
   kind per repository, served by `/git/status`
 - `bootstrap.py`: called once from `main.cli()` on startup; clones and

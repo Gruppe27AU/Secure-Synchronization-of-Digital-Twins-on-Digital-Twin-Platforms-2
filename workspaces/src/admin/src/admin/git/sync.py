@@ -26,6 +26,9 @@ cycle only starts when the repository can be left to it for a moment: on
 the configured branch, with no operation half finished and no other git
 process holding the index. Anything else stops the cycle before it changes
 a thing, and the next cycle tries again.
+
+Not everything in a working tree belongs in its history: see
+:mod:`admin.git.staging` for what the backup leaves out of its commits.
 """
 
 import logging
@@ -37,6 +40,13 @@ from pathlib import Path
 
 from admin.git.auth import AUTH_FAILURE_HINT, is_auth_failure, remote_options
 from admin.git.config import RepoConfig
+from admin.git.staging import (
+    MAX_FILE_SIZE_BYTES,
+    literal_excludes,
+    oversized_files,
+    parse_status,
+    write_default_excludes,
+)
 from admin.git.runner import (
     LOCAL_TIMEOUT_SECONDS,
     REMOTE_TIMEOUT_SECONDS,
@@ -71,7 +81,6 @@ INDEX_LOCK_FILE = "index.lock"
 #: by a git process that was killed, and is removed. Kept long, because a
 #: live ``git commit`` holds the lock for as long as its editor is open.
 STALE_LOCK_SECONDS = 3600
-
 
 class SyncErrorKind(StrEnum):
     """
@@ -251,21 +260,50 @@ def _run_remote_git(
     return _execute(repo, command, action, True, REMOTE_TIMEOUT_SECONDS)
 
 
-def has_changes(repo: RepoConfig) -> bool:
+def _changed_files(repo: RepoConfig) -> list[tuple[str, str]]:
     """
-    Check whether the working tree holds anything worth committing.
+    List every changed, deleted or untracked file in the working tree.
+
+    ``--untracked-files=all`` names each file inside a new directory, not
+    just the directory, so every file can be size-checked; ``-z`` gives the
+    names exactly, unquoted.
 
     Args:
         repo: Repository to inspect.
 
     Returns:
-        True if there are modified, deleted or untracked files.
+        One ``(code, path)`` pair per file, see
+        :func:`admin.git.staging.parse_status`.
 
     Raises:
         SyncError: If the status command fails.
     """
-    result = _run_git(repo, ["status", "--porcelain"], "read the status")
-    return bool(result.stdout.strip())
+    result = _run_git(
+        repo,
+        ["status", "--porcelain", "-z", "--untracked-files=all"],
+        "read the status",
+    )
+    return parse_status(result.stdout)
+
+
+def _write_default_excludes(repo: RepoConfig, git_dir: Path) -> None:
+    """
+    Refresh the backup's block in ``info/exclude``, see :mod:`admin.git.staging`.
+
+    Args:
+        repo: Repository the file belongs to.
+        git_dir: The repository's git directory.
+
+    Raises:
+        SyncError: If the file cannot be read or written.
+    """
+    try:
+        write_default_excludes(git_dir)
+    except (OSError, UnicodeDecodeError) as error:
+        raise SyncError(
+            f"Failed to update the default excludes for repository "
+            f"'{repo.name}': {error}"
+        ) from error
 
 
 def build_commit_message() -> str:
@@ -572,7 +610,7 @@ def _unmerged_files(repo: RepoConfig) -> list[str]:
     )
 
 
-def _ensure_safe_to_sync(repo: RepoConfig) -> None:
+def _ensure_safe_to_sync(repo: RepoConfig) -> Path:
     """
     Refuse to touch a repository the user is in the middle of using.
 
@@ -585,6 +623,9 @@ def _ensure_safe_to_sync(repo: RepoConfig) -> None:
 
     Args:
         repo: Repository to inspect.
+
+    Returns:
+        The repository's git directory, found on the way.
 
     Raises:
         SyncError: If another git process holds the index, an operation is
@@ -611,6 +652,8 @@ def _ensure_safe_to_sync(repo: RepoConfig) -> None:
             f"conflicts in {', '.join(unmerged)}",
             SyncErrorKind.UNRESOLVED_CONFLICTS,
         )
+
+    return git_dir
 
 
 def _staged_conflict_markers(repo: RepoConfig) -> list[str]:
@@ -687,23 +730,59 @@ def commit_local_changes(repo: RepoConfig) -> bool:
     conflict markers. The first check runs before anything else, so a
     repository the user is busy with is never pulled into or pushed either.
 
+    Files matching the default excludes are not seen at all, and oversized
+    files are left out and named in the log, see :mod:`admin.git.staging`.
+    One the user staged by hand is unstaged, as the commit takes everything
+    staged.
+
     Args:
         repo: Repository to commit in.
 
     Returns:
-        True if a commit was made, False if the working tree was clean.
+        True if a commit was made, False if there was nothing to commit.
 
     Raises:
         SyncError: If the repository is not safe to touch, conflict
             markers are found, or staging or committing fails.
     """
-    _ensure_safe_to_sync(repo)
+    git_dir = _ensure_safe_to_sync(repo)
+    _write_default_excludes(repo, git_dir)
 
-    if not has_changes(repo):
+    changed = _changed_files(repo)
+    if not changed:
         logger.info("No changes in repository '%s'; nothing to commit", repo.name)
         return False
 
-    _run_git(repo, ["add", "-A"], "stage changes")
+    paths = [path for _, path in changed]
+    oversized = oversized_files(Path(repo.work_tree), paths, MAX_FILE_SIZE_BYTES)
+    if oversized:
+        logger.warning(
+            "Not committing %d file(s) larger than %d bytes in repository "
+            "'%s': %s",
+            len(oversized),
+            MAX_FILE_SIZE_BYTES,
+            repo.name,
+            ", ".join(oversized),
+        )
+        staged_by_hand = [
+            path for code, path in changed
+            if path in oversized and code[0] not in " ?"
+        ]
+        if staged_by_hand:
+            _run_git(
+                repo,
+                ["reset", "--quiet", "--",
+                 *(f":(literal){path}" for path in staged_by_hand)],
+                "unstage the oversized files",
+            )
+        if len(oversized) == len(changed):
+            return False
+
+    _run_git(
+        repo,
+        ["add", "-A", "--", ".", *literal_excludes(oversized)],
+        "stage changes",
+    )
 
     marked = _staged_conflict_markers(repo)
     if marked:

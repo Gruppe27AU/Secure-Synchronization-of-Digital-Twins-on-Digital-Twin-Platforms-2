@@ -4,8 +4,9 @@ Unit tests for synchronizing a workspace repository with its remote.
 Covers :mod:`admin.git.sync`: committing what the user changed, merging
 the remote's work in, keeping local files when the two sides collide, and
 pushing the result. Real git is never invoked -
-:func:`admin.git.runner.run_git` is replaced by :class:`FakeGit`, which
-records the commands and answers them with canned results.
+:func:`admin.git.runner.run_git` is replaced by
+:class:`tests.helpers.fake_git.FakeGit`, which records the commands and
+answers them with canned results.
 """
 
 import os
@@ -13,7 +14,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 
 import pytest
 
@@ -29,12 +30,26 @@ from admin.git.sync import (
     SyncStopped,
     build_commit_message,
     commit_local_changes,
-    has_changes,
     pull_changes,
     push_if_ahead,
     sync_once,
 )
+from tests.helpers.fake_git import (
+    FakeGit,
+    command_key,
+    install_fake_git,
+    skip_writing_excludes,
+)
 from tests.helpers.repo_factory import make_repo
+
+#: The real wrapper, saved before the autouse fixture below replaces it.
+_real_write_excludes = sync._write_default_excludes  # pylint: disable=protected-access
+
+
+@pytest.fixture(autouse=True)
+def _no_excludes_on_disk(monkeypatch):
+    """FakeGit's git directory is not real, so nothing is written to it."""
+    skip_writing_excludes(monkeypatch)
 
 
 @pytest.fixture(name="repo")
@@ -52,163 +67,6 @@ def fixture_repo_with_credentials(repo):
     return replace(repo, token="secret-token")
 
 
-#: Key for each git subcommand that is only ever run one way.
-_PLAIN_KEYS = {
-    "status": "status",
-    "add": "add",
-    "commit": "commit",
-    "push": "push",
-    "fetch": "fetch",
-    "rev-parse": "git-dir",
-    "symbolic-ref": "head",
-    "ls-files": "unmerged",
-    "show": "staged-file",
-    "reset": "unstage",
-    "checkout": "take-local",
-    "rm": "remove-local",
-    "merge": "merge",
-    "diff": "marker-check",
-}
-
-#: Subcommands run more than one way, told apart by one of their arguments.
-#: Checked before ``_PLAIN_KEYS``.
-_ARGUMENT_KEYS = (
-    ("ls-files", "-z", "conflicted-files"),
-    ("add", "--", "mark-resolved"),
-    ("commit", "--no-edit", "merge-commit"),
-    ("merge", "--abort", "merge-abort"),
-)
-
-
-def _command_key(command):
-    """Name the git command in a way the tests can assert on."""
-    if "rev-list" in command:
-        return "incoming" if command[-1].startswith("HEAD..") else "outgoing"
-
-    for word, argument, key in _ARGUMENT_KEYS:
-        if word in command and argument in command:
-            return key
-
-    for word, key in _PLAIN_KEYS.items():
-        if word in command:
-            return key
-
-    return None
-
-
-def _unmerged_entries(path, stages):
-    """What ``git ls-files --unmerged -z`` prints for one conflicted path."""
-    return "".join(f"100644 {'0' * 40} {stage}\t{path}\0" for stage in stages)
-
-
-@dataclass
-class FakeGit:  # pylint: disable=too-many-instance-attributes
-    """
-    Stands in for :func:`admin.git.runner.run_git` and records every git call.
-
-    Args:
-        status_output: What ``git status --porcelain`` prints. Empty means
-            the working tree is clean.
-        incoming: Commits the remote has that the workspace does not.
-        outgoing: Commits the workspace has that the remote does not.
-        conflicts: Conflicted files the workspace still has. Any conflict
-            makes the merge fail, as real git does.
-        deleted_locally: Conflicted files the workspace deleted.
-        failing: Command key that should fail, for example ``"push"``.
-        git_dir: What ``git rev-parse --absolute-git-dir`` prints. The
-            default does not exist, so no operation is in progress.
-        head: What ``git symbolic-ref --quiet HEAD`` prints. None makes it
-            exit with status 1 and print nothing, as for a detached HEAD.
-        head_after_fetch: When set, ``head`` becomes this once the fetch
-            has run, as if the user switched branches meanwhile.
-        unmerged_output: What ``git ls-files --unmerged`` prints.
-        marker_output: What ``git diff --cached --check`` prints. Non-empty
-            makes it exit with status 2, as real git does.
-        staged_files: Staged content per path, read by ``git show :<path>``.
-        commands: Every command that was run, filled in as they arrive.
-    """
-
-    status_output: str = ""
-    incoming: int = 0
-    outgoing: int = 0
-    conflicts: list = field(default_factory=list)
-    deleted_locally: list = field(default_factory=list)
-    failing: str | None = None
-    git_dir: str = "/nonexistent/git-dir"
-    head: str | None = "refs/heads/main"
-    head_after_fetch: str | None = None
-    unmerged_output: str = ""
-    marker_output: str = ""
-    staged_files: dict = field(default_factory=dict)
-    commands: list = field(default_factory=list)
-    timeouts: list = field(default_factory=list)
-
-    def run(self, command, timeout):
-        """Record the command and its time limit, and answer it."""
-        self.commands.append(command)
-        self.timeouts.append(timeout)
-        key = _command_key(command)
-
-        if key == self.failing:
-            return subprocess.CompletedProcess(
-                command, 1, "", f"fatal: {key} was rejected"
-            )
-
-        if key == "fetch" and self.head_after_fetch:
-            self.head = self.head_after_fetch
-
-        if key == "head" and self.head is None:
-            return subprocess.CompletedProcess(command, 1, "", "")
-
-        if key == "merge" and (self.conflicts or self.deleted_locally):
-            return subprocess.CompletedProcess(
-                command, 1, "", "CONFLICT (content): Merge conflict"
-            )
-
-        if key == "marker-check" and self.marker_output:
-            return subprocess.CompletedProcess(command, 2, self.marker_output, "")
-
-        return subprocess.CompletedProcess(command, 0, self._stdout(command), "")
-
-    def _stdout(self, command):
-        """The output git would print for a command."""
-        key = _command_key(command)
-        if key == "staged-file":
-            # The last argument is ":<path>".
-            return self.staged_files.get(command[-1][1:], "")
-
-        if key == "conflicted-files":
-            return "".join(
-                [_unmerged_entries(path, "123") for path in self.conflicts]
-                + [_unmerged_entries(path, "13") for path in self.deleted_locally]
-            )
-
-        return {
-            "status": self.status_output,
-            "incoming": str(self.incoming),
-            "outgoing": str(self.outgoing),
-            "git-dir": self.git_dir,
-            "head": self.head,
-            "unmerged": self.unmerged_output,
-        }.get(key, "")
-
-    def command_for(self, key):
-        """Return the recorded command with this key, or None."""
-        for command in self.commands:
-            if _command_key(command) == key:
-                return command
-        return None
-
-    @property
-    def keys(self):
-        """The commands that were run, in order."""
-        return [_command_key(command) for command in self.commands]
-
-
-def _install(monkeypatch, fake_git):
-    """Make admin.git.sync use the fake instead of real git."""
-    monkeypatch.setattr(sync, "run_git", fake_git.run)
-    return fake_git
 
 
 # --------------------------------------------------------------------------
@@ -218,7 +76,7 @@ def _install(monkeypatch, fake_git):
 
 def test_commit_local_changes_commits_a_dirty_working_tree(monkeypatch, repo):
     """Test a modified working tree is staged and committed."""
-    fake_git = _install(monkeypatch, FakeGit(status_output=" M notebook.ipynb"))
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M notebook.ipynb"))
 
     assert commit_local_changes(repo) is True
     # Gate, stage, check for markers, then commit - in that order.
@@ -235,7 +93,7 @@ def test_commit_local_changes_commits_a_dirty_working_tree(monkeypatch, repo):
 
 def test_commit_local_changes_skips_a_clean_working_tree(monkeypatch, repo):
     """Test a clean working tree is left alone entirely."""
-    fake_git = _install(monkeypatch, FakeGit(status_output=""))
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=""))
 
     assert commit_local_changes(repo) is False
     assert fake_git.keys == ["git-dir", "head", "unmerged", "status"]
@@ -259,7 +117,7 @@ def test_commit_refuses_while_an_operation_is_in_progress(
     git_dir = tmp_path / "git-dir"
     git_dir.mkdir()
     (git_dir / marker).touch()
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(git_dir=str(git_dir), status_output="UD f.txt")
     )
 
@@ -274,7 +132,7 @@ def test_commit_refuses_while_an_operation_is_in_progress(
 
 def test_commit_refuses_unmerged_files(monkeypatch, repo):
     """Test a file git still lists as conflicted is never committed."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(
             status_output="UD f.txt",
@@ -296,7 +154,7 @@ def test_commit_refuses_unmerged_files(monkeypatch, repo):
 
 def test_commit_refuses_staged_conflict_markers(monkeypatch, repo):
     """Test a conflict marked resolved but still holding markers is caught."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(
             status_output="M  notes.md",
@@ -325,7 +183,7 @@ def test_commit_refuses_staged_conflict_markers(monkeypatch, repo):
 
 def test_commit_ignores_whitespace_warnings(monkeypatch, repo):
     """Test trailing whitespace, which the same check reports, is committed."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(
             status_output=" M notes.md",
@@ -339,7 +197,7 @@ def test_commit_ignores_whitespace_warnings(monkeypatch, repo):
 
 def test_commit_ignores_a_markdown_heading_underline(monkeypatch, repo):
     """Test a bare '=======', which git also reports, is committed."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(
             status_output=" M notes.md",
@@ -362,7 +220,7 @@ def test_commit_message_contains_a_timestamp():
 
 def test_commit_sets_an_author_identity(monkeypatch, repo):
     """Test the commit carries an identity, which cloning does not set."""
-    fake_git = _install(monkeypatch, FakeGit(status_output=" M file.txt"))
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M file.txt"))
 
     commit_local_changes(repo)
 
@@ -371,12 +229,82 @@ def test_commit_sets_an_author_identity(monkeypatch, repo):
     assert "user.email=workspace-admin@localhost" in commit_command
 
 
-def test_has_changes_raises_when_status_fails(monkeypatch, repo):
+def test_commit_raises_when_status_fails(monkeypatch, repo):
     """Test an unreadable working tree is surfaced as SyncError."""
-    _install(monkeypatch, FakeGit(failing="status"))
+    install_fake_git(monkeypatch, FakeGit(failing="status"))
 
     with pytest.raises(SyncError, match="read the status"):
-        has_changes(repo)
+        commit_local_changes(repo)
+
+
+def _oversized(repo, monkeypatch, name):
+    """Put a file over a 10-byte limit into the working tree."""
+    monkeypatch.setattr(sync, "MAX_FILE_SIZE_BYTES", 10)
+    path = repo.work_tree / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 11)
+
+
+def test_commit_stages_everything_but_the_oversized_files(monkeypatch, repo):
+    """Test the oversized file is excluded by pathspec, not added and removed."""
+    _oversized(repo, monkeypatch, "big.bin")
+    fake_git = install_fake_git(
+        monkeypatch, FakeGit(status_output="?? big.bin\0 M notes.md\0")
+    )
+
+    assert commit_local_changes(repo) is True
+
+    assert fake_git.command_for("add")[-3:] == [
+        "--", ".", ":(exclude,literal)big.bin"
+    ]
+    assert "unstage-oversized" not in fake_git.keys
+
+
+def test_commit_unstages_an_oversized_file_the_user_staged(monkeypatch, repo):
+    """Test a staged oversized file is unstaged, since commit takes the index."""
+    _oversized(repo, monkeypatch, "big.bin")
+    fake_git = install_fake_git(
+        monkeypatch, FakeGit(status_output="A  big.bin\0 M notes.md\0")
+    )
+
+    commit_local_changes(repo)
+
+    assert fake_git.command_for("unstage-oversized")[-2:] == [
+        "--", ":(literal)big.bin"
+    ]
+    assert fake_git.keys.index("unstage-oversized") < fake_git.keys.index("add")
+
+
+def test_commit_makes_no_commit_when_every_change_is_oversized(
+    monkeypatch, repo, caplog
+):
+    """Test nothing is staged or committed, and the file is named in the log."""
+    _oversized(repo, monkeypatch, "big.bin")
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output="?? big.bin"))
+
+    with caplog.at_level("WARNING"):
+        assert commit_local_changes(repo) is False
+
+    assert "add" not in fake_git.keys
+    assert "commit" not in fake_git.keys
+    assert "big.bin" in caplog.text
+
+
+def test_commit_refuses_when_the_excludes_cannot_be_written(monkeypatch, repo):
+    """Test nothing is committed unless the default excludes are in place."""
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M notes.md"))
+
+    def unwritable(_git_dir):
+        raise PermissionError(13, "Permission denied")
+
+    # Undo the autouse stub, so the real wrapper meets the failing writer.
+    monkeypatch.setattr(sync, "_write_default_excludes", _real_write_excludes)
+    monkeypatch.setattr(sync, "write_default_excludes", unwritable)
+
+    with pytest.raises(SyncError, match="default excludes"):
+        commit_local_changes(repo)
+
+    assert "add" not in fake_git.keys
 
 
 # --------------------------------------------------------------------------
@@ -386,7 +314,7 @@ def test_has_changes_raises_when_status_fails(monkeypatch, repo):
 
 def test_pull_changes_does_nothing_when_already_up_to_date(monkeypatch, repo):
     """Test no merge is attempted when the remote has nothing new."""
-    fake_git = _install(monkeypatch, FakeGit(incoming=0))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
 
     assert pull_changes(repo) == []
     assert fake_git.keys == ["fetch", "incoming"]
@@ -396,7 +324,7 @@ def test_pull_changes_merges_cleanly_when_there_is_no_conflict(
     monkeypatch, repo, caplog
 ):
     """Test a clean merge reports no kept files and needs only one merge."""
-    fake_git = _install(monkeypatch, FakeGit(incoming=2))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=2))
 
     with caplog.at_level("INFO"):
         assert pull_changes(repo) == []
@@ -407,7 +335,7 @@ def test_pull_changes_merges_cleanly_when_there_is_no_conflict(
 
 def test_pull_changes_keeps_whole_local_files_on_conflict(monkeypatch, repo):
     """Test conflicted files take the local version and the merge is concluded."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(incoming=1, conflicts=["shared.txt", "notes.md"])
     )
 
@@ -427,12 +355,12 @@ def test_pull_changes_keeps_whole_local_files_on_conflict(monkeypatch, repo):
     ]
     # No hunk-level resolution, which mixes the remote into local files.
     assert not any("ours" in command for command in fake_git.commands
-                   if _command_key(command) == "merge")
+                   if command_key(command) == "merge")
 
 
 def test_pull_changes_keeps_a_local_deletion_on_conflict(monkeypatch, repo):
     """Test a file deleted locally but changed remotely stays deleted."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(incoming=1, deleted_locally=["old.txt"])
     )
 
@@ -444,7 +372,7 @@ def test_pull_changes_keeps_a_local_deletion_on_conflict(monkeypatch, repo):
 
 def test_pull_changes_resolves_both_kinds_of_conflict_at_once(monkeypatch, repo):
     """Test kept and deleted files are each resolved their own way."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(incoming=1, conflicts=["model.txt"], deleted_locally=["old.txt"]),
     )
@@ -456,7 +384,7 @@ def test_pull_changes_resolves_both_kinds_of_conflict_at_once(monkeypatch, repo)
 
 def test_pull_changes_keeps_a_file_name_with_spaces_intact(monkeypatch, repo):
     """Test a conflicted path with spaces is passed to git as one path."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(incoming=1, conflicts=["my notes.ipynb"])
     )
 
@@ -468,7 +396,7 @@ def test_pull_changes_logs_the_conflict_and_its_resolution(
     monkeypatch, repo, caplog
 ):
     """Test both the detection and the resolution are logged, by filename."""
-    _install(monkeypatch, FakeGit(incoming=1, conflicts=["shared.txt"]))
+    install_fake_git(monkeypatch, FakeGit(incoming=1, conflicts=["shared.txt"]))
 
     with caplog.at_level("INFO"):
         pull_changes(repo)
@@ -482,7 +410,7 @@ def test_pull_changes_fetches_the_branch_with_an_explicit_refspec(
     monkeypatch, repo
 ):
     """Test the fetch names the branch only as a refspec, after ``--``."""
-    fake_git = _install(monkeypatch, FakeGit(incoming=0))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
 
     pull_changes(repo)
 
@@ -496,7 +424,7 @@ def test_pull_changes_fetches_the_branch_with_an_explicit_refspec(
 @pytest.mark.parametrize("step", ["fetch", "push"])
 def test_remote_commands_allow_only_https(monkeypatch, repo, step):
     """Test fetch and push refuse every transport except https."""
-    fake_git = _install(monkeypatch, FakeGit(incoming=0, outgoing=1))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0, outgoing=1))
 
     pull_changes(repo)
     push_if_ahead(repo)
@@ -520,7 +448,7 @@ def test_a_dash_led_branch_is_never_passed_as_an_option(monkeypatch, repo, branc
     ``load_config`` refuses such a branch, but sync must not depend on
     that: a value git reads as ``--upload-pack`` would run a command.
     """
-    fake_git = _install(monkeypatch, FakeGit(incoming=0, outgoing=1))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0, outgoing=1))
     repo = replace(repo, branch=branch)
 
     pull_changes(repo)
@@ -535,7 +463,7 @@ def test_a_dash_led_branch_is_never_passed_as_an_option(monkeypatch, repo, branc
 
 def test_pull_changes_raises_when_the_fetch_fails(monkeypatch, repo):
     """Test an unreachable remote is surfaced as SyncError."""
-    _install(monkeypatch, FakeGit(failing="fetch"))
+    install_fake_git(monkeypatch, FakeGit(failing="fetch"))
 
     with pytest.raises(SyncError, match="fetch from the remote") as excinfo:
         pull_changes(repo)
@@ -555,7 +483,7 @@ def test_pull_changes_aborts_the_merge_when_resolving_fails(
     monkeypatch, repo, failing, message
 ):
     """Test a failed resolution is aborted so no half merge is left behind."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(incoming=1, conflicts=["shared.txt"], failing=failing),
     )
@@ -570,7 +498,7 @@ def test_pull_changes_aborts_when_a_local_deletion_cannot_be_kept(
     monkeypatch, repo
 ):
     """Test a failed removal is aborted like any other failed resolution."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(incoming=1, deleted_locally=["old.txt"], failing="remove-local"),
     )
@@ -585,7 +513,7 @@ def test_pull_changes_aborts_a_merge_that_stops_without_a_conflict(
     monkeypatch, repo
 ):
     """Test a merge git refuses for another reason is aborted and raised."""
-    fake_git = _install(monkeypatch, FakeGit(incoming=1, failing="merge"))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=1, failing="merge"))
 
     with pytest.raises(SyncError, match="merge was rejected"):
         pull_changes(repo)
@@ -598,7 +526,7 @@ def test_fetch_sends_auth_header_without_exposing_the_token(
     monkeypatch, repo_with_credentials
 ):
     """Test the fetch authenticates the same way the clone and push do."""
-    fake_git = _install(monkeypatch, FakeGit(incoming=0))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
 
     pull_changes(repo_with_credentials)
 
@@ -617,7 +545,7 @@ def test_fetch_sends_auth_header_without_exposing_the_token(
 
 def test_push_if_ahead_pushes_when_the_remote_is_behind(monkeypatch, repo):
     """Test the branch is pushed when it holds commits the remote lacks."""
-    fake_git = _install(monkeypatch, FakeGit(outgoing=2))
+    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=2))
 
     assert push_if_ahead(repo) is True
     assert fake_git.command_for("push")[-3:] == [
@@ -629,7 +557,7 @@ def test_push_if_ahead_pushes_when_the_remote_is_behind(monkeypatch, repo):
 
 def test_push_if_ahead_skips_when_the_remote_is_level(monkeypatch, repo):
     """Test nothing is pushed when the remote already has everything."""
-    fake_git = _install(monkeypatch, FakeGit(outgoing=0))
+    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=0))
 
     assert push_if_ahead(repo) is False
     assert fake_git.command_for("push") is None
@@ -637,7 +565,7 @@ def test_push_if_ahead_skips_when_the_remote_is_level(monkeypatch, repo):
 
 def test_push_if_ahead_raises_when_the_push_fails(monkeypatch, repo):
     """Test a rejected push is surfaced as SyncError."""
-    _install(monkeypatch, FakeGit(outgoing=1, failing="push"))
+    install_fake_git(monkeypatch, FakeGit(outgoing=1, failing="push"))
 
     with pytest.raises(SyncError, match="push changes"):
         push_if_ahead(repo)
@@ -647,7 +575,7 @@ def _fake_run_push_auth_failure(auth_failure_stderr):
     """Build a fake subprocess.run: one outgoing commit, then a failed push."""
 
     def fake_run(command, _timeout):
-        key = _command_key(command)
+        key = command_key(command)
         if key == "push":
             return subprocess.CompletedProcess(command, 1, "", auth_failure_stderr)
         if key == "outgoing":
@@ -702,7 +630,7 @@ def test_push_sends_auth_header_without_exposing_the_token(
     monkeypatch, repo_with_credentials
 ):
     """Test the push authenticates with a header, not a token in the URL."""
-    fake_git = _install(monkeypatch, FakeGit(outgoing=1))
+    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=1))
 
     push_if_ahead(repo_with_credentials)
 
@@ -716,7 +644,7 @@ def test_push_sends_auth_header_without_exposing_the_token(
 
 def test_push_has_no_auth_header_without_credentials(monkeypatch, repo):
     """Test an unauthenticated repository is pushed without a header."""
-    fake_git = _install(monkeypatch, FakeGit(outgoing=1))
+    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=1))
 
     push_if_ahead(repo)
 
@@ -732,7 +660,7 @@ def test_push_has_no_auth_header_without_credentials(monkeypatch, repo):
 
 def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):
     """Test fetch and push may take longer than the local commands."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M file.txt", incoming=1, outgoing=1)
     )
 
@@ -760,7 +688,7 @@ def test_a_command_that_times_out_raises_sync_error(
     """Test a hung git command ends the cycle with SyncError."""
 
     def run(command, timeout):
-        if _command_key(command) == stuck:
+        if command_key(command) == stuck:
             raise GitTimeoutError("git did not finish within 1 seconds and was stopped")
         return fake_git.run(command, timeout)
 
@@ -781,7 +709,7 @@ def test_sync_once_commits_before_it_merges(monkeypatch, repo):
     Git refuses to merge over modified files, so pulling before committing
     would fail as soon as the remote had anything to deliver.
     """
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M file.txt", incoming=1, outgoing=2)
     )
 
@@ -793,7 +721,7 @@ def test_sync_once_reports_no_change_when_everything_is_in_sync(
     monkeypatch, repo
 ):
     """Test a clean tree and a level remote produce no commit and no push."""
-    fake_git = _install(monkeypatch, FakeGit(status_output="", incoming=0))
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output="", incoming=0))
 
     assert sync_once(repo) is False
     assert "commit" not in fake_git.keys
@@ -804,7 +732,7 @@ def test_sync_once_reports_a_change_when_only_the_remote_moved(
     monkeypatch, repo
 ):
     """Test merging someone else's work counts as a change worth reporting."""
-    _install(
+    install_fake_git(
         monkeypatch, FakeGit(status_output="", incoming=1, conflicts=["a.txt"])
     )
 
@@ -813,7 +741,7 @@ def test_sync_once_reports_a_change_when_only_the_remote_moved(
 
 def test_sync_once_raises_when_a_step_fails(monkeypatch, repo):
     """Test a failing step stops the cycle instead of continuing blindly."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M file.txt", failing="commit")
     )
 
@@ -833,7 +761,7 @@ def test_sync_once_leaves_an_unfinished_merge_alone(monkeypatch, repo, tmp_path)
     git_dir = tmp_path / "git-dir"
     git_dir.mkdir()
     (git_dir / "MERGE_HEAD").touch()
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(git_dir=str(git_dir), incoming=1, outgoing=1)
     )
 
@@ -861,7 +789,7 @@ def _git_dir_with_lock(tmp_path, age_seconds):
 
 def test_commit_refuses_a_detached_head(monkeypatch, repo):
     """Test nothing is committed on a detached HEAD, e.g. during git bisect."""
-    fake_git = _install(monkeypatch, FakeGit(status_output=" M f.txt", head=None))
+    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M f.txt", head=None))
 
     with pytest.raises(SyncError, match="HEAD is detached") as excinfo:
         commit_local_changes(repo)
@@ -872,7 +800,7 @@ def test_commit_refuses_a_detached_head(monkeypatch, repo):
 
 def test_commit_refuses_another_branch(monkeypatch, repo):
     """Test the user's own branch never gets a backup commit."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(status_output=" M f.txt", head="refs/heads/experiment"),
     )
@@ -890,7 +818,7 @@ def test_commit_refuses_a_branch_that_only_starts_like_the_configured_one(
     monkeypatch, repo
 ):
     """Test the comparison is on the whole ref, not a prefix of it."""
-    _install(monkeypatch, FakeGit(head="refs/heads/main-old"))
+    install_fake_git(monkeypatch, FakeGit(head="refs/heads/main-old"))
 
     with pytest.raises(SyncError) as excinfo:
         commit_local_changes(repo)
@@ -900,7 +828,7 @@ def test_commit_refuses_a_branch_that_only_starts_like_the_configured_one(
 
 def test_a_failure_to_read_the_branch_is_a_git_failure(monkeypatch, repo):
     """Test a broken symbolic-ref is not mistaken for a detached HEAD."""
-    _install(monkeypatch, FakeGit(failing="head"))
+    install_fake_git(monkeypatch, FakeGit(failing="head"))
 
     with pytest.raises(SyncError, match="read the checked-out branch") as excinfo:
         commit_local_changes(repo)
@@ -913,7 +841,7 @@ def test_commit_refuses_while_another_git_process_holds_the_index(
 ):
     """Test a recent index.lock skips the cycle and is left alone."""
     git_dir, lock = _git_dir_with_lock(tmp_path, age_seconds=5)
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(git_dir=str(git_dir), status_output=" M f.txt")
     )
 
@@ -932,7 +860,7 @@ def test_a_stale_index_lock_is_removed_and_the_cycle_goes_ahead(
     git_dir, lock = _git_dir_with_lock(
         tmp_path, age_seconds=sync.STALE_LOCK_SECONDS + 60
     )
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(git_dir=str(git_dir), status_output=" M f.txt")
     )
 
@@ -951,7 +879,7 @@ def test_a_stale_index_lock_that_cannot_be_removed_skips_the_cycle(
     git_dir, _ = _git_dir_with_lock(
         tmp_path, age_seconds=sync.STALE_LOCK_SECONDS + 60
     )
-    fake_git = _install(monkeypatch, FakeGit(git_dir=str(git_dir)))
+    fake_git = install_fake_git(monkeypatch, FakeGit(git_dir=str(git_dir)))
 
     def refuse(_path, missing_ok=False):
         raise PermissionError(13, "Permission denied")
@@ -969,7 +897,7 @@ def test_pull_changes_does_not_merge_after_a_branch_switch_during_the_fetch(
     monkeypatch, repo
 ):
     """Test a merge never lands on a branch the user switched to meanwhile."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch,
         FakeGit(incoming=1, head_after_fetch="refs/heads/experiment"),
     )
@@ -983,7 +911,7 @@ def test_pull_changes_does_not_merge_after_a_branch_switch_during_the_fetch(
 
 def test_push_if_ahead_counts_the_configured_branch_not_head(monkeypatch, repo):
     """Test what is counted is what the push sends, whatever is checked out."""
-    fake_git = _install(monkeypatch, FakeGit(outgoing=1))
+    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=1))
 
     push_if_ahead(repo)
 
@@ -992,7 +920,7 @@ def test_push_if_ahead_counts_the_configured_branch_not_head(monkeypatch, repo):
 
 def test_sync_once_stops_before_the_pull_when_asked_to(monkeypatch, repo):
     """Test a stopping service does not start a fetch after the commit."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M f.txt", incoming=1, outgoing=1)
     )
     stop_event = threading.Event()
@@ -1012,7 +940,7 @@ def test_sync_once_stops_before_the_push_when_asked_to(monkeypatch, repo):
 
     def run_and_stop_after_fetch(command, timeout):
         result = fake_git.run(command, timeout)
-        if _command_key(command) == "fetch":
+        if command_key(command) == "fetch":
             stop_event.set()
         return result
 
@@ -1027,7 +955,7 @@ def test_sync_once_stops_before_the_push_when_asked_to(monkeypatch, repo):
 
 def test_sync_once_runs_to_the_end_while_not_stopped(monkeypatch, repo):
     """Test an unset stop event changes nothing."""
-    fake_git = _install(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M f.txt", incoming=1, outgoing=1)
     )
 

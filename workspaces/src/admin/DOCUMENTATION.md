@@ -660,6 +660,69 @@ ahead, logging a warning. An hour, rather than a few minutes, so that a
 `git commit` editor left open over a break is not mistaken for a crash. A
 running git command never holds the lock that long in practice.
 
+## What the Backup Commits
+
+The backup commits every change in the working tree, with two exceptions.
+Everything it pushes stays in the repository's history for good, even if
+the file is deleted later, so these are kept out from the start.
+
+### Files excluded by default
+
+Before every cycle, the backup writes these patterns into `info/exclude` in
+the repository's git directory:
+
+| Group | Patterns |
+| --- | --- |
+| Python and Jupyter | `__pycache__/`, `*.py[cod]`, `.ipynb_checkpoints/` |
+| Virtual environments and installed packages | `.venv/`, `venv/`, `node_modules/` |
+| Operating system clutter | `.DS_Store`, `Thumbs.db` |
+| Credentials and keys | `.env`, `.env.*` (but not `.env.example`), `*.pem`, `*.key`, `id_rsa`, `id_ecdsa`, `id_ed25519`, `.git-credentials`, `.netrc` |
+
+`info/exclude` works like a `.gitignore` that is never pushed, so it
+changes nothing for anyone else using the repository. The backup only
+rewrites its own block in the file, between the
+`# BEGIN workspace-admin default excludes` and `# END ...` lines, and
+leaves any line you add there alone.
+
+Excludes only affect files git does not track yet:
+
+- **To version an excluded file anyway**, add it once by hand:
+  `git add -f .env.production`. From then on it is tracked, and the backup
+  commits its changes like any other file.
+- **To stop backing up a file that is already tracked**, for example a
+  `venv/` committed before this change, untrack it:
+  `git rm -r --cached venv`. Its old versions stay in the history.
+
+### Files larger than 50 MiB
+
+A file over 50 MiB (52,428,800 bytes) is left out of the backup's commits.
+Everything else is still committed, and the skipped file stays in your
+working tree untouched. Each interval names it in the log:
+
+```text
+WARNING admin.git.sync Not committing 1 file(s) larger than 52428800 bytes in repository 'common': results/run-42.h5
+```
+
+The size is checked before anything is staged, so git never stores a copy
+of the file. This covers:
+
+- **a new file**: it stays untracked
+- **a tracked file that grew past the limit**: the remote keeps its last
+  committed version until the file is small enough again
+- **a file you staged by hand with `git add`**: it is unstaged again,
+  because the backup's commit takes everything staged
+
+Nothing about a skipped file is reported on `/git/status`, so the log is
+the place to look when a file does not reach the remote.
+
+**To back such a file up**, commit it yourself (`git add` and
+`git commit`). The backup pushes your commit as it is. Check the remote's
+own size limits first. Large files that change often are better kept out
+of git altogether, or in Git LFS.
+
+The limit is `MAX_FILE_SIZE_BYTES` in `admin/git/staging.py`. It is not
+configurable yet.
+
 ### What the backup does not check
 
 The checks cover the commits the backup makes itself. A commit you make by
@@ -690,10 +753,13 @@ decision what goes into it.
    1. **Commit** - the repository is first checked for a running git
       command (`index.lock`), an unfinished merge, rebase, cherry-pick or
       revert, another branch or a detached `HEAD`, and unresolved files,
-      and the whole cycle stops if it finds one. Then `git status --porcelain`
-      decides whether there is anything to save. A clean tree is skipped; a
-      dirty one is staged, checked for conflict markers, and committed with
-      a timestamped message (see
+      and the whole cycle stops if it finds one. The default excludes are
+      refreshed in `info/exclude`, then `git status --porcelain -z
+      --untracked-files=all` decides whether there is anything to save. A
+      clean tree is skipped; in a dirty one, files over 50 MiB are left
+      out, the rest is staged, checked for conflict markers, and committed
+      with a timestamped message (see
+      [What the Backup Commits](#what-the-backup-commits) and
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Pull** - the remote is fetched and merged in. Local files win any
       conflict, whole file (see
@@ -897,8 +963,8 @@ lives in `commit_local_changes()`:
   entries git keeps while an operation is stopped (`MERGE_HEAD`,
   `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`,
   `rebase-apply`) and asks `git ls-files --unmerged` for unresolved files.
-  Either stops the cycle with `SyncError`. It runs before `has_changes()`
-  on purpose: with nothing to commit, the cycle would otherwise go on to
+  Either stops the cycle with `SyncError`. It runs before the working
+  tree's status is read on purpose: with nothing to commit, the cycle would otherwise go on to
   merge, and the abort after a failed merge would throw away the merge the
   user was in the middle of.
 - The git directory is asked of git with `git rev-parse
@@ -1083,6 +1149,74 @@ name with a space would have been read as two files. `-z` avoids that.
 with a local bare repository as the remote. Four of its five tests fail on
 the old `-X ours` code.
 
+### Implementation Report: Bounding What the Backup Commits
+
+A review found that the backup ran `git add -A` on everything, every
+interval, with no exclusions and no size limit. Checkpoints, virtual
+environments and simulation output bloated the history, and a secret
+dropped into the working tree was pushed within minutes, staying in the
+history even after the file was deleted.
+
+- **Default excludes, in `info/exclude`.**
+  - The file lives in the git directory and is never pushed, so the
+    repository's `.gitignore` and everyone else's clone stay as they are.
+  - The backup writes its patterns between two marker lines and replaces
+    that block on every cycle. Workspaces cloned before this change, or
+    before a later change to the list, pick it up without a re-clone.
+  - The user's own lines, and the comments git's template puts there, are
+    kept.
+  - Credential files are in the list because the review named a leaked
+    secret as the worst case.
+- **A per-file size limit, checked before staging.**
+  - Unstaging oversized files after a plain `git add -A` would leave the
+    history clean, but git would still store a full copy of every large
+    file on every interval, filling the git directory.
+  - Instead, `git status --porcelain -z --untracked-files=all` lists every
+    changed file, each one's size is read from the working tree, and the
+    oversized ones are left out of the `git add` with
+    `:(exclude,literal)<path>` pathspecs.
+  - `--untracked-files=all` matters: without it, a new directory is listed
+    as one entry, and the large file inside it would never be checked.
+  - `-z` gives names exactly as they are, and `literal` stops `*` or `[` in
+    a name from matching other files.
+  - Checked against real git: names with spaces, `:`, `*` and a newline
+    were left out correctly, and the git directory held no copy of the
+    skipped file.
+  - A file the user staged by hand is unstaged with `git reset`, since the
+    commit takes the whole index.
+- **The limit is 50 MiB for now.**
+  - The right value depends on the GitLab instance's push and repository
+    limits and on the files users really produce, and both still need to be
+    confirmed.
+  - It is one constant, `MAX_FILE_SIZE_BYTES` in `staging.py`, passed to
+    `oversized_files()`, so changing it, or later reading it from
+    `config.toml`, touches one place.
+- **`staging.py` is a separate module.**
+  - Deciding what to stage needs no git: it parses git's output, reads file
+    sizes and writes `info/exclude`. Keeping it out of `sync.py` makes it
+    testable without a repository, and keeps `sync.py` under pylint's
+    1000-line limit.
+  - `has_changes()` was removed. `commit_local_changes()` now reads the
+    status once and uses the same list for both decisions.
+- **Test support.**
+  - `FakeGit` moved from `test_git_sync.py` to `tests/helpers/fake_git.py`,
+    which also took that test file back under the line limit.
+  - Since `FakeGit` reports a git directory that does not exist, the sync
+    unit tests stub out the exclude writer, which is tested on its own in
+    `test_git_staging.py`.
+
+**Not covered:**
+
+- Files already tracked keep being committed, even if they match an
+  exclude. They have to be untracked by hand.
+- A secret in a file that matches no pattern, such as `credentials.json`,
+  is still committed and pushed.
+- Anything pushed before this change stays in the history.
+- Skipped files are not counted on `/git/status`, only named in the log.
+- Many files over the limit at once put one pathspec each on the `git add`
+  command line. That is far below Linux's limits for any realistic number
+  of files, but it is not unbounded.
+
 ### Package Layout
 
 The package is split by layer, so that transport concerns stay separate from
@@ -1102,6 +1236,7 @@ src/admin/
     ├── config.py                  # Reads config.toml into RepoConfig objects
     ├── auth.py                    # Shared HTTP auth header and failure detection
     ├── clone.py                   # Clones a single RepoConfig
+    ├── staging.py                 # What a commit leaves out: excludes, size limit
     ├── sync.py                    # Commits and pushes one working tree
     ├── scheduler.py               # Runs the sync on a timer, in the background
     ├── status.py                  # Outcome of recent syncs, for /git/status
@@ -1147,6 +1282,12 @@ module imports the layer above it, so each can be tested on its own.
     credential (`is_auth_failure()`) and the repository has one
     configured, the error is extended with a clear, token-free hint that
     `GIT_REPO_TOKEN` may be invalid or expired
+  - `staging.py`: decides what the backup stages, without running git.
+    `write_default_excludes()` keeps the backup's block of
+    `DEFAULT_EXCLUDES` in `info/exclude` up to date, `parse_status()` reads
+    `git status --porcelain -z`, and `oversized_files()` picks out files
+    over `MAX_FILE_SIZE_BYTES` (50 MiB), which `literal_excludes()` turns
+    into pathspecs that leave exactly those files out of `git add`
   - `sync.py`: `sync_once()` runs one full cycle for an already-cloned
     working tree - `commit_local_changes()`, then `pull_changes()`, then
     `push_if_ahead()` - returning `False` when the repository was already
@@ -1220,16 +1361,19 @@ obvious test file:
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
 | `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials |
 | `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
+| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps, oversized files left out of `git add` by pathspec (and unstaged if staged by hand), no commit when only oversized files changed, no commit without the default excludes |
+| `tests/unit/test_git_staging.py` | `admin/git/staging.py` | Reading `git status -z` (odd names, renames), the size limit's boundary, deleted files, directories and symlinks never oversized, literal pathspecs, `info/exclude` created, kept up to date and the user's lines preserved |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit |
 | `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
+| `tests/integration/test_git_sync_staging.py` | `admin/git/sync.py`, `admin/git/staging.py` | What is committed, against real git: default excludes keeping clutter and credential files off the remote, an oversized file left out and never stored, a `*` in its name not matching other files, a tracked file that grew keeping its last version, a hand-staged oversized file unstaged, no commit when only oversized files changed |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
 it builds the `RepoConfig` objects the git tests need, so no test module has
-to repeat the full seven-field construction.
+to repeat the full seven-field construction. `tests/helpers/fake_git.py`
+holds `FakeGit`, the stand-in for git used by the sync unit tests.
 
 ### Code Quality and Coverage
 
