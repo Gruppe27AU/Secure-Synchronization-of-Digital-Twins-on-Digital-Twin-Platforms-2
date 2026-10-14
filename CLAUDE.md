@@ -325,13 +325,15 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
 - `clone.py`: clones one repository, git directory and working tree kept
   apart
 - `sync.py`: one cycle for a cloned tree: commit, pull, push. Local files
-  win a conflict
+  win a conflict. Skips the cycle while the user is busy: an unfinished
+  merge, another branch or detached HEAD, or a fresh `index.lock`
 - `scheduler.py`: runs the cycle on a background daemon thread and records
   each outcome in a `SyncStatus`
 - `status.py`: thread-safe record of the last attempt, success and error
   kind per repository, served by `/git/status`
 - `bootstrap.py`: called once from `main.cli()` on startup; clones and
-  starts the sync on a background thread, so the HTTP API never waits
+  starts the sync on a background thread, so the HTTP API never waits.
+  `stop_git_backup()` is run by the FastAPI lifespan on shutdown
 - `runner.py`: runs every git command with prompts off, empty stdin and a
   time limit, stopping an overrunning command and its child processes
 

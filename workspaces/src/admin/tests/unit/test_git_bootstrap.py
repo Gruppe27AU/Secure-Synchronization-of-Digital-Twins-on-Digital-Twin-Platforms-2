@@ -255,7 +255,7 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
     monkeypatch.setattr(
         bootstrap,
         "start_git_sync",
-        lambda status, interval: steps.append((status, interval)),
+        lambda status, interval, _stop_event: steps.append((status, interval)),
     )
     status = SyncStatus()
 
@@ -276,7 +276,9 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
 def test_start_git_backup_runs_on_a_named_daemon_thread(monkeypatch):
     """Test the thread cannot keep the process alive and is recognisable."""
     monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda: {})
-    monkeypatch.setattr(bootstrap, "start_git_sync", lambda status, interval: None)
+    monkeypatch.setattr(
+        bootstrap, "start_git_sync", lambda status, interval, _stop_event: None
+    )
 
     thread = bootstrap.start_git_backup(SyncStatus(), 60)
     thread.join(timeout=30)
@@ -298,3 +300,84 @@ def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
 
     assert "Unexpected error while starting the git backup" in caplog.text
     assert "disk on fire" in caplog.text
+
+
+def test_start_git_sync_uses_the_stop_event_it_is_given(monkeypatch):
+    """Test the caller's event is the one that stops the scheduler."""
+    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: True)
+    scheduled = {}
+
+    def fake_start_sync_scheduler(_repos, _interval, stop_event, _status):
+        scheduled["stop_event"] = stop_event
+        return "thread"
+
+    monkeypatch.setattr(
+        bootstrap, "start_sync_scheduler", fake_start_sync_scheduler
+    )
+    stop_event = threading.Event()
+
+    _, returned = bootstrap.start_git_sync(SyncStatus(), 60, stop_event)
+
+    assert scheduled["stop_event"] is stop_event
+    assert returned is stop_event
+
+
+def _start_a_waiting_sync(started):
+    """Build a start_git_sync whose sync thread runs until it is stopped."""
+
+    def fake_start_git_sync(_status, _interval, stop_event):
+        thread = threading.Thread(target=stop_event.wait, daemon=True)
+        thread.start()
+        started.append(thread)
+        return thread, stop_event
+
+    return fake_start_git_sync
+
+
+def test_start_git_backup_lives_as_long_as_the_sync(monkeypatch):
+    """Test the returned thread is the one to wait for on shutdown."""
+    started = []
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda: {})
+    monkeypatch.setattr(bootstrap, "start_git_sync", _start_a_waiting_sync(started))
+    stop_event = threading.Event()
+
+    thread = bootstrap.start_git_backup(SyncStatus(), 60, stop_event)
+    thread.join(timeout=0.2)
+
+    assert thread.is_alive()
+
+    assert bootstrap.stop_git_backup(thread, stop_event, timeout_seconds=30)
+    assert not thread.is_alive()
+    assert not started[0].is_alive()
+
+
+def test_start_git_backup_does_not_start_the_sync_once_stopped(monkeypatch):
+    """Test a shutdown during the clone leaves the sync unstarted."""
+    stop_event = threading.Event()
+
+    def clone_during_shutdown():
+        stop_event.set()
+        return {}
+
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", clone_during_shutdown)
+    monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
+
+    bootstrap.start_git_backup(SyncStatus(), 60, stop_event).join(timeout=30)
+
+
+def test_stop_git_backup_gives_up_on_a_git_command_that_runs_on(caplog):
+    """Test a shutdown is not held up for as long as a push may take."""
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    stop_event = threading.Event()
+
+    with caplog.at_level("WARNING"):
+        assert not bootstrap.stop_git_backup(
+            thread, stop_event, timeout_seconds=0.1
+        )
+
+    assert stop_event.is_set()
+    assert "still running a git command" in caplog.text
+    release.set()

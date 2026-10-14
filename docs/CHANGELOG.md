@@ -24,6 +24,20 @@ The main changes made so far are listed here.
 * A conflicted file now keeps the workspace's whole version. `-X ours`
   kept the local side only for the conflicting lines and merged the rest of
   the remote's changes into the file, which could break a notebook
+* The git backup no longer commits to whatever branch the user has checked
+  out. With another branch, or a detached `HEAD` (for example during
+  `git bisect`), the cycle is skipped and `/git/status` reports
+  `wrong_branch` or `detached_head`. The branch is checked again before
+  merging, and outgoing commits are counted on the configured branch, not
+  `HEAD`
+* A leftover `index.lock` no longer stops the backup for good. A lock under
+  an hour old means another git command is running, so the cycle is
+  skipped (`index_locked`). An older one is removed, with a warning
+* The scheduler's stop event is no longer dropped. When the admin service
+  stops, the FastAPI shutdown step stops the backup between git commands
+  and waits up to 8 seconds for the one already running. In the workspace
+  image, `docker stop` does not deliver SIGTERM to the admin service yet,
+  because Kasm's PID 1 exits immediately
 
 ## Week of 5-Oct-2026
 

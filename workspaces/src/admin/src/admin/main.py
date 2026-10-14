@@ -20,11 +20,13 @@ import json
 import logging
 import os
 import sys
+import threading
+from collections.abc import Callable
 
 import uvicorn
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
-from admin.git.bootstrap import start_git_backup
+from admin.git.bootstrap import start_git_backup, stop_git_backup
 from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin.git.status import SyncStatus
 from admin.services import load_services
@@ -139,7 +141,9 @@ def _print_service_catalogue() -> None:
     print(json.dumps(load_services(), indent=2))
 
 
-def _start_git_backup(interval_seconds: int, status: SyncStatus) -> None:
+def _start_git_backup(
+    interval_seconds: int, status: SyncStatus
+) -> Callable[[], bool]:
     """
     Start bringing the git-backed workspace assets up, without waiting.
 
@@ -152,8 +156,14 @@ def _start_git_backup(interval_seconds: int, status: SyncStatus) -> None:
     Args:
         interval_seconds: Seconds to wait between backups.
         status: Where the outcome of every backup is recorded.
+
+    Returns:
+        Stops the backup, waiting briefly for the git command it is in, so
+        a shutdown does not cut it off halfway.
     """
-    start_git_backup(status, interval_seconds)
+    stop_event = threading.Event()
+    thread = start_git_backup(status, interval_seconds, stop_event)
+    return lambda: stop_git_backup(thread, stop_event)
 
 
 def _print_startup_banner(host: str, port: int, prefix: str) -> None:
@@ -173,20 +183,25 @@ def _print_startup_banner(host: str, port: int, prefix: str) -> None:
     print(f"  - http://{host}:{port}{prefix}/")
 
 
-def _serve(args: argparse.Namespace, status: SyncStatus) -> None:
+def _serve(
+    args: argparse.Namespace,
+    status: SyncStatus,
+    on_shutdown: Callable[[], object],
+) -> None:
     """
     Build the application and serve it until the process is stopped.
 
     Args:
         args: The parsed command-line arguments.
         status: Outcome of the git backups, served by ``/git/status``.
+        on_shutdown: Called when the server stops, before the process exits.
     """
     _print_startup_banner(
         args.host, args.port, normalize_path_prefix(args.path_prefix)
     )
 
     uvicorn.run(
-        create_app(args.path_prefix, status),
+        create_app(args.path_prefix, status, on_shutdown),
         host=args.host,
         port=args.port,
         reload=args.reload
@@ -209,8 +224,8 @@ def cli() -> None:
         sys.exit(0)
 
     status = SyncStatus()
-    _start_git_backup(args.sync_interval, status)
-    _serve(args, status)
+    stop_backup = _start_git_backup(args.sync_interval, status)
+    _serve(args, status, stop_backup)
 
 
 if __name__ == "__main__":

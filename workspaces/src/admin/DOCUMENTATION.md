@@ -146,6 +146,9 @@ reachable through nginx.
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
 | `conflict_markers` | A file about to be committed holds conflict markers (see [Conflicts](#a-file-holds-conflict-markers)) |
+| `wrong_branch` | Another branch than `GIT_REPO_BRANCH` is checked out (see [Conflicts](#another-branch-is-checked-out)) |
+| `detached_head` | No branch is checked out, for example during `git bisect` (see [Conflicts](#another-branch-is-checked-out)) |
+| `index_locked` | Another git command was running in the repository, or an old `index.lock` could not be removed (see [Conflicts](#another-git-command-is-running)) |
 | `git_failed` | Any other failing git command, for example an unreachable remote or a merge stopped by an untracked file |
 | `unexpected` | An error that is not a git failure, for example `git` missing from the image |
 
@@ -611,6 +614,52 @@ Only lines starting with `<<<<<<<` or `>>>>>>>` count. A line holding just
 committed as normal. A file that holds a line starting with `<<<<<<<` on
 purpose, such as notes about git, is refused all the same.
 
+### Another branch is checked out
+
+The backup commits to, merges into and pushes `GIT_REPO_BRANCH` only. When
+you check out another branch, or no branch at all (a tag, a single commit,
+or a `git bisect` session), the backup waits:
+
+```text
+ERROR admin.git.scheduler Not synchronizing repository 'common': 'experiment' is checked out, not 'main'; check out 'main' to resume the backup
+ERROR admin.git.scheduler Not synchronizing repository 'common': HEAD is detached; check out branch 'main' to resume the backup
+```
+
+Without this check the backup commits would land on your branch, while the
+push sends `GIT_REPO_BRANCH`, so they would never reach the remote.
+
+**To get sync going again**, switch back, finishing a bisect first if one is
+running:
+
+```bash
+git bisect reset      # only during a bisect
+git switch main       # the branch in GIT_REPO_BRANCH
+```
+
+The check runs again just before the merge, because fetching can take long
+enough for you to switch branches in between.
+
+### Another git command is running
+
+Every git command that changes the staging area first creates
+`index.lock` in the git directory and deletes it when it is done. While the
+file exists, the backup leaves the repository alone for that interval:
+
+```text
+ERROR admin.git.scheduler Not synchronizing repository 'common': another git process holds /workspace/common/index.lock; trying again next cycle
+```
+
+Usually there is nothing to do: your command finishes and the next
+interval goes ahead. Note that `git commit` without `-m` holds the lock for
+as long as its editor is open.
+
+A git process that is killed, for example when the container stops,
+leaves the file behind, and git refuses to run until it is gone. The backup
+therefore removes an `index.lock` that is more than an hour old and goes
+ahead, logging a warning. An hour, rather than a few minutes, so that a
+`git commit` editor left open over a break is not mistaken for a crash. A
+running git command never holds the lock that long in practice.
+
 ### What the backup does not check
 
 The checks cover the commits the backup makes itself. A commit you make by
@@ -638,18 +687,21 @@ decision what goes into it.
    HTTP server
 3. Every 5 minutes each cloned working tree goes through the same three
    steps, in this order:
-   1. **Commit** - the repository is first checked for an unfinished
-      merge, rebase, cherry-pick or revert and for unresolved files, and
-      the whole cycle stops if it finds one. Then `git status --porcelain`
+   1. **Commit** - the repository is first checked for a running git
+      command (`index.lock`), an unfinished merge, rebase, cherry-pick or
+      revert, another branch or a detached `HEAD`, and unresolved files,
+      and the whole cycle stops if it finds one. Then `git status --porcelain`
       decides whether there is anything to save. A clean tree is skipped; a
       dirty one is staged, checked for conflict markers, and committed with
       a timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Pull** - the remote is fetched and merged in. Local files win any
       conflict, whole file (see
-      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
+      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual)).
+      Before merging, the branch is checked again
    3. **Push** - the branch is pushed only when it actually holds commits
-      the remote does not
+      the remote does not. Both the count and the push name the branch, not
+      `HEAD`
 4. Committing happens *before* merging on purpose: git refuses to merge over
    modified files, so an uncommitted working tree would make every pull fail
    as soon as the remote had something to deliver
@@ -660,6 +712,10 @@ decision what goes into it.
 6. The outcome of every repository is recorded in a `SyncStatus` and
    served by [`/git/status`](#get-gitstatus): the time, and on failure
    only the error's kind. The full error goes to the log
+7. When the service stops on SIGTERM or Ctrl+C, the FastAPI shutdown step
+   calls `stop_git_backup()`. No new git command is started after that, and
+   the one already running is waited for, for up to 8 seconds. A commit made
+   but not yet pushed is pushed by the first interval after the next start
 
 The user never runs a git command: saving a file in Jupyter or VS Code is
 enough for it to reach the remote within one interval.
@@ -906,6 +962,100 @@ was cloned the endpoint reports `enabled: false`. A wrong token on first
 start is therefore still only visible in the log. This is left for a
 separate issue.
 
+### Implementation Report: Not Racing the User
+
+The user works in the same repositories, in a terminal or in VS Code, while
+the backup runs. A review found three ways the two could collide. The
+first two make the cycle stop before it changes anything, as the existing
+unfinished-merge check already did. Each has its own `SyncErrorKind`, so
+`/git/status` says why the backup is waiting.
+
+- **The wrong branch, or none.** The push sends `refs/heads/<branch>`
+  explicitly, but `git commit` and `git merge` act on whatever `HEAD` is.
+  After `git switch experiment`, the backup committed to `experiment`,
+  which was never pushed. On a detached `HEAD` (`git bisect`, a checked-out
+  tag) the commits were on no branch at all.
+  - `_ensure_on_branch()` runs `git symbolic-ref --quiet HEAD`. It exits
+    with status 1 and prints nothing on a detached `HEAD`, otherwise it
+    prints the full ref, which must equal `refs/heads/<branch>`. A real
+    failure (status 128 with stderr) is reported as `git_failed`, not
+    mistaken for a detached `HEAD`.
+  - The check runs in the gate before the commit, and again before the
+    merge, since a fetch can take minutes.
+  - `push_if_ahead()` now counts `origin/<branch>..refs/heads/<branch>`
+    instead of `..HEAD`, so it counts exactly what the push sends.
+- **A leftover `index.lock`.** A git process killed with SIGKILL (by the
+  runner's time limit after its grace period, the OOM killer, or a stopping
+  container) leaves the lock behind. After that, every `git add` fails with
+  `Unable to create '.../index.lock': File exists`, and the backup stops for
+  good.
+  - `_ensure_index_unlocked()` looks at the lock's modification time. A
+    lock younger than `STALE_LOCK_SECONDS` (3600) means someone is using
+    git right now, and the cycle is skipped.
+  - An older lock is deleted, with a warning in the log, and the cycle goes
+    ahead.
+  - The hour is long on purpose: `git commit` holds the lock while its
+    editor is open, and deleting a live lock would let the backup commit the
+    user's staged changes under its own message.
+- **Shutdown cutting a cycle off.** `start_git_sync()` created a stop event
+  that `main.py` never kept, so nothing could stop the loop. On SIGTERM the
+  process simply exited and the daemon thread died, whatever git command it
+  was in.
+  - `main.cli()` now creates the event, passes it to `start_git_backup()`,
+    and hands `create_app()` an `on_shutdown` callback. `create_app()` runs
+    that callback in a FastAPI lifespan after the server stops, off the
+    event loop.
+  - The callback, `stop_git_backup()`, sets the event and waits for the
+    `git-bootstrap` thread, which now stays alive until the sync thread has
+    ended.
+  - `sync_all()` and `sync_once()` check the event between repositories
+    and between commit, pull and push, raising `SyncStopped`. That is not a
+    `SyncError`: a cycle cut short this way is neither a success nor a
+    failure, and `/git/status` records nothing for it. Each step leaves the
+    repository consistent, so the next start carries on where this one
+    stopped.
+  - The wait is limited to `SHUTDOWN_TIMEOUT_SECONDS` (8), under the 10
+    seconds `docker stop` allows. A fetch or push can take up to 900
+    seconds, and a shutdown must not wait that long.
+
+The checks were run against real git as well as `FakeGit`, with a separate
+git directory as `clone.py` creates it: a switched branch, a detached
+`HEAD`, a `git bisect` session, a fresh `index.lock` (left alone) and one
+backdated by an hour (removed, and the commit went ahead). In the
+workspace container, sending SIGTERM to `workspace-admin` produced
+`Shutting down`, `Stopped the git backup` and `Application shutdown
+complete`.
+
+**Not covered:**
+
+- **`docker stop` does not reach the admin service in the current image.**
+  - PID 1 is Kasm's `vnc_startup.sh`. Its trap sends SIGTERM only to
+    `custom_startup.sh` and exits straight away. When PID 1 exits, the
+    kernel kills every other process in the container with SIGKILL.
+  - `custom_startup.sh`, which would pass the signal on to
+    `workspace-admin`, is in `sleep 3` at that moment, and bash runs a trap
+    only after the current command finishes.
+  - Observed: on `docker stop` the admin service logged nothing and the
+    container was gone in under 3 seconds.
+  - The shutdown path above therefore works when the service is run on
+    its own or signalled directly. In the container, what protects the
+    repository is the stale-lock handling, together with git's own
+    atomic ref updates.
+  - Changing the image's entrypoint is a separate decision.
+- **Brief races remain.**
+  - Between the branch check and the merge, a branch switch can still slip
+    in. The window is now milliseconds rather than the length of a fetch.
+  - A user's git command can take `index.lock` while the cycle is running.
+    That command, or the backup's, then fails once, with `git_failed`, and
+    the next interval tries again.
+- **Only `index.lock` is handled.** A stale ref lock, such as
+  `refs/heads/main.lock` from a process killed during the few microseconds
+  it holds one, would still need removing by hand.
+- **A git command still running when the wait gives up keeps running.**
+  The runner starts each git command in its own session, so it is not
+  killed when the service exits. It is no longer watched, and ends with the
+  container.
+
 ### Implementation Report: Local Files Win the Whole File
 
 A review found two problems with `git merge -X ours`:
@@ -965,8 +1115,9 @@ module imports the layer above it, so each can be tested on its own.
 
 - **HTTP API** (`src/admin/api.py`): FastAPI application factory
   (`create_app`), the router holding the `/`, `/services`, `/health` and
-  `/git/status` routes, path prefix normalization, and `APP_VERSION`. Contains transport
-  logic only
+  `/git/status` routes, path prefix normalization, `APP_VERSION`, and a
+  lifespan that runs an optional `on_shutdown` callback when the server
+  stops. Contains transport logic only
 - **Service Discovery** (`src/admin/services.py`): `load_services()`, which
   reads the service catalogue from the JSON template
 - **CLI Entry Point** (`src/admin/main.py`): Argument parsing
@@ -1022,7 +1173,8 @@ module imports the layer above it, so each can be tested on its own.
     `admin.main.cli()` on startup and returns at once, running
     `clone_configured_repos()` and then `start_git_sync()` on the
     `git-bootstrap` daemon thread, so the HTTP API never waits for a
-    remote. Until the clones are done, `/git/status` reports the backup as
+    remote. The thread then waits for the sync thread, so
+    `stop_git_backup()`, called on shutdown, has one thread to wait for. Until the clones are done, `/git/status` reports the backup as
     disabled. `clone_configured_repos()` clones every repository
     `load_config()` returns - `private` and/or `common` - independently:
     one repository that fails to clone (bad credentials, unreachable
@@ -1062,17 +1214,17 @@ obvious test file:
 
 | Test file             | Module under test  | Covers                                     |
 | --------------------- | ------------------ | ------------------------------------------ |
-| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/git/status` serving the live status and refusing writes |
+| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/git/status` serving the live status and refusing writes, the shutdown hook running once when the server stops |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
-| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports |
+| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook |
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
 | `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials |
 | `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message |
+| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
+| `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
-| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures |
+| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit |
 | `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
