@@ -15,8 +15,13 @@ import threading
 from pathlib import Path
 
 from admin.git.clone import CloneError, clone_asset, is_cloned
-from admin.git.config import ConfigError, RepoConfig, load_config
-from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS, start_sync_scheduler
+from admin.git.config import (
+    ConfigError,
+    RepoConfig,
+    load_config,
+    load_sync_interval,
+)
+from admin.git.scheduler import start_sync_scheduler
 from admin.git.status import SyncStatus
 
 logger = logging.getLogger(__name__)
@@ -99,7 +104,7 @@ def clone_configured_repos() -> dict[str, bool]:
 
 def start_git_sync(
     status: SyncStatus,
-    interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
+    interval_seconds: int | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[threading.Thread, threading.Event] | None:
     """
@@ -115,7 +120,8 @@ def start_git_sync(
     Args:
         status: Where the outcome of every synchronization is recorded.
             Left disabled when nothing is scheduled.
-        interval_seconds: Seconds to wait between synchronizations.
+        interval_seconds: Seconds to wait between synchronizations. None
+            reads ``SYNC_INTERVAL_SECONDS`` from the config file.
         stop_event: Set this to stop the sync. A new one is made when
             None is given.
 
@@ -135,6 +141,13 @@ def start_git_sync(
         )
         return None
 
+    if interval_seconds is None:
+        try:
+            interval_seconds = load_sync_interval(_config_path())
+        except ConfigError as exc:
+            logger.error("Cannot start git sync: %s", exc)
+            return None
+
     if stop_event is None:
         stop_event = threading.Event()
     thread = start_sync_scheduler(
@@ -145,7 +158,7 @@ def start_git_sync(
 
 
 def _clone_then_sync(
-    status: SyncStatus, interval_seconds: int, stop_event: threading.Event
+    status: SyncStatus, interval_seconds: int | None, stop_event: threading.Event
 ) -> None:
     """
     Clone the configured repositories, then sync the cloned ones until stopped.
@@ -158,7 +171,8 @@ def _clone_then_sync(
 
     Args:
         status: Where the outcome of every synchronization is recorded.
-        interval_seconds: Seconds to wait between synchronizations.
+        interval_seconds: Seconds to wait between synchronizations, or None
+            for the config file's ``SYNC_INTERVAL_SECONDS``.
         stop_event: Set when the service is stopping.
     """
     try:
@@ -175,7 +189,7 @@ def _clone_then_sync(
 
 def start_git_backup(
     status: SyncStatus,
-    interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
+    interval_seconds: int | None = None,
     stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     """
@@ -189,7 +203,9 @@ def start_git_backup(
 
     Args:
         status: Where the outcome of every synchronization is recorded.
-        interval_seconds: Seconds to wait between synchronizations.
+        interval_seconds: Seconds to wait between synchronizations. None,
+            the default, uses ``SYNC_INTERVAL_SECONDS`` from the config
+            file; a number overrides it.
         stop_event: Set this, or pass it to :func:`stop_git_backup`, to
             stop the backup. Without one the backup only ends with the
             process.

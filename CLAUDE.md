@@ -345,7 +345,8 @@ backup is disabled; the template `workspaces/src/templates/config.toml.example`
 is never read at runtime, and its placeholder values are rejected if copied
 unedited.
 It needs `HOME_DIR`, `WORKSPACE_DIR` and `WORKSPACE_APP_DIR` at the top
-level, plus an `[assets.private]` and/or `[assets.common]` table holding
+level, takes an optional `SYNC_INTERVAL_SECONDS` there (1 to 86400,
+default 300; `--sync-interval` overrides it), plus an `[assets.private]` and/or `[assets.common]` table holding
 `GIT_REPO_URL`, `GIT_REPO_BRANCH` and `GIT_REPO_TOKEN`. The paths follow
 from the section name: `WORKSPACE_DIR/<name>` and
 `WORKSPACE_APP_DIR/assets/<name>`. See `workspaces/src/admin/DOCUMENTATION.md`

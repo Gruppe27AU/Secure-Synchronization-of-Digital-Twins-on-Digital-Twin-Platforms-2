@@ -10,7 +10,6 @@ import sys
 
 import pytest
 
-from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
 from admin import main
 from admin.main import build_parser, cli
 
@@ -52,7 +51,8 @@ def test_build_parser_defaults(monkeypatch):
     assert args.path_prefix == "dtaas-user"
     assert args.reload is False
     assert args.list_services is False
-    assert args.sync_interval == DEFAULT_SYNC_INTERVAL_SECONDS
+    # No override: the interval comes from the config file.
+    assert args.sync_interval is None
 
 
 def test_build_parser_reads_environment(monkeypatch):
@@ -86,7 +86,7 @@ def test_build_parser_accepts_a_custom_sync_interval():
     assert args.sync_interval == 30
 
 
-@pytest.mark.parametrize("value", ["0", "-5", "abc"])
+@pytest.mark.parametrize("value", ["0", "-5", "abc", "86401"])
 def test_build_parser_rejects_an_unusable_sync_interval(value, capsys):
     """Test an interval that would spin or not parse is refused up front."""
     with pytest.raises(SystemExit):
@@ -145,3 +145,19 @@ def test_cli_stops_the_git_backup_when_the_server_stops(monkeypatch):
     cli()
 
     assert stopped == [("thread", started["stop_event"])]
+
+
+def test_cli_leaves_the_interval_to_the_config_file_by_default(monkeypatch):
+    """Test that without --sync-interval no interval is passed on."""
+    passed = []
+    monkeypatch.setattr(sys, "argv", ["workspace-admin"])
+    monkeypatch.setattr(
+        main,
+        "start_git_backup",
+        lambda _status, interval, _stop_event: passed.append(interval),
+    )
+    monkeypatch.setattr(main, "_serve", lambda _args, _status, _on_shutdown: None)
+
+    cli()
+
+    assert passed == [None]

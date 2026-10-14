@@ -15,9 +15,6 @@ from admin.git.sync import SyncError, SyncErrorKind, SyncStopped, sync_once
 
 logger = logging.getLogger(__name__)
 
-#: How often the working trees are committed and pushed, in seconds.
-DEFAULT_SYNC_INTERVAL_SECONDS = 300
-
 #: Name of the background thread, so it is recognisable in a stack dump.
 SYNC_THREAD_NAME = "git-sync"
 

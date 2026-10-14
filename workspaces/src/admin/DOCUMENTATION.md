@@ -213,13 +213,39 @@ host).
 
 ### Top-level keys
 
-All three are required.
+The first three are required.
 
 | Key | Meaning |
 | --- | ------- |
 | `HOME_DIR` | The user's home directory inside the container |
 | `WORKSPACE_DIR` | Root for the git directories. |
 | `WORKSPACE_APP_DIR` | Root for the working trees. A value starting with `/` is used as it is, anything else is resolved against `HOME_DIR` |
+| `SYNC_INTERVAL_SECONDS` | Optional. Seconds between two backups, a whole number from 1 to 86400 (one day). Defaults to 300 |
+
+Top-level keys must come before the first `[assets.*]` section. In TOML,
+a key written below a section header belongs to that section, so
+`SYNC_INTERVAL_SECONDS` appended at the end of the file would land in the
+last `[assets]` section, where it has no effect. The backup then logs a
+warning naming the section and uses 300 seconds, rather than ignoring the
+key without a word.
+
+A value that cannot be used never stops the backup. One that is not a
+whole number (`300.0`, `"300"`, `true`), or is outside 1 to 86400, is
+reported as a warning and the default of 300 seconds is used instead:
+
+```text
+WARNING admin.git.config /workspace/config.toml: 'SYNC_INTERVAL_SECONDS' must be between 1 and 86400 seconds, got 0; using the default of 300 seconds
+```
+
+The rest of the file is used as normal, so cloning and the backup go
+ahead. The upper limit keeps the backup frequent enough to be useful, and
+keeps the wait well below what Python's `threading` can handle
+(`threading.TIMEOUT_MAX` is about 49 days on Windows; past it the wait
+raises an error that would end the backup thread).
+
+The `--sync-interval` command-line option, when given, overrides the file.
+It accepts the same range. The workspace image does not pass it, so there
+the file decides.
 
 ### Repository sections
 
@@ -264,6 +290,7 @@ logging a configuration cannot leak it.
 HOME_DIR = "/home/dtaas-user"
 WORKSPACE_DIR = "/workspace"
 WORKSPACE_APP_DIR = ".workspace"
+SYNC_INTERVAL_SECONDS = 300
 
 [assets.common]
 GIT_REPO_URL = "https://gitlab.com/username/common.git"
@@ -685,7 +712,8 @@ decision what goes into it.
    scheduler (`start_git_sync()`). The HTTP server does not wait for either
 2. The scheduler runs on a background daemon thread, so it never blocks the
    HTTP server
-3. Every 5 minutes each cloned working tree goes through the same three
+3. Every `SYNC_INTERVAL_SECONDS` (5 minutes unless the config file says
+   otherwise) each cloned working tree goes through the same three
    steps, in this order:
    1. **Commit** - the repository is first checked for a running git
       command (`index.lock`), an unfinished merge, rebase, cherry-pick or
@@ -835,9 +863,10 @@ The first half made the workspace commit itself. `sync.py` gained
 is anything to save, stages everything with `git add -A` and commits with a
 UTC timestamp in the message. `scheduler.py` runs it on a background daemon
 thread so the HTTP server is never blocked, and `bootstrap.py` starts that
-thread once from `admin.main.cli()`. The interval defaults to 300 seconds
-and can be shortened with `--sync-interval`, which is useful for a demo
-where waiting five minutes is not practical.
+thread once from `admin.main.cli()`. The interval defaults to 300 seconds.
+It was later moved into the config file as `SYNC_INTERVAL_SECONDS`, and
+`--sync-interval` overrides it, which is useful for a demo where waiting
+five minutes is not practical.
 
 The commit identity is passed per command with `git -c user.name=... -c
 user.email=...` rather than written into the repository. `git commit`
@@ -1159,8 +1188,10 @@ module imports the layer above it, so each can be tested on its own.
     `git -c`, because `clone.py` deliberately leaves both out of the
     repository's own `.git/config`
   - `scheduler.py`: `start_sync_scheduler()` runs `sync_once()` for every
-    repository on a background daemon thread, every
-    `DEFAULT_SYNC_INTERVAL_SECONDS` (300) seconds. A failing repository is
+    repository on a background daemon thread, every `SYNC_INTERVAL_SECONDS`
+    from the config file (`DEFAULT_SYNC_INTERVAL_SECONDS`, 300, when it
+    is not set), unless `--sync-interval` overrides it. A failing
+    repository is
     logged and skipped rather than stopping the loop, and `sync_all()`
     deliberately catches every exception, not just `SyncError`, because
     the thread is the only thing keeping the backup alive. Each
@@ -1216,15 +1247,15 @@ obvious test file:
 | --------------------- | ------------------ | ------------------------------------------ |
 | `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/git/status` serving the live status and refusing writes, the shutdown hook running once when the server stops |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
-| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook |
+| `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials |
+| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials, `SYNC_INTERVAL_SECONDS` read and defaulted, an out-of-range, mistyped or misplaced value falling back to 300 with a warning while the repositories still load |
 | `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
-| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit |
+| `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
 | `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
@@ -1281,8 +1312,8 @@ poetry run workspace-admin --list-services
 # Run with auto-reload for development
 poetry run workspace-admin --reload
 
-# Back up the workspace every 30 seconds instead of every 5 minutes.
-# Values below 1 second are refused: the backup would never wait.
+# Back up the workspace every 30 seconds, whatever SYNC_INTERVAL_SECONDS
+# in config.toml says. Values outside 1 to 86400 seconds are refused.
 poetry run workspace-admin --sync-interval 30
 
 # Show help

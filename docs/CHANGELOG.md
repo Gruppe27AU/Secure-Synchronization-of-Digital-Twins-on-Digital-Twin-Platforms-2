@@ -14,6 +14,12 @@ The main changes made so far are listed here.
   section name: `WORKSPACE_DIR/<name>` and `WORKSPACE_APP_DIR/assets/<name>`
 * The config template moved out of the package to
   `workspaces/src/templates/config.toml.example`
+* The git backup interval is now set in `config.toml` with the optional
+  top-level key `SYNC_INTERVAL_SECONDS` (1 to 86400 seconds, default 300),
+  instead of being fixed in the code. `--sync-interval` still works and
+  overrides the file. A value of the wrong type, out of range, or placed
+  inside an `[assets]` section is logged as a warning and the default of
+  300 seconds is used, so the backup keeps running
 
 ### Fixed
 
