@@ -14,6 +14,7 @@ import pytest
 from admin.git import config as config_module
 from admin.git.config import ASSET_NAMES, ConfigError, load_config
 from admin.git.runner import GitTimeoutError
+from tests.helpers.templates import EXAMPLE_CONFIG_PATH
 
 VALID_CONFIG = """\
 HOME_DIR = "/home/dtaas-user"
@@ -23,18 +24,12 @@ WORKSPACE_APP_DIR = ".workspace"
 [assets.private]
 GIT_REPO_URL = "https://gitlab.com/user/private.git"
 GIT_REPO_BRANCH = "main"
-GIT_REPO_USERNAME = "user"
 GIT_REPO_TOKEN = "private-token"
-GIT_DIR = "private"
-GIT_WORK_TREE = "assets/private"
 
 [assets.common]
 GIT_REPO_URL = "https://gitlab.com/user/common.git"
 GIT_REPO_BRANCH = "develop"
-GIT_REPO_USERNAME = "user"
 GIT_REPO_TOKEN = "common-token"
-GIT_DIR = "common"
-GIT_WORK_TREE = "assets/common"
 """
 
 PRIVATE_ONLY_CONFIG = """\
@@ -45,16 +40,13 @@ WORKSPACE_APP_DIR = ".workspace"
 [assets.private]
 GIT_REPO_URL = "https://gitlab.com/user/private.git"
 GIT_REPO_BRANCH = "main"
-GIT_REPO_USERNAME = "user"
 GIT_REPO_TOKEN = "private-token"
-GIT_DIR = "private"
-GIT_WORK_TREE = "assets/private"
 """
 
 
 def write_config(tmp_path: Path, content: str) -> Path:
     """Write ``content`` to a config file and return its path."""
-    config_path = tmp_path / "config.env"
+    config_path = tmp_path / "config.toml"
     config_path.write_text(content, encoding="utf-8")
     return config_path
 
@@ -73,17 +65,19 @@ def test_load_config_copies_plain_fields(tmp_path):
 
     assert private.repo_url == "https://gitlab.com/user/private.git"
     assert private.branch == "main"
-    assert private.username == "user"
     assert private.token == "private-token"
     assert common.branch == "develop"
 
 
-def test_load_config_resolves_each_path_against_its_own_root(tmp_path):
-    """Test that GIT_DIR and GIT_WORK_TREE use different roots."""
-    private = load_config(write_config(tmp_path, VALID_CONFIG))[0]
+def test_load_config_derives_paths_from_the_section_name(tmp_path):
+    """Test that each repository's paths are built from its section name."""
+    repos = load_config(write_config(tmp_path, VALID_CONFIG))
+    private, common = repos[0], repos[1]
 
     assert private.git_dir == Path("/workspace/private")
     assert private.work_tree == Path("/home/dtaas-user/.workspace/assets/private")
+    assert common.git_dir == Path("/workspace/common")
+    assert common.work_tree == Path("/home/dtaas-user/.workspace/assets/common")
 
 
 def test_load_config_accepts_absolute_app_dir(tmp_path):
@@ -204,13 +198,13 @@ private = "not-a-section"
 def test_missing_file_does_not_fall_back_to_the_template(tmp_path):
     """Test that a missing config file is an error, never the template."""
     with pytest.raises(ConfigError, match="could not be read"):
-        load_config(tmp_path / "does-not-exist.env")
+        load_config(tmp_path / "does-not-exist.toml")
 
 
 def test_bundled_template_is_rejected():
     """Test that an unedited copy of the template can never reach a remote."""
     with pytest.raises(ConfigError, match="placeholder"):
-        load_config(config_module.EXAMPLE_CONFIG_PATH)
+        load_config(EXAMPLE_CONFIG_PATH)
 
 
 @pytest.mark.parametrize(
@@ -221,7 +215,6 @@ def test_bundled_template_is_rejected():
             "https://gitlab.com/user/private.git",
             "https://gitlab.com/username/repository.git",
         ),
-        ("GIT_REPO_USERNAME", "user", "gitlab-username"),
         ("GIT_REPO_TOKEN", "private-token", "gitlab-api-token"),
     ],
 )
@@ -256,61 +249,11 @@ def test_sections_sharing_a_url_on_different_branches_are_allowed(tmp_path):
     assert [repo.branch for repo in repos] == ["main", "develop"]
 
 
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("GIT_DIR", "/etc"),
-        ("GIT_WORK_TREE", "/etc"),
-        ("GIT_DIR", "."),
-        ("GIT_WORK_TREE", "."),
-        ("GIT_WORK_TREE", "./"),
-    ],
-)
-def test_path_outside_or_equal_to_its_root_is_rejected(tmp_path, key, value):
-    """Test that an absolute fragment or one naming the root itself is rejected."""
-    original = {"GIT_DIR": '"private"', "GIT_WORK_TREE": '"assets/private"'}[key]
-    content = VALID_CONFIG.replace(f"{key} = {original}", f'{key} = "{value}"')
-
-    with pytest.raises(
-        ConfigError, match=rf"'{key}' in \[assets\.private\] must name a subdirectory"
-    ):
-        load_config(write_config(tmp_path, content))
-
-
-@pytest.mark.parametrize("value", ["../private", "assets/../../etc", "a/.."])
-def test_parent_reference_is_rejected(tmp_path, value):
-    """Test that '..' is rejected even when it would stay inside the root."""
+def test_git_dir_equal_to_a_work_tree_is_rejected(tmp_path):
+    """Test that the two roots cannot be chosen so the directories coincide."""
     content = VALID_CONFIG.replace(
-        'GIT_WORK_TREE = "assets/private"', f'GIT_WORK_TREE = "{value}"'
-    )
-
-    with pytest.raises(ConfigError, match="must not contain '..'"):
-        load_config(write_config(tmp_path, content))
-
-
-def test_redundant_path_components_are_normalised(tmp_path):
-    """Test that '.' components and trailing slashes do not change the path."""
-    content = VALID_CONFIG.replace(
-        'GIT_WORK_TREE = "assets/private"', 'GIT_WORK_TREE = "./assets/./private/"'
-    )
-
-    private = load_config(write_config(tmp_path, content))[0]
-
-    assert private.work_tree == Path("/home/dtaas-user/.workspace/assets/private")
-
-
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        ('GIT_WORK_TREE = "assets/common"', 'GIT_WORK_TREE = "assets/private"'),
-        ('GIT_WORK_TREE = "assets/private"', 'GIT_WORK_TREE = "assets"'),
-        ('GIT_DIR = "common"', 'GIT_DIR = "private"'),
-        ('GIT_DIR = "common"', 'GIT_DIR = "private/common"'),
-    ],
-)
-def test_overlapping_directories_are_rejected(tmp_path, old, new):
-    """Test that equal or nested directories across repositories are rejected."""
-    content = VALID_CONFIG.replace(old, new)
+        'WORKSPACE_DIR = "/workspace"', 'WORKSPACE_DIR = "/srv/assets"'
+    ).replace('WORKSPACE_APP_DIR = ".workspace"', 'WORKSPACE_APP_DIR = "/srv"')
 
     with pytest.raises(ConfigError, match="overlap"):
         load_config(write_config(tmp_path, content))
@@ -319,12 +262,12 @@ def test_overlapping_directories_are_rejected(tmp_path, old, new):
 def test_git_dir_inside_a_work_tree_is_rejected(tmp_path):
     """Test that a git directory cannot be committed as work tree content."""
     content = VALID_CONFIG.replace(
-        'WORKSPACE_APP_DIR = ".workspace"', 'WORKSPACE_APP_DIR = "/workspace"'
-    ).replace('GIT_DIR = "private"', 'GIT_DIR = "assets/private/.git-private"')
+        'WORKSPACE_DIR = "/workspace"', 'WORKSPACE_DIR = "/srv/assets/private"'
+    ).replace('WORKSPACE_APP_DIR = ".workspace"', 'WORKSPACE_APP_DIR = "/srv"')
 
     with pytest.raises(
         ConfigError,
-        match=r"GIT_DIR in \[assets\.private\].*GIT_WORK_TREE in \[assets\.private\]",
+        match=r"git directory of \[assets\.private\].*work tree of \[assets\.private\]",
     ):
         load_config(write_config(tmp_path, content))
 

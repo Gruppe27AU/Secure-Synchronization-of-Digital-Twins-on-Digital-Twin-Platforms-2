@@ -45,7 +45,7 @@ function start_vscode_server {
 
 function start_admin_server {
     local path_prefix="${MAIN_USER:-}"
-    # The git backup reads ${WORKSPACE_APP_DIR}/config.env and stays disabled
+    # The git backup reads ${WORKSPACE_APP_DIR}/config.toml and stays disabled
     # when that file is absent. Defaulting to the persistent dir lets the
     # operator provision it from the host volume. Set here rather than as a
     # Dockerfile ENV, which .docker_set_envs would pin over runtime values.

@@ -4,14 +4,9 @@ Git backup configuration.
 Reads the git backup config file and turns it into objects,
 so the other modules can use the values without parsing anything.
 
-The file is TOML despite its ``.env`` name. Every path in it is a fragment:
-``GIT_DIR`` is resolved against ``WORKSPACE_DIR`` and ``GIT_WORK_TREE``
-against ``WORKSPACE_APP_DIR``, so callers receive absolute paths and never
-have to know which fragment belongs to which root.
-
-Each fragment must name a subdirectory of its root: absolute fragments,
-``..`` and fragments that collapse to the root itself are rejected. The
-resulting directories must not overlap each other, and no work tree may
+Each repository's paths follow from its section name: the git directory is
+``WORKSPACE_DIR/<name>`` and the work tree ``WORKSPACE_APP_DIR/assets/<name>``.
+The resulting directories must not overlap each other, and no work tree may
 contain the config file, because every file in a work tree is committed and
 pushed, and the config file holds the tokens.
 """
@@ -19,16 +14,11 @@ pushed, and the config file holds the tokens.
 import itertools
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from admin.git.runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
-
-#: Template shipped with the package for the user to copy. Never read at
-#: runtime: its values are placeholders, and loading them would clone
-#: whatever happens to live at the placeholder URL.
-EXAMPLE_CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.env.example"
 
 #: Keys that must be present above any ``[assets]`` section.
 REQUIRED_TOP_LEVEL_KEYS = ("HOME_DIR", "WORKSPACE_DIR", "WORKSPACE_APP_DIR")
@@ -37,13 +27,10 @@ REQUIRED_TOP_LEVEL_KEYS = ("HOME_DIR", "WORKSPACE_DIR", "WORKSPACE_APP_DIR")
 REQUIRED_ASSET_KEYS = (
     "GIT_REPO_URL",
     "GIT_REPO_BRANCH",
-    "GIT_REPO_USERNAME",
     "GIT_REPO_TOKEN",
-    "GIT_DIR",
-    "GIT_WORK_TREE",
 )
 
-#: Values copied from ``config.env.example`` or the README without being
+#: Values copied from ``config.toml.example`` or the README without being
 #: filled in. A repository still carrying one of them is refused, so an
 #: unedited copy of the template can never send a request to a remote.
 PLACEHOLDER_VALUES = {
@@ -52,13 +39,16 @@ PLACEHOLDER_VALUES = {
         "https://gitlab.com/username/private-repo.git",
         "https://gitlab.com/username/common-repo.git",
     }),
-    "GIT_REPO_USERNAME": frozenset({"gitlab-username"}),
     "GIT_REPO_TOKEN": frozenset({"gitlab-api-token", "gitlab-access-token"}),
 }
 
 #: Sections recognised under ``[assets]``. Each one is optional on its own,
-#: but at least one of them has to be configured.
+#: but at least one of them has to be configured. A name becomes part of
+#: the repository's paths, so only fixed names are accepted.
 ASSET_NAMES = ("private", "common")
+
+#: Directory below ``WORKSPACE_APP_DIR`` that holds every work tree.
+WORK_TREE_PARENT = "assets"
 
 _TOP_LEVEL = "the top level of the file"
 
@@ -84,7 +74,6 @@ class RepoConfig:
     name: str
     repo_url: str
     branch: str
-    username: str
     token: str = field(repr=False)
     git_dir: Path
     work_tree: Path
@@ -194,9 +183,9 @@ def _validate_url(url: str, where: str, source: Path) -> str:
     Accept only an ``https://`` URL that carries no credentials.
 
     Other transports are where git options such as ``--upload-pack`` take
-    effect, and ``ext::`` runs a command by design. Credentials belong in
-    ``GIT_REPO_USERNAME``/``GIT_REPO_TOKEN``: a ``user:token@`` in the URL
-    would be written into the clone's ``.git/config`` and into the log.
+    effect, and ``ext::`` runs a command by design. The token belongs in
+    ``GIT_REPO_TOKEN``: a ``user:token@`` in the URL would be written into
+    the clone's ``.git/config`` and into the log.
 
     Args:
         url: Value of ``GIT_REPO_URL``.
@@ -224,50 +213,12 @@ def _validate_url(url: str, where: str, source: Path) -> str:
     if "@" in parts.netloc:
         raise ConfigError(
             f"{source}: 'GIT_REPO_URL' in {where} must not contain a username "
-            "or token; set GIT_REPO_USERNAME and GIT_REPO_TOKEN instead"
+            "or token; set GIT_REPO_TOKEN instead"
         )
     if not parts.hostname:
         raise ConfigError(f"{source}: 'GIT_REPO_URL' in {where} has no host")
 
     return url
-
-
-def _resolve_inside(root: Path, key: str, value: str, where: str, source: Path) -> Path:
-    """
-    Join a path fragment onto its root and require the result to stay inside.
-
-    The check is lexical rather than :meth:`Path.resolve`: the paths describe
-    the container filesystem and may not exist yet, so asking the host
-    filesystem about them would give the wrong answer (and on Windows would
-    prepend a drive letter).
-
-    Args:
-        root: Directory the fragment is relative to.
-        key: Name of the key, used in the error message.
-        value: The fragment, for example ``assets/private``.
-        where: Human-readable location, used in the error message.
-        source: File the value came from, used in the error message.
-
-    Returns:
-        ``root`` joined with ``value``, strictly below ``root``.
-
-    Raises:
-        ConfigError: If the fragment contains ``..``, is absolute, or names
-            ``root`` itself.
-    """
-    if ".." in PurePosixPath(value).parts:
-        raise ConfigError(f"{source}: '{key}' in {where} must not contain '..'")
-
-    # pathlib discards ``root`` when ``value`` is absolute and drops "."
-    # components, so both cases show up in the joined path.
-    path = root / value
-    if not path.is_relative_to(root) or path == root:
-        raise ConfigError(
-            f"{source}: '{key}' in {where} must name a subdirectory of {root}, "
-            f"got '{value}'"
-        )
-
-    return path
 
 
 def _check_disjoint(repos: list[RepoConfig], source: Path) -> None:
@@ -286,8 +237,8 @@ def _check_disjoint(repos: list[RepoConfig], source: Path) -> None:
     """
     paths = []
     for repo in repos:
-        paths.append((f"GIT_DIR in [assets.{repo.name}]", repo.git_dir))
-        paths.append((f"GIT_WORK_TREE in [assets.{repo.name}]", repo.work_tree))
+        paths.append((f"git directory of [assets.{repo.name}]", repo.git_dir))
+        paths.append((f"work tree of [assets.{repo.name}]", repo.work_tree))
 
     for (label_a, path_a), (label_b, path_b) in itertools.combinations(paths, 2):
         if path_a.is_relative_to(path_b) or path_b.is_relative_to(path_a):
@@ -317,7 +268,7 @@ def _check_config_outside_work_trees(repos: list[RepoConfig], source: Path) -> N
     for repo in repos:
         if config_file.is_relative_to(repo.work_tree.resolve()):
             raise ConfigError(
-                f"{source}: GIT_WORK_TREE in [assets.{repo.name}] "
+                f"{source}: the work tree of [assets.{repo.name}] "
                 f"({repo.work_tree}) contains the config file, which would "
                 "commit and push its tokens"
             )
@@ -336,8 +287,8 @@ def _build_repo(
     Args:
         name: Section name, for example ``private``.
         asset: The section's contents.
-        workspace_dir: Root that ``GIT_DIR`` is relative to.
-        app_dir: Root that ``GIT_WORK_TREE`` is relative to.
+        workspace_dir: Directory that holds the git directory.
+        app_dir: Directory whose ``assets`` subdirectory holds the work tree.
         source: File the section came from, used in error messages.
 
     Returns:
@@ -346,8 +297,7 @@ def _build_repo(
     Raises:
         ConfigError: If any required key is missing or empty, if a value
             still holds a placeholder from the template, if the URL or
-            branch is unsafe to hand to git, or if a path does not name a
-            subdirectory of its root.
+            branch is unsafe to hand to git.
     """
     where = f"[assets.{name}]"
 
@@ -359,22 +309,9 @@ def _build_repo(
         branch=_validate_branch(
             _require(asset, "GIT_REPO_BRANCH", where, source), where, source
         ),
-        username=_require(asset, "GIT_REPO_USERNAME", where, source),
         token=_require(asset, "GIT_REPO_TOKEN", where, source),
-        git_dir=_resolve_inside(
-            workspace_dir,
-            "GIT_DIR",
-            _require(asset, "GIT_DIR", where, source),
-            where,
-            source,
-        ),
-        work_tree=_resolve_inside(
-            app_dir,
-            "GIT_WORK_TREE",
-            _require(asset, "GIT_WORK_TREE", where, source),
-            where,
-            source,
-        ),
+        git_dir=workspace_dir / name,
+        work_tree=app_dir / WORK_TREE_PARENT / name,
     )
 
     # Checked only now, once _require() has proven every value a string.
@@ -382,7 +319,7 @@ def _build_repo(
         if asset[key] in placeholders:
             raise ConfigError(
                 f"{source}: '{key}' in {where} is still the placeholder "
-                f"from config.env.example; fill in your own value"
+                f"from config.toml.example; fill in your own value"
             )
 
     return repo
@@ -443,7 +380,7 @@ def load_config(config_path: Path) -> list[RepoConfig]:
 
     Args:
         config_path: The user's config file, normally
-            ``$WORKSPACE_APP_DIR/config.env``.
+            ``$WORKSPACE_APP_DIR/config.toml``.
 
     Returns:
         One entry per configured repository, in ``ASSET_NAMES`` order, with
@@ -453,9 +390,8 @@ def load_config(config_path: Path) -> list[RepoConfig]:
         ConfigError: If the file cannot be read, if a required key is
             missing, empty or a placeholder, if a URL or branch is unsafe
             to hand to git, if no repository is configured at all, if two
-            repositories share a remote branch, if a path escapes its root,
-            if two directories overlap, or if a work tree contains the
-            config file.
+            repositories share a remote branch, if two directories overlap,
+            or if a work tree contains the config file.
     """
     source = config_path
     config = _read_toml(source)

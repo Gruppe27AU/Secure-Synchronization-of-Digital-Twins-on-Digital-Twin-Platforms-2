@@ -13,17 +13,17 @@ from pathlib import Path
 import pytest
 
 from admin.git import bootstrap
-from admin.git import config as config_module
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
 from admin.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
+from tests.helpers.templates import EXAMPLE_CONFIG_PATH
 
 
 @pytest.fixture(name="config_file", autouse=True)
 def fixture_config_file(tmp_path, monkeypatch):
     """
-    Point $WORKSPACE_APP_DIR at a directory holding a config.env.
+    Point $WORKSPACE_APP_DIR at a directory holding a config.toml.
 
     The file's contents do not matter, since the tests replace
     ``load_config``; it only has to exist for the bootstrap to get that far.
@@ -40,7 +40,7 @@ def _fail_if_called(*_args, **_kwargs):
 
 
 def test_missing_config_disables_cloning(config_file, monkeypatch, caplog):
-    """Test that without config.env nothing is loaded or cloned."""
+    """Test that without config.toml nothing is loaded or cloned."""
     config_file.unlink()
     monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
     monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
@@ -53,7 +53,7 @@ def test_missing_config_disables_cloning(config_file, monkeypatch, caplog):
 
 
 def test_missing_config_disables_sync(config_file, monkeypatch, caplog):
-    """Test that without config.env no sync thread is started or warned about."""
+    """Test that without config.toml no sync thread is started or warned about."""
     status = SyncStatus()
     config_file.unlink()
     monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
@@ -68,8 +68,8 @@ def test_missing_config_disables_sync(config_file, monkeypatch, caplog):
 
 
 def test_unedited_template_clones_nothing(config_file, monkeypatch, caplog):
-    """Test that copying config.env.example unchanged sends nothing to a remote."""
-    config_file.write_bytes(config_module.EXAMPLE_CONFIG_PATH.read_bytes())
+    """Test that copying config.toml.example unchanged sends nothing to a remote."""
+    config_file.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
     monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
 
     with caplog.at_level("ERROR"):
@@ -131,7 +131,7 @@ def test_clone_configured_repos_returns_empty_when_config_load_fails(
     """Test a broken config file logs an error and clones nothing."""
 
     def fake_load_config(_path):
-        raise ConfigError("config.env: no [assets] section found")
+        raise ConfigError("config.toml: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
 
@@ -166,12 +166,12 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
 
 
 def test_config_path_uses_workspace_app_dir(monkeypatch):
-    """Test the config file is resolved from $WORKSPACE_APP_DIR/config.env."""
+    """Test the config file is resolved from $WORKSPACE_APP_DIR/config.toml."""
     monkeypatch.setenv("WORKSPACE_APP_DIR", "/some/app/dir")
 
     path = bootstrap._config_path()  # pylint: disable=protected-access
 
-    assert path == Path("/some/app/dir") / "config.env"
+    assert path == Path("/some/app/dir") / "config.toml"
 
 
 def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
@@ -215,7 +215,7 @@ def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog)
     """Test a broken config file does not stop the service from starting."""
 
     def fake_load_config(_path):
-        raise ConfigError("config.env: no [assets] section found")
+        raise ConfigError("config.toml: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
     status = SyncStatus()

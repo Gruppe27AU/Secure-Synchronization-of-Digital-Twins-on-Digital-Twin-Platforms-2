@@ -1,7 +1,7 @@
 """
 Startup bootstrap for git-backed workspace assets.
 
-Wires :mod:`admin.git.config` (reading ``config.env``) to
+Wires :mod:`admin.git.config` (reading ``config.toml``) to
 :mod:`admin.git.clone` (cloning a repository) and
 :mod:`admin.git.scheduler` (committing and pushing the clones from then
 on), so :mod:`admin.main` only has to make one call at startup:
@@ -21,14 +21,14 @@ from admin.git.status import SyncStatus
 logger = logging.getLogger(__name__)
 
 #: Filename of the config file, resolved against ``$WORKSPACE_APP_DIR``.
-DEFAULT_CONFIG_FILE = "config.env"
+DEFAULT_CONFIG_FILE = "config.toml"
 
 #: Name of the thread that clones on startup, recognisable in a stack dump.
 BOOTSTRAP_THREAD_NAME = "git-bootstrap"
 
 
 def _config_path() -> Path:
-    """Resolve the path to ``config.env`` from the environment."""
+    """Resolve the path to ``config.toml`` from the environment."""
     app_dir = Path(os.environ.get("WORKSPACE_APP_DIR", "."))
     return app_dir / DEFAULT_CONFIG_FILE
 
@@ -37,7 +37,7 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
     """
     Load the configured repositories, treating a missing file as "disabled".
 
-    A workspace nobody has configured for git backup has no ``config.env``,
+    A workspace nobody has configured for git backup has no ``config.toml``,
     and that is a normal state rather than an error: nothing is cloned and
     nothing is synchronized.
 
@@ -64,9 +64,9 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
 
 def clone_configured_repos() -> dict[str, bool]:
     """
-    Clone every repository described in ``config.env``.
+    Clone every repository described in ``config.toml``.
 
-    Reads the config file located at ``$WORKSPACE_APP_DIR/config.env`` and
+    Reads the config file located at ``$WORKSPACE_APP_DIR/config.toml`` and
     clones each configured repository (``private`` and/or ``common``) that
     is not already present. When the file does not exist the git backup is
     disabled and nothing is cloned. Each repository is cloned
