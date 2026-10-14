@@ -318,7 +318,7 @@ The `git/` package backs the workspace up to its remotes and is layered the
 same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
 → `runner`:
 
-- `config.py`: reads `config.env` and returns one `RepoConfig` per
+- `config.py`: reads `config.toml` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
 - `auth.py`: builds the per-command HTTP Basic header and recognises a
   rejected token in git's stderr
@@ -340,14 +340,15 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.
 
-`config.env` is TOML despite the name and lives in `$WORKSPACE_APP_DIR`.
-When it is absent the git backup is disabled; the bundled
-`src/admin/config/config.env.example` is never read at runtime, and its
-placeholder values are rejected if copied unedited.
+`config.toml` lives in `$WORKSPACE_APP_DIR`. When it is absent the git
+backup is disabled; the template `workspaces/src/templates/config.toml.example`
+is never read at runtime, and its placeholder values are rejected if copied
+unedited.
 It needs `HOME_DIR`, `WORKSPACE_DIR` and `WORKSPACE_APP_DIR` at the top
 level, plus an `[assets.private]` and/or `[assets.common]` table holding
-`GIT_REPO_URL`, `GIT_REPO_BRANCH`, `GIT_REPO_USERNAME`, `GIT_REPO_TOKEN`,
-`GIT_DIR` and `GIT_WORK_TREE`. See `workspaces/src/admin/DOCUMENTATION.md`
+`GIT_REPO_URL`, `GIT_REPO_BRANCH` and `GIT_REPO_TOKEN`. The paths follow
+from the section name: `WORKSPACE_DIR/<name>` and
+`WORKSPACE_APP_DIR/assets/<name>`. See `workspaces/src/admin/DOCUMENTATION.md`
 for what each key means.
 
 To add new services to the workspace:
@@ -368,7 +369,7 @@ To add new services to the workspace:
   `/workspace`)
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
-- `WORKSPACE_APP_DIR`: Directory holding `config.env`, the git asset
+- `WORKSPACE_APP_DIR`: Directory holding `config.toml`, the git asset
   configuration read on startup (default: current directory;
   `custom_startup.sh` sets it to `$PERSISTENT_DIR` in the image)
 

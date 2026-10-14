@@ -115,7 +115,7 @@ def clone_asset(repo: RepoConfig) -> bool:
             stderr,
         )
         message = f"git clone failed for repository '{repo.name}': {stderr}"
-        if repo.username and repo.token and is_auth_failure(stderr):
+        if repo.token and is_auth_failure(stderr):
             message += f" ({AUTH_FAILURE_HINT})"
         raise CloneError(message)
 

@@ -4,8 +4,26 @@ The main changes made so far are listed here.
 
 ## Week of 12-Oct-2026
 
+### Changed
+
+* The git backup config file is now `config.toml`, since it is TOML. A
+  `config.env` is no longer read, so rename an existing one
+* `GIT_REPO_USERNAME`, `GIT_DIR` and `GIT_WORK_TREE` are gone from the
+  config file. The forge identifies the user by the token alone, so the
+  fixed username `oauth2` is sent. Each repository's paths follow from its
+  section name: `WORKSPACE_DIR/<name>` and `WORKSPACE_APP_DIR/assets/<name>`
+* The config template moved out of the package to
+  `workspaces/src/templates/config.toml.example`
+
 ### Fixed
 
+* A file changed on one side and deleted on the other no longer stops the
+  git backup. Local files win: a file changed in the workspace is kept and
+  pushed back, a file deleted in the workspace stays deleted. Before, the
+  merge failed on every interval and nothing was pushed
+* A conflicted file now keeps the workspace's whole version. `-X ours`
+  kept the local side only for the conflicting lines and merged the rest of
+  the remote's changes into the file, which could break a notebook
 * The git backup no longer commits to whatever branch the user has checked
   out. With another branch, or a detached `HEAD` (for example during
   `git bisect`), the cycle is skipped and `/git/status` reports

@@ -128,7 +128,7 @@ reachable through nginx.
 ```
 
 - `enabled` is `false`, with no repositories, when the backup is not
-  running: `config.env` is missing or unusable, or nothing has been cloned.
+  running: `config.toml` is missing or unusable, or nothing has been cloned.
   It is also `false` right after startup, while the first clones are still
   running in the background (up to 900 seconds per repository, see
   [Time limits and prompts](#time-limits-and-prompts))
@@ -142,14 +142,14 @@ reachable through nginx.
 
 | Kind | Meaning |
 | --- | --- |
-| `auth_failed` | The remote rejected the credentials. Check `GIT_REPO_USERNAME` and `GIT_REPO_TOKEN` |
+| `auth_failed` | The remote rejected the credentials. Check `GIT_REPO_TOKEN` |
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
 | `conflict_markers` | A file about to be committed holds conflict markers (see [Conflicts](#a-file-holds-conflict-markers)) |
 | `wrong_branch` | Another branch than `GIT_REPO_BRANCH` is checked out (see [Conflicts](#another-branch-is-checked-out)) |
 | `detached_head` | No branch is checked out, for example during `git bisect` (see [Conflicts](#another-branch-is-checked-out)) |
 | `index_locked` | Another git command was running in the repository, or an old `index.lock` could not be removed (see [Conflicts](#another-git-command-is-running)) |
-| `git_failed` | Any other failing git command, for example an unreachable remote or a merge `-X ours` cannot resolve |
+| `git_failed` | Any other failing git command, for example an unreachable remote or a merge stopped by an untracked file |
 | `unexpected` | An error that is not a git failure, for example `git` missing from the image |
 
 The endpoint never returns an error message, a file name, a URL, a branch
@@ -190,17 +190,16 @@ curl http://localhost:8091/{path-prefix}
 
 ## Configuration
 
-The git backup reads one file, `config.env`, from `$WORKSPACE_APP_DIR`. The
-name ends in `.env`, but the contents are TOML: the file is parsed with
-`tomllib`, so quoting and section syntax follow TOML rules rather than shell
-rules. A file to copy and edit ships with the package as
-`src/admin/config/config.env.example`.
+The git backup reads one TOML file, `config.toml`, from
+`$WORKSPACE_APP_DIR`. It is parsed with `tomllib`, so quoting and section
+syntax follow TOML rules. A file to copy and edit lives outside the package,
+in `workspaces/src/templates/config.toml.example`.
 
-If `$WORKSPACE_APP_DIR/config.env` does not exist, the git backup is
+If `$WORKSPACE_APP_DIR/config.toml` does not exist, the git backup is
 disabled: nothing is cloned, nothing is synchronized, and the log shows
-`<path>/config.env not found; git backup is disabled`. The bundled example
-is never read at runtime. Its `GIT_REPO_URL`, `GIT_REPO_USERNAME` and
-`GIT_REPO_TOKEN` are placeholders, and `load_config()` refuses any
+`<path>/config.toml not found; git backup is disabled`. The bundled example
+is never read at runtime. Its `GIT_REPO_URL` and `GIT_REPO_TOKEN` are
+placeholders, and `load_config()` refuses any
 repository still carrying one, so an unedited copy cannot send a request to
 a remote. `private` and `common` must also use different remotes (or at
 least different branches of one), since both would otherwise push to the
@@ -208,8 +207,8 @@ same branch.
 
 In the workspace image, `custom_startup.sh` sets `WORKSPACE_APP_DIR` to
 `$PERSISTENT_DIR` (`/workspace`) unless it is already set, so the operator
-enables the backup by placing `config.env` in the user's persistent volume
-(with the bundled compose files, `files/<username>/config.env` on the
+enables the backup by placing `config.toml` in the user's persistent volume
+(with the bundled compose files, `files/<username>/config.toml` on the
 host).
 
 ### Top-level keys
@@ -225,31 +224,33 @@ All three are required.
 ### Repository sections
 
 Every repository is a `[assets.<name>]` table. Two names are recognised,
-`private` and `common`, and at least one of them has to be there. All six
+`private` and `common`, and at least one of them has to be there. All three
 keys are required in each section that is present.
 
 | Key | Meaning |
 | --- | ------- |
 | `GIT_REPO_URL` | HTTPS URL of the remote. Must start with `https://` and must not contain a username or token (`user:token@`) |
 | `GIT_REPO_BRANCH` | The one branch that is cloned and kept in sync. Must be a valid git branch name, as checked by `git check-ref-format --branch` |
-| `GIT_REPO_USERNAME` | Username for HTTP Basic authentication |
-| `GIT_REPO_TOKEN` | Token for HTTP Basic authentication |
-| `GIT_DIR` | Git directory, relative to `WORKSPACE_DIR` |
-| `GIT_WORK_TREE` | Working tree, relative to `WORKSPACE_APP_DIR` |
+| `GIT_REPO_TOKEN` | Access token, sent with HTTP Basic authentication |
 
-The two path keys are fragments, not whole paths. `load_config()` joins each
-one to its own root and returns absolute paths, so no other module has to
-remember which fragment belongs where. Leading `/` is treated as absolute on
-every platform, because the paths describe the container filesystem and not
-the machine the code happens to run on.
+HTTP Basic needs a username as well, but the forge identifies the user by
+the token alone, so `auth.py` always sends the fixed username `oauth2`, as
+GitLab documents.
 
-Each fragment must name a subdirectory of its root. `load_config()` raises
-`ConfigError` when:
+The paths follow from the section name, so the file holds none of its own.
+`load_config()` places the git directory at `WORKSPACE_DIR/<name>` and the
+working tree at `WORKSPACE_APP_DIR/assets/<name>`, and returns absolute
+paths. Leading `/` is treated as absolute on every platform, because the
+paths describe the container filesystem and not the machine the code happens
+to run on. Since a name becomes part of a path, only the two fixed names are
+accepted.
 
-- a fragment is absolute (`/etc`), contains `..`, or collapses to the root
-  itself (`.`)
-- two of the configured directories are equal or nested, which covers both
-  work trees, both git directories, and a git directory inside a work tree
+The two roots can still be chosen so the directories collide.
+`load_config()` raises `ConfigError` when:
+
+- two of the resulting directories are equal or nested, for example a git
+  directory inside a work tree when `WORKSPACE_DIR` lies below
+  `WORKSPACE_APP_DIR/assets`
 - a work tree contains the config file. Everything in a work tree is
   committed and pushed, so this would publish the token, into the shared
   repository if the section is `common`
@@ -267,10 +268,7 @@ WORKSPACE_APP_DIR = ".workspace"
 [assets.common]
 GIT_REPO_URL = "https://gitlab.com/username/common.git"
 GIT_REPO_BRANCH = "main"
-GIT_REPO_USERNAME = "gitlab-username"
 GIT_REPO_TOKEN = "gitlab-api-token"
-GIT_DIR = "common"
-GIT_WORK_TREE = "assets/common"
 ```
 
 With the values above, the `common` repository gets its git directory at
@@ -311,7 +309,7 @@ still leaves the HTTP API running.
 ## Cloning the Git Assets
 
 When the admin service starts, it clones the repositories described in
-`config.env` into the workspace, so the user's files are there before they
+`config.toml` into the workspace, so the user's files are there before they
 open Jupyter or VS Code. This section describes that process for the two
 repositories the service knows about, `private` and `common`.
 
@@ -326,7 +324,7 @@ what they are for:
   workspace that configures the same `common` remote gets a clone of its
   own, and the remote is what the clones share.
 
-Either one can be left out of `config.env`, but at least one of them has to
+Either one can be left out of `config.toml`, but at least one of them has to
 be there. When both are configured, `private` is cloned first.
 
 ### When cloning happens
@@ -336,11 +334,11 @@ background thread, `git-bootstrap`, which runs `clone_configured_repos()` and
 then `start_git_sync()`, while the HTTP server starts straight away. A slow or
 unreachable remote therefore delays the backup, never `/health` or the rest
 of the API. There is no endpoint or command that clones later,
-so after adding a repository to `config.env` or changing one, restart the
+so after adding a repository to `config.toml` or changing one, restart the
 service (in the workspace container: restart the container).
 
-The configuration is read from `$WORKSPACE_APP_DIR/config.env`, where
-`WORKSPACE_APP_DIR` is the environment variable, or from `config.env` in the
+The configuration is read from `$WORKSPACE_APP_DIR/config.toml`, where
+`WORKSPACE_APP_DIR` is the environment variable, or from `config.toml` in the
 directory the service was started in if the variable is not set. If there is
 no file there, nothing is cloned (see [Configuration](#configuration)).
 
@@ -349,13 +347,13 @@ no file there, nothing is cloned (see [Configuration](#configuration)).
 Every repository is split in two:
 
 - the **git directory** holds git's own data (history, objects, refs, the
-  remote URL). It is placed at `WORKSPACE_DIR` + `GIT_DIR`
+  remote URL). It is placed at `WORKSPACE_DIR/<name>`
 - the **working tree** holds the checked-out files the user edits. It is
-  placed at `WORKSPACE_APP_DIR` + `GIT_WORK_TREE`, where `WORKSPACE_APP_DIR`
-  is the key in `config.env`, resolved against `HOME_DIR` unless it starts
+  placed at `WORKSPACE_APP_DIR/assets/<name>`, where `WORKSPACE_APP_DIR`
+  is the key in `config.toml`, resolved against `HOME_DIR` unless it starts
   with `/`
 
-With the values in `config.env.example`
+With the values in `config.toml.example`
 (`HOME_DIR = "/home/username"`, `WORKSPACE_DIR = "/workspace"`,
 `WORKSPACE_APP_DIR = ".workspace"`), the result is:
 
@@ -391,7 +389,7 @@ two: git commands run in the working tree find the git directory through it.
 
    ```bash
    git -c protocol.allow=never -c protocol.https.allow=always \
-       -c http.extraHeader="Authorization: Basic <username:token, base64>" \
+       -c http.extraHeader="Authorization: Basic <oauth2:token, base64>" \
        clone --branch <GIT_REPO_BRANCH> --single-branch \
        --separate-git-dir=<git dir> -- <GIT_REPO_URL> <working tree>
    ```
@@ -404,9 +402,8 @@ two: git commands run in the working tree find the git directory through it.
      `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=60` (left out above for
      readability), and runs without prompts and within a time limit. See
      [Time limits and prompts](#time-limits-and-prompts).
-   - The `-c http.extraHeader=...` option carries `GIT_REPO_USERNAME` and
-     `GIT_REPO_TOKEN` as HTTP Basic credentials for this one command. They
-     are not written into the git directory's config and not added to the
+   - The `-c http.extraHeader=...` option carries `GIT_REPO_TOKEN` as
+     HTTP Basic credentials for this one command. They are not written into the git directory's config and not added to the
      remote URL, so the token is not stored anywhere in the clone.
    - The `protocol.*` options make git refuse every transport except
      https, and `--` stops the URL and path from being read as options.
@@ -441,11 +438,11 @@ ERROR admin.git.bootstrap git clone failed for repository 'common': <git's messa
 - Each repository is cloned on its own, so a failure in `common` does not
   stop `private` from being cloned, and the other way round.
 - If the failure looks like rejected credentials, the second message ends
-  with `(the configured GIT_REPO_USERNAME/GIT_REPO_TOKEN was rejected - it
-  may be invalid or expired; check config.env)`. GitLab gives the same answer
+  with `(the configured GIT_REPO_TOKEN was rejected - it may be invalid or
+  expired; check config.toml)`. GitLab gives the same answer
   for a wrong token as for an expired one, so the message does not claim to
   know which it is. The token itself never appears in the log.
-- If `config.env` cannot be used at all, nothing is cloned and the log shows
+- If `config.toml` cannot be used at all, nothing is cloned and the log shows
   `Cannot clone git assets: ...` with the reason (see
   [When the file is wrong](#when-the-file-is-wrong)).
 - A failed clone is not retried while the service runs. It is tried again
@@ -470,7 +467,7 @@ can wait forever:
   Credential helpers, such as Git Credential Manager, ignore both settings,
   so every command that talks to the remote also gets `-c credential.helper=`,
   which empties the list of helpers. Credentials only ever come from
-  `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN`. Standard input is empty as well.
+  `GIT_REPO_TOKEN`. Standard input is empty as well.
 - **Time limits.** Commands that talk to the remote (clone, fetch, push) get
   900 seconds (`REMOTE_TIMEOUT_SECONDS`), and everything else 300 seconds
   (`LOCAL_TIMEOUT_SECONDS`). A command that runs out of time is sent
@@ -507,8 +504,8 @@ doing without reading the log.
 
 | Situation | Handled by | What the backup does | To get sync going again |
 | --- | --- | --- | --- |
-| Both sides changed the same file | Backup | Keeps the workspace's version, merges everything else | Nothing to do |
-| One side changed a file the other deleted | You | Leaves the repository as it was and fails each interval | Merge, keep or delete the file, commit |
+| Both sides changed the same file | Backup | Keeps the workspace's whole file, merges every other file | Nothing to do |
+| One side changed a file the other deleted | Backup | Keeps the workspace's side: a file changed here is kept, a file deleted here stays deleted | Nothing to do |
 | A merge, rebase, cherry-pick or revert you have started is unfinished | You | Waits: no commit, no pull, no push | Finish or abort the changes |
 | Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
 | A file holds conflict markers | You | Refuses to commit, unstages again | Remove the markers |
@@ -524,7 +521,8 @@ identity, so that nothing is written into the repository on your behalf.
 
 ### Both sides changed the same file
 
-Handled automatically. The log names the files whose local version was kept:
+Handled automatically. The conflicted file keeps the workspace's whole
+version: no line from the remote is mixed into it. The log names the files:
 
 ```text
 WARNING admin.git.sync Merge conflict in repository 'common' affecting 1 file(s): notes.md
@@ -536,26 +534,14 @@ history, in the commit that was merged in.
 
 ### One side changed a file the other deleted
 
-Keeping "the local version" means nothing when one side has no version, so
-git cannot resolve this on its own. The backup aborts the merge, which
-leaves your files exactly as they were, and logs on every interval:
+Handled automatically, in favour of the workspace:
 
-```text
-ERROR admin.git.sync Failed to merge the remote's changes keeping local files for repository 'common': CONFLICT (modify/delete): notes.md deleted in origin/main and modified in HEAD. ...
-```
+- Changed here, deleted on the remote: the file is kept and pushed back.
+- Deleted here, changed on the remote: the file stays deleted, and the
+  deletion is pushed.
 
-Until it is resolved, that repository is neither pulled nor pushed.
-
-**To get sync going again**, start the merge yourself and decide whether
-the file stays:
-
-```bash
-git merge origin/main
-git add notes.md      # keep the file, or: git rm notes.md to accept the deletion
-git commit -m "Resolve notes.md"
-```
-
-The next interval pushes the result, and the error stops.
+The log is the same as above. The other side's version is still in the
+history.
 
 ### A merge or rebase you started is unfinished
 
@@ -695,7 +681,7 @@ decision what goes into it.
 1. On startup, `admin.main.cli()` calls `start_git_backup()`, which, on a
    background thread, clones every configured git asset
    (`clone_configured_repos()`, one clone per `[assets.private]` and/or
-   `[assets.common]` entry in `config.env`) and then starts the backup
+   `[assets.common]` entry in `config.toml`) and then starts the backup
    scheduler (`start_git_sync()`). The HTTP server does not wait for either
 2. The scheduler runs on a background daemon thread, so it never blocks the
    HTTP server
@@ -710,7 +696,9 @@ decision what goes into it.
       a timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Pull** - the remote is fetched and merged in. Local files win any
-      conflict (see below). Before merging, the branch is checked again
+      conflict, whole file (see
+      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual)).
+      Before merging, the branch is checked again
    3. **Push** - the branch is pushed only when it actually holds commits
       the remote does not. Both the count and the push name the branch, not
       `HEAD`
@@ -877,7 +865,9 @@ whose only job is to fail and name the conflicted files through
 the same tree `-X ours` would have produced on its own, but the conflicted
 paths are known and get logged by name, and `pull_changes()` returns them to
 its caller. Only the conflicted files keep the local version; everything
-else the remote changed is merged in normally.
+else the remote changed is merged in normally. `-X ours` was later
+replaced, see
+[Local Files Win the Whole File](#implementation-report-local-files-win-the-whole-file).
 
 `sync_all()` catches every exception, not only `SyncError`. It runs on the
 background thread, and an exception escaping there would end the thread and
@@ -1066,6 +1056,33 @@ complete`.
   killed when the service exits. It is no longer watched, and ends with the
   container.
 
+### Implementation Report: Local Files Win the Whole File
+
+A review found two problems with `git merge -X ours`:
+
+- **It cannot resolve modify/delete.** When one side changed a file and the
+  other deleted it, the merge failed on every interval, so the push never
+  ran and the user's work never left the container.
+- **It works per hunk, not per file.** Lines from the remote that did not
+  conflict were merged into the "kept" file, so a notebook could end up
+  mixed or unparsable.
+
+The review proposed dropping automatic resolution. We kept the rule that
+local files win, but per whole file. `pull_changes()` runs an ordinary
+merge, and when it stops on a conflict, `git ls-files --unmerged -z` lists
+the versions git holds of each conflicted file. If the workspace's version
+(stage 2) exists, `git checkout --ours` takes it whole; if not, the
+workspace deleted the file and `git rm` keeps it deleted. `git commit
+--no-edit` then concludes the merge. Any failure on the way aborts the
+merge, as before.
+
+The old `_conflicted_files()` split git's output on whitespace, so a file
+name with a space would have been read as two files. `-z` avoids that.
+
+`tests/integration/test_git_sync_conflicts.py` runs this against real git,
+with a local bare repository as the remote. Four of its five tests fail on
+the old `-X ours` code.
+
 ### Package Layout
 
 The package is split by layer, so that transport concerns stay separate from
@@ -1078,12 +1095,11 @@ src/admin/
 ├── services.py                   # Workspace service discovery
 ├── main.py                       # Command-line entry point
 ├── config/
-│   ├── services_template.json    # Service catalogue (data, not code)
-│   └── config.env.example        # Example git asset configuration
+│   └── services_template.json    # Service catalogue (data, not code)
 └── git/
     ├── __init__.py                # Git backup of workspace directories
     ├── runner.py                  # Runs git without prompts, within a time limit
-    ├── config.py                  # Reads config.env into RepoConfig objects
+    ├── config.py                  # Reads config.toml into RepoConfig objects
     ├── auth.py                    # Shared HTTP auth header and failure detection
     ├── clone.py                   # Clones a single RepoConfig
     ├── sync.py                    # Commits and pushes one working tree
@@ -1114,12 +1130,12 @@ module imports the layer above it, so each can be tested on its own.
     a command that overruns it together with the processes it started,
     raising `GitTimeoutError`. See
     [Time limits and prompts](#time-limits-and-prompts)
-  - `config.py`: `load_config()` reads the TOML-formatted `config.env` file
-    at `$WORKSPACE_APP_DIR/config.env` and returns a `RepoConfig` per
-    `[assets.<name>]` table (currently `private` and `common`)
+  - `config.py`: `load_config()` reads `$WORKSPACE_APP_DIR/config.toml`
+    and returns a `RepoConfig` per `[assets.<name>]` table (currently
+    `private` and `common`), with both paths derived from the name
   - `auth.py`: `auth_header_options()` builds the one-off
-    `http.extraHeader` carrying `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` as
-    HTTP Basic credentials, shared by `clone.py` and `sync.py` so neither
+    `http.extraHeader` carrying `GIT_REPO_TOKEN`, with the fixed username
+    `oauth2`, as HTTP Basic credentials, shared by `clone.py` and `sync.py` so neither
     writes credentials into `.git/config` or a remote URL. `is_auth_failure()`
     recognizes GitLab/git's own rejection text (`Authentication failed`,
     `HTTP Basic: Access denied`, `returned error: 401`/`403`) in a failed
@@ -1130,7 +1146,7 @@ module imports the layer above it, so each can be tested on its own.
     `CloneError` on failure. When the failure looks like a rejected
     credential (`is_auth_failure()`) and the repository has one
     configured, the error is extended with a clear, token-free hint that
-    `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` may be invalid or expired
+    `GIT_REPO_TOKEN` may be invalid or expired
   - `sync.py`: `sync_once()` runs one full cycle for an already-cloned
     working tree - `commit_local_changes()`, then `pull_changes()`, then
     `push_if_ahead()` - returning `False` when the repository was already
@@ -1177,7 +1193,7 @@ module imports the layer above it, so each can be tested on its own.
 
 - `ADMIN_SERVER_PORT`: Port for the admin service (default: `8091`)
 - `PATH_PREFIX`: Optional path prefix for API routes (can also be set via CLI `--path-prefix` argument)
-- `WORKSPACE_APP_DIR`: Directory that holds `config.env`, the git asset
+- `WORKSPACE_APP_DIR`: Directory that holds `config.toml`, the git asset
   configuration file read by `admin.git.bootstrap` on startup, both to
   clone the assets and to schedule their backup (default: current
   directory; `$PERSISTENT_DIR` in the workspace image). Without that file
@@ -1209,6 +1225,7 @@ obvious test file:
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit |
+| `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
 it builds the `RepoConfig` objects the git tests need, so no test module has

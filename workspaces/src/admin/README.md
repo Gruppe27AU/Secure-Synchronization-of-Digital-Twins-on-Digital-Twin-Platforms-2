@@ -14,7 +14,7 @@ FastAPI service for workspace service discovery and management.
 - Never commits an unfinished merge or a file with conflict markers; those
   wait for the user (see
   [Conflicts](DOCUMENTATION.md#conflicts-what-is-automatic-and-what-is-manual))
-- Git assets configured in one TOML file, `config.env`, which is validated
+- Git assets configured in one TOML file, `config.toml`, which is validated
   on startup so a mistake in it is reported by name instead of failing
   later inside git
 
@@ -26,10 +26,9 @@ src/admin/
 ├── services.py                   # Workspace service discovery
 ├── main.py                       # Command-line entry point
 ├── config/
-│   ├── services_template.json    # Service catalogue
-│   └── config.env.example        # Example git asset configuration
+│   └── services_template.json    # Service catalogue
 └── git/                          # Git backup of workspace directories
-    ├── config.py                 # config.env -> RepoConfig
+    ├── config.py                 # config.toml -> RepoConfig
     ├── auth.py                   # Shared HTTP auth header and failure detection
     ├── clone.py                  # Clone a single RepoConfig
     ├── sync.py                   # Commit, pull and push one working tree
@@ -40,11 +39,11 @@ src/admin/
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the full architecture and
 endpoint reference, and
 [DOCUMENTATION.md#configuration](DOCUMENTATION.md#configuration) for every
-key `config.env` accepts.
+key `config.toml` accepts.
 
 ## Cloning the Private and Common Repositories
 
-On startup the service clones the repositories listed in `config.env`:
+On startup the service clones the repositories listed in `config.toml`:
 `private` for the user's own files and `common` for files shared between
 users. Either can be left out. To set them up:
 
@@ -53,8 +52,8 @@ users. Either can be left out. To set them up:
    README* when creating the project). Create an access token with
    `read_repository` and `write_repository`.
 
-2. **Write `config.env`.** Copy
-   [`src/admin/config/config.env.example`](src/admin/config/config.env.example)
+2. **Write `config.toml`.** Copy
+   [`templates/config.toml.example`](../templates/config.toml.example)
    and fill in your values. The file is TOML, so every value is a quoted
    string:
 
@@ -66,37 +65,33 @@ users. Either can be left out. To set them up:
    [assets.private]
    GIT_REPO_URL = "https://gitlab.com/username/private-repo.git"
    GIT_REPO_BRANCH = "main"
-   GIT_REPO_USERNAME = "gitlab-username"
    GIT_REPO_TOKEN = "gitlab-access-token"
-   GIT_DIR = "private"
-   GIT_WORK_TREE = "assets/private"
 
    [assets.common]
    GIT_REPO_URL = "https://gitlab.com/username/common-repo.git"
    GIT_REPO_BRANCH = "main"
-   GIT_REPO_USERNAME = "gitlab-username"
    GIT_REPO_TOKEN = "gitlab-access-token"
-   GIT_DIR = "common"
-   GIT_WORK_TREE = "assets/common"
    ```
 
    Leave out the `[assets.common]` or `[assets.private]` section if you do
-   not need it.
+   not need it. The section name decides where the repository lives: its
+   files in `WORKSPACE_APP_DIR/assets/<name>` and its git directory in
+   `WORKSPACE_DIR/<name>`.
 
 3. **Put the file where the service looks.** The service reads
-   `$WORKSPACE_APP_DIR/config.env`, using the environment variable
-   `WORKSPACE_APP_DIR`, or `config.env` in the directory it was started
+   `$WORKSPACE_APP_DIR/config.toml`, using the environment variable
+   `WORKSPACE_APP_DIR`, or `config.toml` in the directory it was started
    from when the variable is not set:
 
    ```bash
-   export WORKSPACE_APP_DIR=/path/to/dir/holding/config.env
+   export WORKSPACE_APP_DIR=/path/to/dir/holding/config.toml
    ```
 
    In the workspace container `WORKSPACE_APP_DIR` defaults to
    `$PERSISTENT_DIR` (`/workspace`), so put the file in the user's
-   persistent volume, e.g. `files/<username>/config.env` with the bundled
+   persistent volume, e.g. `files/<username>/config.toml` with the bundled
    compose files. Without the file the git backup is disabled, and a copy
-   of the example that still holds its placeholder URL, username or token
+   of the example that still holds its placeholder URL or token
    is refused.
 
 4. **Start the service.** Cloning happens once, on startup:
