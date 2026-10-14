@@ -4,14 +4,14 @@ Git backup configuration.
 Reads the git backup config file and turns it into objects,
 so the other modules can use the values without parsing anything.
 
-Each repository's paths follow from its section name: the git directory is
-``WORKSPACE_DIR/<name>`` and the work tree ``WORKSPACE_APP_DIR/assets/<name>``.
-The resulting directories must not overlap each other, and no work tree may
-contain the config file, because every file in a work tree is committed and
-pushed, and the config file holds the tokens.
+Every path is fixed below one root, normally ``$PERSISTENT_DIR``, so the
+file holds none. A repository's git directory is
+``<root>/.local/share/workspaceadmin/<name>`` and its work tree
+``<root>/assets/<name>``. No work tree may contain the config file, because
+every file in a work tree is committed and pushed, and the config file holds
+the tokens.
 """
 
-import itertools
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,9 +19,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from admin.git.runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
-
-#: Keys that must be present above any ``[assets]`` section.
-REQUIRED_TOP_LEVEL_KEYS = ("HOME_DIR", "WORKSPACE_DIR", "WORKSPACE_APP_DIR")
 
 #: Keys that must be present in every ``[assets.*]`` section.
 REQUIRED_ASSET_KEYS = (
@@ -47,10 +44,11 @@ PLACEHOLDER_VALUES = {
 #: the repository's paths, so only fixed names are accepted.
 ASSET_NAMES = ("private", "common")
 
-#: Directory below ``WORKSPACE_APP_DIR`` that holds every work tree.
-WORK_TREE_PARENT = "assets"
+#: Directory below the root that holds every git directory.
+GIT_DIR_PARENT = Path(".local", "share", "workspaceadmin")
 
-_TOP_LEVEL = "the top level of the file"
+#: Directory below the root that holds every work tree.
+WORK_TREE_PARENT = Path("assets")
 
 
 class ConfigError(Exception):
@@ -221,40 +219,13 @@ def _validate_url(url: str, where: str, source: Path) -> str:
     return url
 
 
-def _check_disjoint(repos: list[RepoConfig], source: Path) -> None:
-    """
-    Require every git directory and work tree to be separate from the others.
-
-    A work tree nested in another one would be committed to both remotes,
-    and a git directory inside a work tree would be committed as content.
-
-    Args:
-        repos: The configured repositories.
-        source: File the repositories came from, used in the error message.
-
-    Raises:
-        ConfigError: If two of the directories are equal or nested.
-    """
-    paths = []
-    for repo in repos:
-        paths.append((f"git directory of [assets.{repo.name}]", repo.git_dir))
-        paths.append((f"work tree of [assets.{repo.name}]", repo.work_tree))
-
-    for (label_a, path_a), (label_b, path_b) in itertools.combinations(paths, 2):
-        if path_a.is_relative_to(path_b) or path_b.is_relative_to(path_a):
-            raise ConfigError(
-                f"{source}: {label_a} ({path_a}) and {label_b} ({path_b}) "
-                "overlap; every git directory and work tree must be separate"
-            )
-
-
 def _check_config_outside_work_trees(repos: list[RepoConfig], source: Path) -> None:
     """
     Require the config file to lie outside every work tree.
 
-    Unlike the other checks this one resolves against the real filesystem,
-    because ``source`` comes from ``$WORKSPACE_APP_DIR`` rather than from the
-    file itself, and may be relative or reached through a symlink.
+    Both paths are resolved against the real filesystem, because ``source``
+    comes from ``$WORKSPACE_APP_DIR`` and the root from ``$PERSISTENT_DIR``,
+    and either may be relative or reached through a symlink.
 
     Args:
         repos: The configured repositories.
@@ -277,8 +248,7 @@ def _check_config_outside_work_trees(repos: list[RepoConfig], source: Path) -> N
 def _build_repo(
     name: str,
     asset: dict[str, Any],
-    workspace_dir: Path,
-    app_dir: Path,
+    root: Path,
     source: Path,
 ) -> RepoConfig:
     """
@@ -287,8 +257,7 @@ def _build_repo(
     Args:
         name: Section name, for example ``private``.
         asset: The section's contents.
-        workspace_dir: Directory that holds the git directory.
-        app_dir: Directory whose ``assets`` subdirectory holds the work tree.
+        root: Directory both paths are placed below.
         source: File the section came from, used in error messages.
 
     Returns:
@@ -310,8 +279,8 @@ def _build_repo(
             _require(asset, "GIT_REPO_BRANCH", where, source), where, source
         ),
         token=_require(asset, "GIT_REPO_TOKEN", where, source),
-        git_dir=workspace_dir / name,
-        work_tree=app_dir / WORK_TREE_PARENT / name,
+        git_dir=root / GIT_DIR_PARENT / name,
+        work_tree=root / WORK_TREE_PARENT / name,
     )
 
     # Checked only now, once _require() has proven every value a string.
@@ -323,25 +292,6 @@ def _build_repo(
             )
 
     return repo
-
-
-def _resolve_app_dir(home_dir: Path, app_dir_value: str) -> Path:
-    """
-    Resolve ``WORKSPACE_APP_DIR``, which may be absolute or relative to home.
-
-    Paths in the config file describe the container filesystem, so a leading
-    ``/`` marks an absolute path no matter which platform this runs on.
-
-    Args:
-        home_dir: Value of ``HOME_DIR``.
-        app_dir_value: Value of ``WORKSPACE_APP_DIR``.
-
-    Returns:
-        The absolute application directory.
-    """
-    if app_dir_value.startswith("/"):
-        return Path(app_dir_value)
-    return home_dir / app_dir_value
 
 
 def _check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:
@@ -370,7 +320,7 @@ def _check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:
         seen[remote] = repo.name
 
 
-def load_config(config_path: Path) -> list[RepoConfig]:
+def load_config(config_path: Path, root: Path) -> list[RepoConfig]:
     """
     Load the git backup configuration.
 
@@ -381,6 +331,8 @@ def load_config(config_path: Path) -> list[RepoConfig]:
     Args:
         config_path: The user's config file, normally
             ``$WORKSPACE_APP_DIR/config.toml``.
+        root: Directory every repository is placed below, normally
+            ``$PERSISTENT_DIR``.
 
     Returns:
         One entry per configured repository, in ``ASSET_NAMES`` order, with
@@ -390,18 +342,11 @@ def load_config(config_path: Path) -> list[RepoConfig]:
         ConfigError: If the file cannot be read, if a required key is
             missing, empty or a placeholder, if a URL or branch is unsafe
             to hand to git, if no repository is configured at all, if two
-            repositories share a remote branch, if two directories overlap,
-            or if a work tree contains the config file.
+            repositories share a remote branch, or if a work tree contains
+            the config file.
     """
     source = config_path
     config = _read_toml(source)
-
-    home_dir = Path(_require(config, "HOME_DIR", _TOP_LEVEL, source))
-    workspace_dir = Path(_require(config, "WORKSPACE_DIR", _TOP_LEVEL, source))
-    app_dir = _resolve_app_dir(
-        home_dir,
-        _require(config, "WORKSPACE_APP_DIR", _TOP_LEVEL, source),
-    )
 
     assets = config.get("assets")
     if not isinstance(assets, dict):
@@ -416,7 +361,7 @@ def load_config(config_path: Path) -> list[RepoConfig]:
         if not isinstance(asset, dict):
             raise ConfigError(f"{source}: [assets.{name}] is not a section")
 
-        repos.append(_build_repo(name, asset, workspace_dir, app_dir, source))
+        repos.append(_build_repo(name, asset, root, source))
 
     if not repos:
         raise ConfigError(
@@ -425,7 +370,6 @@ def load_config(config_path: Path) -> list[RepoConfig]:
         )
 
     _check_distinct_remotes(repos, source)
-    _check_disjoint(repos, source)
     _check_config_outside_work_trees(repos, source)
 
     return repos

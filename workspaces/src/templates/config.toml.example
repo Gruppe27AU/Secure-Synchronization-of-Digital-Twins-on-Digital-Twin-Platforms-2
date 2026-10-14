@@ -1,11 +1,5 @@
-# Top-level paths
-HOME_DIR = "/home/username"
-WORKSPACE_DIR = "/workspace"
-WORKSPACE_APP_DIR = ".workspace"
-
 # Git repository configuration. The section name decides where each
-# repository lives: its git directory in WORKSPACE_DIR/<name> and its
-# files in WORKSPACE_APP_DIR/assets/<name>.
+# repository's files appear: /workspace/assets/<name>.
 
 [assets.private]
 GIT_REPO_URL = "https://gitlab.com/username/repository.git"
@@ -13,8 +7,9 @@ GIT_REPO_BRANCH = "main"
 # HTTP token for authentication
 GIT_REPO_TOKEN = "gitlab-api-token"
 
-[assets.common]
-GIT_REPO_URL = "https://gitlab.com/username/repository.git"
-GIT_REPO_BRANCH = "main"
-# HTTP token for authentication
-GIT_REPO_TOKEN = "gitlab-api-token"
+# Uncomment to also back up files shared between users.
+# [assets.common]
+# GIT_REPO_URL = "https://gitlab.com/username/repository.git"
+# GIT_REPO_BRANCH = "main"
+# # HTTP token for authentication
+# GIT_REPO_TOKEN = "gitlab-api-token"

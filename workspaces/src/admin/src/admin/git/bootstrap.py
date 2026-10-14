@@ -33,6 +33,11 @@ def _config_path() -> Path:
     return app_dir / DEFAULT_CONFIG_FILE
 
 
+def _root_dir() -> Path:
+    """Resolve the directory every repository is placed below."""
+    return Path(os.environ.get("PERSISTENT_DIR", "."))
+
+
 def _load_repos(failure_message: str) -> list[RepoConfig]:
     """
     Load the configured repositories, treating a missing file as "disabled".
@@ -56,7 +61,7 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
         return []
 
     try:
-        return load_config(config_path)
+        return load_config(config_path, _root_dir())
     except ConfigError as exc:
         logger.error("%s: %s", failure_message, exc)
         return []

@@ -84,7 +84,7 @@ def test_clone_configured_repos_clones_every_entry(monkeypatch):
     common_repo = make_repo("common")
 
     monkeypatch.setattr(
-        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+        bootstrap, "load_config", lambda _path, _root: [private_repo, common_repo]
     )
 
     cloned_with = []
@@ -102,7 +102,7 @@ def test_clone_configured_repos_clones_every_entry(monkeypatch):
 def test_clone_configured_repos_clones_private_only(monkeypatch):
     """Test a config with only [assets.private] clones just that repository."""
     private_repo = make_repo("private")
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
 
     cloned_with = {}
 
@@ -119,7 +119,7 @@ def test_clone_configured_repos_clones_private_only(monkeypatch):
 def test_clone_configured_repos_skips_already_cloned_repos(monkeypatch):
     """Test a repository clone_asset reports as skipped is reflected as False."""
     private_repo = make_repo("private")
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
     monkeypatch.setattr(bootstrap, "clone_asset", lambda _repo: False)
 
     assert bootstrap.clone_configured_repos() == {"private": False}
@@ -130,7 +130,7 @@ def test_clone_configured_repos_returns_empty_when_config_load_fails(
 ):
     """Test a broken config file logs an error and clones nothing."""
 
-    def fake_load_config(_path):
+    def fake_load_config(_path, _root):
         raise ConfigError("config.toml: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
@@ -148,7 +148,7 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
     private_repo = make_repo("private")
     common_repo = make_repo("common")
     monkeypatch.setattr(
-        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+        bootstrap, "load_config", lambda _path, _root: [private_repo, common_repo]
     )
 
     def fake_clone_asset(repo):
@@ -174,13 +174,38 @@ def test_config_path_uses_workspace_app_dir(monkeypatch):
     assert path == Path("/some/app/dir") / "config.toml"
 
 
+def test_root_dir_uses_persistent_dir(monkeypatch):
+    """Test the repositories are placed below $PERSISTENT_DIR."""
+    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
+
+    root = bootstrap._root_dir()  # pylint: disable=protected-access
+
+    assert root == Path("/some/persistent/dir")
+
+
+def test_load_repos_passes_the_root_to_load_config(monkeypatch):
+    """Test the root from the environment reaches load_config."""
+    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
+    received = {}
+
+    def fake_load_config(_path, root):
+        received["root"] = root
+        return []
+
+    monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
+
+    bootstrap.clone_configured_repos()
+
+    assert received["root"] == Path("/some/persistent/dir")
+
+
 def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
     """Test repositories that have not been cloned yet are left out."""
     private_repo = make_repo("private")
     common_repo = make_repo("common")
 
     monkeypatch.setattr(
-        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+        bootstrap, "load_config", lambda _path, _root: [private_repo, common_repo]
     )
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: git_dir == "cloned")
 
@@ -214,7 +239,7 @@ def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
 def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog):
     """Test a broken config file does not stop the service from starting."""
 
-    def fake_load_config(_path):
+    def fake_load_config(_path, _root):
         raise ConfigError("config.toml: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
@@ -229,7 +254,7 @@ def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog)
 
 def test_start_git_sync_returns_none_when_nothing_is_cloned(monkeypatch, caplog):
     """Test the sync is not started when there is nothing to sync."""
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: False)
     status = SyncStatus()
 
