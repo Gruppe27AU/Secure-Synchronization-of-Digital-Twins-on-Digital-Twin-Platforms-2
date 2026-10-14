@@ -102,10 +102,16 @@ def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
     monkeypatch.setattr(
         main,
         "start_git_backup",
-        lambda status, interval: calls.append(("backup", status, interval)),
+        lambda status, interval, stop_event: calls.append(
+            ("backup", status, interval, stop_event)
+        ),
     )
     monkeypatch.setattr(
-        main, "_serve", lambda _args, status: calls.append(("serve", status))
+        main,
+        "_serve",
+        lambda _args, status, on_shutdown: calls.append(
+            ("serve", status, on_shutdown)
+        ),
     )
 
     cli()
@@ -114,3 +120,28 @@ def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
     assert calls[0][2] == 42
     # The API reports on the very status object the backup writes to.
     assert calls[0][1] is calls[1][1]
+
+
+def test_cli_stops_the_git_backup_when_the_server_stops(monkeypatch):
+    """Test the server's shutdown hook stops the backup the CLI started."""
+    started = {}
+    stopped = []
+
+    def fake_start_git_backup(_status, _interval, stop_event):
+        started["stop_event"] = stop_event
+        return "thread"
+
+    monkeypatch.setattr(sys, "argv", ["workspace-admin"])
+    monkeypatch.setattr(main, "start_git_backup", fake_start_git_backup)
+    monkeypatch.setattr(
+        main,
+        "stop_git_backup",
+        lambda thread, stop_event: stopped.append((thread, stop_event)),
+    )
+    monkeypatch.setattr(
+        main, "_serve", lambda _args, _status, on_shutdown: on_shutdown()
+    )
+
+    cli()
+
+    assert stopped == [("thread", started["stop_event"])]

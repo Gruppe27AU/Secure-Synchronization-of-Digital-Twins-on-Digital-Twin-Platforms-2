@@ -5,7 +5,8 @@ Wires :mod:`admin.git.config` (reading ``config.toml``) to
 :mod:`admin.git.clone` (cloning a repository) and
 :mod:`admin.git.scheduler` (committing and pushing the clones from then
 on), so :mod:`admin.main` only has to make one call at startup:
-:func:`start_git_backup`, which does both on a background thread.
+:func:`start_git_backup`, which does both on a background thread, and one
+on shutdown: :func:`stop_git_backup`.
 """
 
 import logging
@@ -26,6 +27,10 @@ DEFAULT_CONFIG_FILE = "config.toml"
 
 #: Name of the thread that clones on startup, recognisable in a stack dump.
 BOOTSTRAP_THREAD_NAME = "git-bootstrap"
+
+#: Longest a stopping service waits for the git command it is in. Kept
+#: under the 10 seconds ``docker stop`` allows before it kills the process.
+SHUTDOWN_TIMEOUT_SECONDS = 8
 
 
 def _config_path() -> Path:
@@ -107,6 +112,7 @@ def clone_configured_repos() -> dict[str, bool]:
 def start_git_sync(
     status: SyncStatus,
     interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
+    stop_event: threading.Event | None = None,
 ) -> tuple[threading.Thread, threading.Event] | None:
     """
     Start committing and pushing the cloned repositories periodically.
@@ -122,11 +128,12 @@ def start_git_sync(
         status: Where the outcome of every synchronization is recorded.
             Left disabled when nothing is scheduled.
         interval_seconds: Seconds to wait between synchronizations.
+        stop_event: Set this to stop the sync. A new one is made when
+            None is given.
 
     Returns:
         The background thread and the event that stops it, or None when
-        there is nothing to synchronize. The caller may drop both: the
-        thread is a daemon, so it ends with the process either way.
+        there is nothing to synchronize.
     """
     repos = _load_repos("Cannot start git sync")
     if not repos:
@@ -140,7 +147,8 @@ def start_git_sync(
         )
         return None
 
-    stop_event = threading.Event()
+    if stop_event is None:
+        stop_event = threading.Event()
     thread = start_sync_scheduler(
         cloned_repos, interval_seconds, stop_event, status
     )
@@ -148,7 +156,9 @@ def start_git_sync(
     return thread, stop_event
 
 
-def _clone_then_sync(status: SyncStatus, interval_seconds: int) -> None:
+def _clone_then_sync(
+    status: SyncStatus, interval_seconds: int, stop_event: threading.Event
+) -> None:
     """
     Create a missing config file, or clone and start syncing.
 
@@ -161,12 +171,18 @@ def _clone_then_sync(status: SyncStatus, interval_seconds: int) -> None:
     Args:
         status: Where the outcome of every synchronization is recorded.
         interval_seconds: Seconds to wait between synchronizations.
+        stop_event: Set when the service is stopping.
     """
     try:
         if provision_config(_config_path(), _template_path()):
             return
         clone_configured_repos()
-        start_git_sync(status, interval_seconds)
+        if stop_event.is_set():
+            return
+        started = start_git_sync(status, interval_seconds, stop_event)
+        if started:
+            sync_thread, _ = started
+            sync_thread.join()
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("Unexpected error while starting the git backup")
 
@@ -174,6 +190,7 @@ def _clone_then_sync(status: SyncStatus, interval_seconds: int) -> None:
 def start_git_backup(
     status: SyncStatus,
     interval_seconds: int = DEFAULT_SYNC_INTERVAL_SECONDS,
+    stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     """
     Start the git backup without holding up the caller.
@@ -187,16 +204,57 @@ def start_git_backup(
     Args:
         status: Where the outcome of every synchronization is recorded.
         interval_seconds: Seconds to wait between synchronizations.
+        stop_event: Set this, or pass it to :func:`stop_git_backup`, to
+            stop the backup. Without one the backup only ends with the
+            process.
 
     Returns:
-        The started thread. It ends once the clones are done and the
-        periodic sync has been handed to its own thread.
+        The started thread. It ends once the backup has stopped, or right
+        after cloning when there is nothing to synchronize.
     """
+    if stop_event is None:
+        stop_event = threading.Event()
     thread = threading.Thread(
         target=_clone_then_sync,
-        args=(status, interval_seconds),
+        args=(status, interval_seconds, stop_event),
         name=BOOTSTRAP_THREAD_NAME,
         daemon=True,
     )
     thread.start()
     return thread
+
+
+def stop_git_backup(
+    thread: threading.Thread,
+    stop_event: threading.Event,
+    timeout_seconds: float = SHUTDOWN_TIMEOUT_SECONDS,
+) -> bool:
+    """
+    Stop the git backup and wait, for a limited time, until it has.
+
+    No further git command is started once ``stop_event`` is set. The one
+    running when this is called is waited for, up to ``timeout_seconds``:
+    a push or clone can take many minutes, longer than any shutdown should.
+
+    Args:
+        thread: The thread returned by :func:`start_git_backup`.
+        stop_event: The event passed to :func:`start_git_backup`.
+        timeout_seconds: Longest time to wait.
+
+    Returns:
+        True if the backup stopped in time, False if a git command was
+        still running when the wait ran out.
+    """
+    stop_event.set()
+    thread.join(timeout_seconds)
+
+    if thread.is_alive():
+        logger.warning(
+            "The git backup was still running a git command after %g seconds; "
+            "not waiting for it any longer",
+            timeout_seconds,
+        )
+        return False
+
+    logger.info("Stopped the git backup")
+    return True
