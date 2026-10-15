@@ -331,26 +331,32 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
   each outcome in a `SyncStatus`
 - `status.py`: thread-safe record of the last attempt, success and error
   kind per repository, served by `/git/status`
-- `bootstrap.py`: called once from `main.cli()` on startup; clones and
-  starts the sync on a background thread, so the HTTP API never waits.
+- `bootstrap.py`: called once from `main.cli()` on startup; creates a
+  missing config file, or clones and starts the sync, on a background
+  thread, so the HTTP API never waits.
   `stop_git_backup()` is run by the FastAPI lifespan on shutdown
+- `provision.py`: copies the template into place when `config.toml` is
+  missing (mode `0600`, never overwriting) and adds a `.gitignore` holding
+  `*` to its directory
 - `runner.py`: runs every git command with prompts off, empty stdin and a
   time limit, stopping an overrunning command and its child processes
 
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.
 
-`config.toml` lives in `$WORKSPACE_APP_DIR`. When it is absent the git
-backup is disabled; the template `workspaces/src/templates/config.toml.example`
-is never read at runtime, and its placeholder values are rejected if copied
-unedited.
-It needs `HOME_DIR`, `WORKSPACE_DIR` and `WORKSPACE_APP_DIR` at the top
-level, takes an optional `SYNC_INTERVAL_SECONDS` there (1 to 86400,
-default 300; `--sync-interval` overrides it), plus an `[assets.private]` and/or `[assets.common]` table holding
-`GIT_REPO_URL`, `GIT_REPO_BRANCH` and `GIT_REPO_TOKEN`. The paths follow
-from the section name: `WORKSPACE_DIR/<name>` and
-`WORKSPACE_APP_DIR/assets/<name>`. See `workspaces/src/admin/DOCUMENTATION.md`
-for what each key means.
+`config.toml` lives in `$WORKSPACE_APP_DIR`, in the image
+`/workspace/.config/workspaceadmin/`. When it is absent it is created from
+the template `workspaces/src/templates/config.toml.example`, which the
+Dockerfile copies to `$WORKSPACE_CONFIG_TEMPLATE`. Nothing is cloned until
+the user fills it in and restarts: its placeholder values are rejected.
+Outside the image no template is set, and the backup stays disabled.
+The file holds an optional top-level `SYNC_INTERVAL_SECONDS` (1 to 86400,
+default 300; `--sync-interval` overrides it) and an `[assets.private]`
+and/or `[assets.common]` table with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and
+`GIT_REPO_TOKEN`. Every path follows from `$PERSISTENT_DIR` and the section
+name: git directories in `.local/share/workspaceadmin/<name>`, work trees in
+`assets/<name>`. `workspaces/src/admin/DOCUMENTATION.md` still describes the
+older layout.
 
 To add new services to the workspace:
 
@@ -367,12 +373,15 @@ To add new services to the workspace:
 - `NO_VNC_PORT`: Port for KasmVNC (default varies, read by
   `configure_nginx.py`)
 - `PERSISTENT_DIR`: Directory for user data persistence (default:
-  `/workspace`)
+  `/workspace`); also the root of every git backup path
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
 - `WORKSPACE_APP_DIR`: Directory holding `config.toml`, the git asset
   configuration read on startup (default: current directory;
-  `custom_startup.sh` sets it to `$PERSISTENT_DIR` in the image)
+  `custom_startup.sh` sets it to `$PERSISTENT_DIR/.config/workspaceadmin`
+  in the image)
+- `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when it is
+  missing (set by the Dockerfile; unset outside the image)
 
 ## Code Quality Standards
 

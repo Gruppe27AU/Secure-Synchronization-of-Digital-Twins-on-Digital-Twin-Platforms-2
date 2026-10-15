@@ -84,7 +84,7 @@ def test_clone_configured_repos_clones_every_entry(monkeypatch):
     common_repo = make_repo("common")
 
     monkeypatch.setattr(
-        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+        bootstrap, "load_config", lambda _path, _root: [private_repo, common_repo]
     )
 
     cloned_with = []
@@ -102,7 +102,7 @@ def test_clone_configured_repos_clones_every_entry(monkeypatch):
 def test_clone_configured_repos_clones_private_only(monkeypatch):
     """Test a config with only [assets.private] clones just that repository."""
     private_repo = make_repo("private")
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
 
     cloned_with = {}
 
@@ -119,7 +119,7 @@ def test_clone_configured_repos_clones_private_only(monkeypatch):
 def test_clone_configured_repos_skips_already_cloned_repos(monkeypatch):
     """Test a repository clone_asset reports as skipped is reflected as False."""
     private_repo = make_repo("private")
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [private_repo])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
     monkeypatch.setattr(bootstrap, "clone_asset", lambda _repo: False)
 
     assert bootstrap.clone_configured_repos() == {"private": False}
@@ -130,7 +130,7 @@ def test_clone_configured_repos_returns_empty_when_config_load_fails(
 ):
     """Test a broken config file logs an error and clones nothing."""
 
-    def fake_load_config(_path):
+    def fake_load_config(_path, _root):
         raise ConfigError("config.toml: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
@@ -148,7 +148,7 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
     private_repo = make_repo("private")
     common_repo = make_repo("common")
     monkeypatch.setattr(
-        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+        bootstrap, "load_config", lambda _path, _root: [private_repo, common_repo]
     )
 
     def fake_clone_asset(repo):
@@ -174,13 +174,38 @@ def test_config_path_uses_workspace_app_dir(monkeypatch):
     assert path == Path("/some/app/dir") / "config.toml"
 
 
+def test_root_dir_uses_persistent_dir(monkeypatch):
+    """Test the repositories are placed below $PERSISTENT_DIR."""
+    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
+
+    root = bootstrap._root_dir()  # pylint: disable=protected-access
+
+    assert root == Path("/some/persistent/dir")
+
+
+def test_load_repos_passes_the_root_to_load_config(monkeypatch):
+    """Test the root from the environment reaches load_config."""
+    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
+    received = {}
+
+    def fake_load_config(_path, root):
+        received["root"] = root
+        return []
+
+    monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
+
+    bootstrap.clone_configured_repos()
+
+    assert received["root"] == Path("/some/persistent/dir")
+
+
 def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
     """Test repositories that have not been cloned yet are left out."""
     private_repo = make_repo("private")
     common_repo = make_repo("common")
 
     monkeypatch.setattr(
-        bootstrap, "load_config", lambda path: [private_repo, common_repo]
+        bootstrap, "load_config", lambda _path, _root: [private_repo, common_repo]
     )
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: git_dir == "cloned")
 
@@ -214,7 +239,7 @@ def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
 def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog):
     """Test a broken config file does not stop the service from starting."""
 
-    def fake_load_config(_path):
+    def fake_load_config(_path, _root):
         raise ConfigError("config.toml: no [assets] section found")
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
@@ -229,7 +254,7 @@ def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog)
 
 def test_start_git_sync_returns_none_when_nothing_is_cloned(monkeypatch, caplog):
     """Test the sync is not started when there is nothing to sync."""
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: False)
     status = SyncStatus()
 
@@ -302,9 +327,57 @@ def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
     assert "disk on fire" in caplog.text
 
 
+def test_template_path_is_none_without_the_variable(monkeypatch):
+    """Test that outside the image no template is assumed."""
+    monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
+
+    assert bootstrap._template_path() is None  # pylint: disable=protected-access
+
+
+def test_template_path_uses_the_variable(monkeypatch):
+    """Test the template is taken from $WORKSPACE_CONFIG_TEMPLATE."""
+    monkeypatch.setenv("WORKSPACE_CONFIG_TEMPLATE", "/some/template.toml")
+
+    path = bootstrap._template_path()  # pylint: disable=protected-access
+
+    assert path == Path("/some/template.toml")
+
+
+def test_start_git_backup_creates_a_missing_config_and_clones_nothing(
+    config_file, monkeypatch, tmp_path
+):
+    """Test a freshly created config, still all placeholders, is not cloned."""
+    config_file.unlink()
+    template = tmp_path / "template.toml"
+    template.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
+    monkeypatch.setenv("WORKSPACE_CONFIG_TEMPLATE", str(template))
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
+
+    bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert config_file.read_bytes() == EXAMPLE_CONFIG_PATH.read_bytes()
+
+
+def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch):
+    """Test an existing config file goes straight on to cloning."""
+    assert config_file.is_file()
+    steps = []
+    monkeypatch.setattr(
+        bootstrap, "clone_configured_repos", lambda: steps.append("clone")
+    )
+    monkeypatch.setattr(
+        bootstrap, "start_git_sync", lambda status, interval, _stop_event: steps.append("sync")
+    )
+
+    bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert steps == ["clone", "sync"]
+
+
 def test_start_git_sync_uses_the_stop_event_it_is_given(monkeypatch):
     """Test the caller's event is the one that stops the scheduler."""
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: True)
     scheduled = {}
 
@@ -385,7 +458,7 @@ def test_stop_git_backup_gives_up_on_a_git_command_that_runs_on(caplog):
 
 def _schedule_into(scheduled, monkeypatch):
     """Load one cloned repository and record what the scheduler is given."""
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: True)
 
     def fake_start_sync_scheduler(_repos, interval_seconds, _stop_event, _status):

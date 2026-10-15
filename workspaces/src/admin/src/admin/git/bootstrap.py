@@ -21,6 +21,7 @@ from admin.git.config import (
     load_config,
     load_sync_interval,
 )
+from admin.git.provision import provision_config
 from admin.git.scheduler import start_sync_scheduler
 from admin.git.status import SyncStatus
 
@@ -41,6 +42,17 @@ def _config_path() -> Path:
     """Resolve the path to ``config.toml`` from the environment."""
     app_dir = Path(os.environ.get("WORKSPACE_APP_DIR", "."))
     return app_dir / DEFAULT_CONFIG_FILE
+
+
+def _root_dir() -> Path:
+    """Resolve the directory every repository is placed below."""
+    return Path(os.environ.get("PERSISTENT_DIR", "."))
+
+
+def _template_path() -> Path | None:
+    """Resolve the config template, or None when none is installed."""
+    template = os.environ.get("WORKSPACE_CONFIG_TEMPLATE")
+    return Path(template) if template else None
 
 
 def _load_repos(failure_message: str) -> list[RepoConfig]:
@@ -66,7 +78,7 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
         return []
 
     try:
-        return load_config(config_path)
+        return load_config(config_path, _root_dir())
     except ConfigError as exc:
         logger.error("%s: %s", failure_message, exc)
         return []
@@ -161,13 +173,13 @@ def _clone_then_sync(
     status: SyncStatus, interval_seconds: int | None, stop_event: threading.Event
 ) -> None:
     """
-    Clone the configured repositories, then sync the cloned ones until stopped.
+    Create a missing config file, or clone and start syncing.
 
-    Runs on the thread started by :func:`start_git_backup`, and stays alive
-    until the sync thread has ended, so that this one thread is all
-    :func:`stop_git_backup` has to wait for. Both steps already log their
-    own failures; anything unexpected is caught here too, because an
-    exception escaping a thread is easy to miss.
+    Runs on the thread started by :func:`start_git_backup`. A config file
+    created now holds only placeholders, so nothing is cloned until the
+    user has filled it in and restarted. Every step logs its own failures;
+    anything unexpected is caught here too, because an exception escaping
+    a thread is easy to miss.
 
     Args:
         status: Where the outcome of every synchronization is recorded.
@@ -176,6 +188,8 @@ def _clone_then_sync(
         stop_event: Set when the service is stopping.
     """
     try:
+        if provision_config(_config_path(), _template_path()):
+            return
         clone_configured_repos()
         if stop_event.is_set():
             return

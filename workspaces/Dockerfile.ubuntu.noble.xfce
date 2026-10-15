@@ -15,6 +15,8 @@ ENV ADMIN_SERVER_PORT=8091 \
     HOME=/home/kasm-default-profile \
     INST_DIR=${STARTUPDIR}/install \
     ADMIN_DIR=${STARTUPDIR}/admin \
+    TEMPLATES_DIR=${STARTUPDIR}/templates \
+    WORKSPACE_CONFIG_TEMPLATE=${STARTUPDIR}/templates/config.toml \
     JUPYTER_SERVER_PORT=8090 \
     PERSISTENT_DIR=/workspace \
     VNCOPTIONS="${VNCOPTIONS} -disableBasicAuth" \
@@ -57,6 +59,7 @@ RUN bash ${INST_DIR}/kasm_fixes.sh
 FROM install-${INSTALLATION} AS setup
 
 COPY ./src/startup/ ${STARTUPDIR}
+COPY ./src/templates/config.toml.example ${TEMPLATES_DIR}/config.toml
 
 COPY ./src/resources/kasm_vnc/kasmvnc.yaml /etc/kasmvnc/
 COPY ./src/resources/jupyter/jupyter_notebook_config.py /home/kasm-default-profile/.jupyter/
