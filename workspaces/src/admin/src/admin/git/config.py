@@ -12,6 +12,7 @@ every file in a work tree is committed and pushed, and the config file holds
 the tokens.
 """
 
+import logging
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from admin.git.runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
+
+logger = logging.getLogger(__name__)
 
 #: Keys that must be present in every ``[assets.*]`` section.
 REQUIRED_ASSET_KEYS = (
@@ -49,6 +52,19 @@ GIT_DIR_PARENT = Path(".local", "share", "workspaceadmin")
 
 #: Directory below the root that holds every work tree.
 WORK_TREE_PARENT = Path("assets")
+
+#: Optional top-level key holding the seconds between two backups.
+SYNC_INTERVAL_KEY = "SYNC_INTERVAL_SECONDS"
+
+#: Seconds between two backups when ``SYNC_INTERVAL_SECONDS`` is not set.
+DEFAULT_SYNC_INTERVAL_SECONDS = 300
+
+#: Shortest and longest interval accepted. Below one second the backup
+#: would never wait; above a day it would hardly be a backup, and far
+#: above it the wait itself fails (``threading.TIMEOUT_MAX`` is about
+#: 49 days on Windows), which would end the sync thread.
+MIN_SYNC_INTERVAL_SECONDS = 1
+MAX_SYNC_INTERVAL_SECONDS = 86400
 
 
 class ConfigError(Exception):
@@ -318,6 +334,91 @@ def _check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:
                 f"needs a remote of its own"
             )
         seen[remote] = repo.name
+
+
+def sync_interval_problem(seconds: object) -> str | None:
+    """
+    Explain what is wrong with a sync interval, if anything.
+
+    Shared by the config file and the ``--sync-interval`` option, so both
+    accept exactly the same values.
+
+    Args:
+        seconds: The value given.
+
+    Returns:
+        Why the value cannot be used, or None when it can.
+    """
+    # bool is a subclass of int, and TOML's true would otherwise mean 1.
+    if isinstance(seconds, bool) or not isinstance(seconds, int):
+        return f"must be a whole number of seconds, got {type(seconds).__name__}"
+    if not MIN_SYNC_INTERVAL_SECONDS <= seconds <= MAX_SYNC_INTERVAL_SECONDS:
+        return (
+            f"must be between {MIN_SYNC_INTERVAL_SECONDS} and "
+            f"{MAX_SYNC_INTERVAL_SECONDS} seconds, got {seconds}"
+        )
+    return None
+
+
+def _sync_interval(config: dict[str, Any], source: Path) -> int:
+    """
+    Read ``SYNC_INTERVAL_SECONDS`` from a parsed config file.
+
+    A bad value never stops the backup: it is reported as a warning and
+    :data:`DEFAULT_SYNC_INTERVAL_SECONDS` is used instead.
+
+    Args:
+        config: The parsed file.
+        source: File it came from, used in the warnings.
+
+    Returns:
+        The interval in seconds, or :data:`DEFAULT_SYNC_INTERVAL_SECONDS`
+        when the key is not set or its value cannot be used.
+    """
+    fallback = f"using the default of {DEFAULT_SYNC_INTERVAL_SECONDS} seconds"
+
+    # Appended at the end of the file, the key lands in the last [assets]
+    # section, where it would otherwise be ignored without a word.
+    assets = config.get("assets")
+    if isinstance(assets, dict):
+        for name, asset in assets.items():
+            if isinstance(asset, dict) and SYNC_INTERVAL_KEY in asset:
+                logger.warning(
+                    "%s: '%s' is in [assets.%s], where it has no effect; move "
+                    "it to the top level, above every [assets] section",
+                    source, SYNC_INTERVAL_KEY, name,
+                )
+
+    if SYNC_INTERVAL_KEY not in config:
+        return DEFAULT_SYNC_INTERVAL_SECONDS
+
+    seconds = config[SYNC_INTERVAL_KEY]
+    problem = sync_interval_problem(seconds)
+    if problem:
+        logger.warning(
+            "%s: '%s' %s; %s", source, SYNC_INTERVAL_KEY, problem, fallback
+        )
+        return DEFAULT_SYNC_INTERVAL_SECONDS
+    return seconds
+
+
+def load_sync_interval(config_path: Path) -> int:
+    """
+    Load the seconds between two backups from the config file.
+
+    Args:
+        config_path: The user's config file, normally
+            ``$WORKSPACE_APP_DIR/config.toml``.
+
+    Returns:
+        ``SYNC_INTERVAL_SECONDS``, or :data:`DEFAULT_SYNC_INTERVAL_SECONDS`
+        when the file does not set it or sets it to something unusable,
+        which is logged as a warning.
+
+    Raises:
+        ConfigError: If the file cannot be read or is not valid TOML.
+    """
+    return _sync_interval(_read_toml(config_path), config_path)
 
 
 def load_config(config_path: Path, root: Path) -> list[RepoConfig]:

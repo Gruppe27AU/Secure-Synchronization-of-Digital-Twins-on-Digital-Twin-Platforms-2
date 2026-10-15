@@ -367,7 +367,7 @@ def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch
         bootstrap, "clone_configured_repos", lambda: steps.append("clone")
     )
     monkeypatch.setattr(
-        bootstrap, "start_git_sync", lambda status, interval: steps.append("sync")
+        bootstrap, "start_git_sync", lambda status, interval, _stop_event: steps.append("sync")
     )
 
     bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
@@ -377,7 +377,7 @@ def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch
 
 def test_start_git_sync_uses_the_stop_event_it_is_given(monkeypatch):
     """Test the caller's event is the one that stops the scheduler."""
-    monkeypatch.setattr(bootstrap, "load_config", lambda path: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: True)
     scheduled = {}
 
@@ -454,3 +454,69 @@ def test_stop_git_backup_gives_up_on_a_git_command_that_runs_on(caplog):
     assert stop_event.is_set()
     assert "still running a git command" in caplog.text
     release.set()
+
+
+def _schedule_into(scheduled, monkeypatch):
+    """Load one cloned repository and record what the scheduler is given."""
+    monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
+    monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: True)
+
+    def fake_start_sync_scheduler(_repos, interval_seconds, _stop_event, _status):
+        scheduled["interval_seconds"] = interval_seconds
+        return "thread"
+
+    monkeypatch.setattr(
+        bootstrap, "start_sync_scheduler", fake_start_sync_scheduler
+    )
+
+
+def test_start_git_sync_reads_the_interval_from_the_config_file(
+    config_file, monkeypatch
+):
+    """Test with no interval given, SYNC_INTERVAL_SECONDS decides."""
+    scheduled = {}
+    _schedule_into(scheduled, monkeypatch)
+    read_from = []
+
+    def fake_load_sync_interval(path):
+        read_from.append(path)
+        return 120
+
+    monkeypatch.setattr(bootstrap, "load_sync_interval", fake_load_sync_interval)
+
+    assert bootstrap.start_git_sync(SyncStatus()) is not None
+
+    assert scheduled["interval_seconds"] == 120
+    assert read_from == [config_file]
+
+
+def test_start_git_sync_prefers_a_given_interval(monkeypatch):
+    """Test --sync-interval overrides the config file, which is not read."""
+    scheduled = {}
+    _schedule_into(scheduled, monkeypatch)
+    monkeypatch.setattr(bootstrap, "load_sync_interval", _fail_if_called)
+
+    bootstrap.start_git_sync(SyncStatus(), 30)
+
+    assert scheduled["interval_seconds"] == 30
+
+
+def test_start_git_sync_is_not_started_when_the_interval_cannot_be_read(
+    monkeypatch, caplog
+):
+    """Test a config file broken since the clone is logged, not raised."""
+    scheduled = {}
+    _schedule_into(scheduled, monkeypatch)
+
+    def unreadable(_path):
+        raise ConfigError("config.toml is not valid TOML: SYNC_INTERVAL_SECONDS")
+
+    monkeypatch.setattr(bootstrap, "load_sync_interval", unreadable)
+    status = SyncStatus()
+
+    with caplog.at_level("ERROR"):
+        assert bootstrap.start_git_sync(status) is None
+
+    assert "SYNC_INTERVAL_SECONDS" in caplog.text
+    assert not scheduled
+    assert status.snapshot()["enabled"] is False

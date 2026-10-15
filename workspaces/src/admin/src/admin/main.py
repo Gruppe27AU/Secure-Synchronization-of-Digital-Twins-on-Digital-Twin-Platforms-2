@@ -27,7 +27,11 @@ import uvicorn
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
 from admin.git.bootstrap import start_git_backup, stop_git_backup
-from admin.git.scheduler import DEFAULT_SYNC_INTERVAL_SECONDS
+from admin.git.config import (
+    DEFAULT_SYNC_INTERVAL_SECONDS,
+    SYNC_INTERVAL_KEY,
+    sync_interval_problem,
+)
 from admin.git.status import SyncStatus
 from admin.services import load_services
 
@@ -47,8 +51,9 @@ def _positive_seconds(value: str) -> int:
 
     Raises:
         argparse.ArgumentTypeError: If the value is not a whole number of
-            seconds above zero. Zero would turn the backup into a loop
-            that never waits, hammering the remote.
+            seconds in the range the config file accepts too. Zero would
+            turn the backup into a loop that never waits, hammering the
+            remote.
     """
     try:
         seconds = int(value)
@@ -57,10 +62,9 @@ def _positive_seconds(value: str) -> int:
             f"expected a whole number of seconds, got '{value}'"
         ) from error
 
-    if seconds < 1:
-        raise argparse.ArgumentTypeError(
-            f"expected at least 1 second, got {seconds}"
-        )
+    problem = sync_interval_problem(seconds)
+    if problem:
+        raise argparse.ArgumentTypeError(problem)
 
     return seconds
 
@@ -108,10 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sync-interval",
         type=_positive_seconds,
-        default=DEFAULT_SYNC_INTERVAL_SECONDS,
+        default=None,
         help=(
-            "Seconds between git backups of the workspace "
-            f"(default: {DEFAULT_SYNC_INTERVAL_SECONDS})"
+            "Seconds between git backups of the workspace, overriding "
+            f"{SYNC_INTERVAL_KEY} in config.toml "
+            f"(default: the config file's value, or {DEFAULT_SYNC_INTERVAL_SECONDS})"
         )
     )
     parser.add_argument(
@@ -142,7 +147,7 @@ def _print_service_catalogue() -> None:
 
 
 def _start_git_backup(
-    interval_seconds: int, status: SyncStatus
+    interval_seconds: int | None, status: SyncStatus
 ) -> Callable[[], bool]:
     """
     Start bringing the git-backed workspace assets up, without waiting.
@@ -154,7 +159,9 @@ def _start_git_backup(
     HTTP API.
 
     Args:
-        interval_seconds: Seconds to wait between backups.
+        interval_seconds: Seconds to wait between backups, from
+            ``--sync-interval``. None uses ``SYNC_INTERVAL_SECONDS`` from
+            the config file.
         status: Where the outcome of every backup is recorded.
 
     Returns:

@@ -350,11 +350,13 @@ the template `workspaces/src/templates/config.toml.example`, which the
 Dockerfile copies to `$WORKSPACE_CONFIG_TEMPLATE`. Nothing is cloned until
 the user fills it in and restarts: its placeholder values are rejected.
 Outside the image no template is set, and the backup stays disabled.
-The file holds only an `[assets.private]` and/or `[assets.common]` table
-with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and `GIT_REPO_TOKEN`. Every path
-follows from `$PERSISTENT_DIR` and the section name: git directories in
-`.local/share/workspaceadmin/<name>`, work trees in `assets/<name>`.
-`workspaces/src/admin/DOCUMENTATION.md` still describes the older layout.
+The file holds an optional top-level `SYNC_INTERVAL_SECONDS` (1 to 86400,
+default 300; `--sync-interval` overrides it) and an `[assets.private]`
+and/or `[assets.common]` table with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and
+`GIT_REPO_TOKEN`. Every path follows from `$PERSISTENT_DIR` and the section
+name: git directories in `.local/share/workspaceadmin/<name>`, work trees in
+`assets/<name>`. `workspaces/src/admin/DOCUMENTATION.md` still describes the
+older layout.
 
 To add new services to the workspace:
 
