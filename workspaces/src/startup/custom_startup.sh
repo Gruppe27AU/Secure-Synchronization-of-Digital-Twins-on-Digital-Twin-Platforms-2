@@ -45,12 +45,6 @@ function start_vscode_server {
 
 function start_admin_server {
     local path_prefix="${MAIN_USER:-}"
-    # The git backup reads ${WORKSPACE_APP_DIR}/config.toml and creates it from
-    # the template when it is absent. A dot-directory in the persistent dir
-    # keeps the token out of the user's main working area while letting the
-    # operator provision it from the host volume. Set here rather than as a
-    # Dockerfile ENV, which .docker_set_envs would pin over runtime values.
-    export WORKSPACE_APP_DIR="${WORKSPACE_APP_DIR:-${PERSISTENT_DIR}/.config/workspaceadmin}"
     if [[ -n "${path_prefix}" ]]; then
         workspace-admin --host 0.0.0.0 --port "${ADMIN_SERVER_PORT}" --path-prefix "${path_prefix}" &
     else

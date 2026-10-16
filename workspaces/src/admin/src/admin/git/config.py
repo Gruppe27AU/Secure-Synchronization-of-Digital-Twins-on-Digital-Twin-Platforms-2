@@ -6,7 +6,7 @@ so the other modules can use the values without parsing anything.
 
 Every path is fixed below one root, normally ``$PERSISTENT_DIR``, so the
 file holds none. A repository's git directory is
-``<root>/.local/share/workspaceadmin/<name>`` and its work tree
+``<root>/.local/share/workspace-admin/<name>`` and its work tree
 ``<root>/assets/<name>``. No work tree may contain the config file, because
 every file in a work tree is committed and pushed, and the config file holds
 the tokens.
@@ -48,7 +48,7 @@ PLACEHOLDER_VALUES = {
 ASSET_NAMES = ("private", "common")
 
 #: Directory below the root that holds every git directory.
-GIT_DIR_PARENT = Path(".local", "share", "workspaceadmin")
+GIT_DIR_PARENT = Path(".local", "share", "workspace-admin")
 
 #: Directory below the root that holds every work tree.
 WORK_TREE_PARENT = Path("assets")
@@ -239,9 +239,9 @@ def _check_config_outside_work_trees(repos: list[RepoConfig], source: Path) -> N
     """
     Require the config file to lie outside every work tree.
 
-    Both paths are resolved against the real filesystem, because ``source``
-    comes from ``$WORKSPACE_APP_DIR`` and the root from ``$PERSISTENT_DIR``,
-    and either may be relative or reached through a symlink.
+    Both paths are resolved against the real filesystem, because they are
+    given separately and either may be relative or reached through a
+    symlink.
 
     Args:
         repos: The configured repositories.
@@ -408,7 +408,7 @@ def load_sync_interval(config_path: Path) -> int:
 
     Args:
         config_path: The user's config file, normally
-            ``$WORKSPACE_APP_DIR/config.toml``.
+            ``<root>/.config/workspace-admin/config.toml``.
 
     Returns:
         ``SYNC_INTERVAL_SECONDS``, or :data:`DEFAULT_SYNC_INTERVAL_SECONDS`
@@ -431,7 +431,7 @@ def load_config(config_path: Path, root: Path) -> list[RepoConfig]:
 
     Args:
         config_path: The user's config file, normally
-            ``$WORKSPACE_APP_DIR/config.toml``.
+            ``<root>/.config/workspace-admin/config.toml``.
         root: Directory every repository is placed below, normally
             ``$PERSISTENT_DIR``.
 

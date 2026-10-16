@@ -27,8 +27,11 @@ from admin.git.status import SyncStatus
 
 logger = logging.getLogger(__name__)
 
-#: Filename of the config file, resolved against ``$WORKSPACE_APP_DIR``.
+#: Filename of the config file.
 DEFAULT_CONFIG_FILE = "config.toml"
+
+#: Directory holding the config file, below the root.
+CONFIG_DIR = Path(".config", "workspace-admin")
 
 #: Name of the thread that clones on startup, recognisable in a stack dump.
 BOOTSTRAP_THREAD_NAME = "git-bootstrap"
@@ -38,21 +41,26 @@ BOOTSTRAP_THREAD_NAME = "git-bootstrap"
 SHUTDOWN_TIMEOUT_SECONDS = 8
 
 
-def _config_path() -> Path:
-    """Resolve the path to ``config.toml`` from the environment."""
-    app_dir = Path(os.environ.get("WORKSPACE_APP_DIR", "."))
-    return app_dir / DEFAULT_CONFIG_FILE
-
-
 def _root_dir() -> Path:
-    """Resolve the directory every repository is placed below."""
-    return Path(os.environ.get("PERSISTENT_DIR", "."))
+    """Resolve ``$PERSISTENT_DIR``, or the home directory when it is unset."""
+    persistent_dir = os.environ.get("PERSISTENT_DIR")
+    return Path(persistent_dir) if persistent_dir else Path.home()
+
+
+def _config_path() -> Path:
+    """Resolve the path to ``config.toml`` below the root."""
+    return _root_dir() / CONFIG_DIR / DEFAULT_CONFIG_FILE
 
 
 def _template_path() -> Path | None:
     """Resolve the config template, or None when none is installed."""
     template = os.environ.get("WORKSPACE_CONFIG_TEMPLATE")
     return Path(template) if template else None
+
+
+def _log_missing_config(config_path: Path) -> None:
+    """Report that the git backup is off because ``config_path`` is absent."""
+    logger.info("%s not found; git backup is disabled", config_path)
 
 
 def _load_repos(failure_message: str) -> list[RepoConfig]:
@@ -74,7 +82,7 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
     config_path = _config_path()
 
     if not config_path.is_file():
-        logger.info("%s not found; git backup is disabled", config_path)
+        _log_missing_config(config_path)
         return []
 
     try:
@@ -88,7 +96,7 @@ def clone_configured_repos() -> dict[str, bool]:
     """
     Clone every repository described in ``config.toml``.
 
-    Reads the config file located at ``$WORKSPACE_APP_DIR/config.toml`` and
+    Reads the config file at ``<root>/.config/workspace-admin/config.toml`` and
     clones each configured repository (``private`` and/or ``common``) that
     is not already present. When the file does not exist the git backup is
     disabled and nothing is cloned. Each repository is cloned
@@ -188,7 +196,11 @@ def _clone_then_sync(
         stop_event: Set when the service is stopping.
     """
     try:
-        if provision_config(_config_path(), _template_path()):
+        config_path = _config_path()
+        if provision_config(config_path, _template_path()):
+            return
+        if not config_path.is_file():
+            _log_missing_config(config_path)
             return
         clone_configured_repos()
         if stop_event.is_set():
@@ -228,6 +240,7 @@ def start_git_backup(
         The started thread. It ends once the backup has stopped, or right
         after cloning when there is nothing to synchronize.
     """
+    logger.info("Git backup config file: %s", _config_path().absolute())
     if stop_event is None:
         stop_event = threading.Event()
     thread = threading.Thread(

@@ -23,14 +23,15 @@ from tests.helpers.templates import EXAMPLE_CONFIG_PATH
 @pytest.fixture(name="config_file", autouse=True)
 def fixture_config_file(tmp_path, monkeypatch):
     """
-    Point $WORKSPACE_APP_DIR at a directory holding a config.toml.
+    Point $PERSISTENT_DIR at a directory holding a config.toml.
 
     The file's contents do not matter, since the tests replace
     ``load_config``; it only has to exist for the bootstrap to get that far.
     """
-    config_path = tmp_path / bootstrap.DEFAULT_CONFIG_FILE
+    config_path = tmp_path / bootstrap.CONFIG_DIR / bootstrap.DEFAULT_CONFIG_FILE
+    config_path.parent.mkdir(parents=True)
     config_path.write_text("", encoding="utf-8")
-    monkeypatch.setenv("WORKSPACE_APP_DIR", str(tmp_path))
+    monkeypatch.setenv("PERSISTENT_DIR", str(tmp_path))
     return config_path
 
 
@@ -165,13 +166,36 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
     assert "git clone failed for repository 'private'" in caplog.text
 
 
-def test_config_path_uses_workspace_app_dir(monkeypatch):
-    """Test the config file is resolved from $WORKSPACE_APP_DIR/config.toml."""
-    monkeypatch.setenv("WORKSPACE_APP_DIR", "/some/app/dir")
+def test_config_path_is_below_persistent_dir(monkeypatch):
+    """Test the config file is resolved below $PERSISTENT_DIR."""
+    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
 
     path = bootstrap._config_path()  # pylint: disable=protected-access
 
-    assert path == Path("/some/app/dir") / "config.toml"
+    assert path == Path("/some/persistent/dir/.config/workspace-admin/config.toml")
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_config_path_defaults_to_home(monkeypatch, value):
+    """Test an unset or empty $PERSISTENT_DIR puts the config in the home directory."""
+    if value is None:
+        monkeypatch.delenv("PERSISTENT_DIR", raising=False)
+    else:
+        monkeypatch.setenv("PERSISTENT_DIR", value)
+
+    path = bootstrap._config_path()  # pylint: disable=protected-access
+
+    assert path == Path.home() / ".config" / "workspace-admin" / "config.toml"
+
+
+def test_config_path_ignores_working_directory(monkeypatch, tmp_path):
+    """Test the working directory does not change where the config is read."""
+    monkeypatch.delenv("PERSISTENT_DIR", raising=False)
+    before = bootstrap._config_path()  # pylint: disable=protected-access
+
+    monkeypatch.chdir(tmp_path)
+
+    assert bootstrap._config_path() == before  # pylint: disable=protected-access
 
 
 def test_root_dir_uses_persistent_dir(monkeypatch):
@@ -183,9 +207,17 @@ def test_root_dir_uses_persistent_dir(monkeypatch):
     assert root == Path("/some/persistent/dir")
 
 
-def test_load_repos_passes_the_root_to_load_config(monkeypatch):
+def test_root_dir_defaults_to_home(monkeypatch):
+    """Test the repositories are placed below the home directory by default."""
+    monkeypatch.delenv("PERSISTENT_DIR", raising=False)
+
+    root = bootstrap._root_dir()  # pylint: disable=protected-access
+
+    assert root == Path.home()
+
+
+def test_load_repos_passes_the_root_to_load_config(monkeypatch, tmp_path):
     """Test the root from the environment reaches load_config."""
-    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
     received = {}
 
     def fake_load_config(_path, root):
@@ -196,7 +228,7 @@ def test_load_repos_passes_the_root_to_load_config(monkeypatch):
 
     bootstrap.clone_configured_repos()
 
-    assert received["root"] == Path("/some/persistent/dir")
+    assert received["root"] == tmp_path
 
 
 def test_start_git_sync_schedules_only_the_cloned_repositories(monkeypatch):
@@ -312,6 +344,34 @@ def test_start_git_backup_runs_on_a_named_daemon_thread(monkeypatch):
     assert thread.name == bootstrap.BOOTSTRAP_THREAD_NAME
 
 
+@pytest.mark.parametrize("exists", [True, False])
+def test_start_git_backup_logs_the_config_path(config_file, monkeypatch, caplog, exists):
+    """Test the absolute config path is logged, whether the file exists or not."""
+    if not exists:
+        config_file.unlink()
+    monkeypatch.setattr(bootstrap, "_clone_then_sync", lambda *_args: None)
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert f"Git backup config file: {config_file}" in caplog.text
+
+
+def test_start_git_backup_logs_a_relative_root_as_absolute(
+    monkeypatch, caplog, tmp_path
+):
+    """Test a relative $PERSISTENT_DIR is logged as a full path."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PERSISTENT_DIR", "relative")
+    monkeypatch.setattr(bootstrap, "_clone_then_sync", lambda *_args: None)
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    expected = tmp_path / "relative" / bootstrap.CONFIG_DIR / "config.toml"
+    assert f"Git backup config file: {expected}" in caplog.text
+
+
 def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
     """Test an error on the background thread is logged, not lost."""
 
@@ -357,6 +417,22 @@ def test_start_git_backup_creates_a_missing_config_and_clones_nothing(
     bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
 
     assert config_file.read_bytes() == EXAMPLE_CONFIG_PATH.read_bytes()
+
+
+def test_start_git_backup_reports_a_missing_config_once(
+    config_file, monkeypatch, caplog
+):
+    """Test a missing config without a template is logged once and nothing runs."""
+    config_file.unlink()
+    monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert caplog.text.count("git backup is disabled") == 1
+    assert "Unexpected error" not in caplog.text
 
 
 def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch):

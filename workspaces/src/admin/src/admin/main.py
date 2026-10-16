@@ -24,6 +24,7 @@ import threading
 from collections.abc import Callable
 
 import uvicorn
+from uvicorn.logging import DefaultFormatter
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
 from admin.git.bootstrap import start_git_backup, stop_git_backup
@@ -35,8 +36,9 @@ from admin.git.config import (
 from admin.git.status import SyncStatus
 from admin.services import load_services
 
-#: Format of the log records written to the console by the git backup.
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+#: Format of the service's own log records, matching uvicorn's
+#: (``INFO:     message``, the level coloured on a terminal).
+LOG_FORMAT = "%(levelprefix)s %(message)s"
 
 
 def _positive_seconds(value: str) -> int:
@@ -134,11 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_logging() -> None:
-    """
-    Send the service's log records to the console.
-    
-    """
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    """Send the service's log records to the console, formatted like uvicorn's."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(DefaultFormatter(LOG_FORMAT))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 def _print_service_catalogue() -> None:
@@ -186,7 +187,7 @@ def _print_startup_banner(host: str, port: int, prefix: str) -> None:
     print("Service endpoints:")
     print(f"  - http://{host}:{port}{prefix}/services")
     print(f"  - http://{host}:{port}{prefix}/health")
-    print(f"  - http://{host}:{port}{prefix}/git/status")
+    print(f"  - http://{host}:{port}{prefix}/storage/status")
     print(f"  - http://{host}:{port}{prefix}/")
 
 
@@ -200,13 +201,9 @@ def _serve(
 
     Args:
         args: The parsed command-line arguments.
-        status: Outcome of the git backups, served by ``/git/status``.
+        status: Outcome of the git backups, served by ``/storage/status``.
         on_shutdown: Called when the server stops, before the process exits.
     """
-    _print_startup_banner(
-        args.host, args.port, normalize_path_prefix(args.path_prefix)
-    )
-
     uvicorn.run(
         create_app(args.path_prefix, status, on_shutdown),
         host=args.host,
@@ -230,6 +227,10 @@ def cli() -> None:
         _print_service_catalogue()
         sys.exit(0)
 
+    # Printed before the backup starts, so its log lines cannot land inside.
+    _print_startup_banner(
+        args.host, args.port, normalize_path_prefix(args.path_prefix)
+    )
     status = SyncStatus()
     stop_backup = _start_git_backup(args.sync_interval, status)
     _serve(args, status, stop_backup)

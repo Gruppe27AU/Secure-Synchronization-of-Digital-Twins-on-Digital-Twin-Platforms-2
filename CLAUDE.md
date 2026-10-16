@@ -43,7 +43,7 @@ on URL paths:
 - VNC Desktop: `/tools/vnc`
 - Admin/Services API: `/{path-prefix}/services` (service discovery
   endpoint)
-- Git backup status: `/{path-prefix}/git/status` (exact match only; no
+- Git backup status: `/{path-prefix}/storage/status` (exact match only; no
   other admin route is proxied)
 
 The routing configuration is templated in `startup/nginx.conf` and
@@ -59,7 +59,7 @@ that provides:
 - `/{path-prefix}/services` - Path-prefixed route for multi-user
   deployments
 - `/health` - Health check endpoint
-- `/git/status` - Outcome of the most recent git backups. Read-only and
+- `/storage/status` - Outcome of the most recent git backups. Read-only and
   secret-free, because the API is unauthenticated: it reports error kinds,
   never messages
 - Command-line interface via `workspace-admin` command
@@ -330,7 +330,7 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
 - `scheduler.py`: runs the cycle on a background daemon thread and records
   each outcome in a `SyncStatus`
 - `status.py`: thread-safe record of the last attempt, success and error
-  kind per repository, served by `/git/status`
+  kind per repository, served by `/storage/status`
 - `bootstrap.py`: called once from `main.cli()` on startup; creates a
   missing config file, or clones and starts the sync, on a background
   thread, so the HTTP API never waits.
@@ -344,8 +344,12 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.
 
-`config.toml` lives in `$WORKSPACE_APP_DIR`, in the image
-`/workspace/.config/workspaceadmin/`. When it is absent it is created from
+`config.toml` is always read from
+`$PERSISTENT_DIR/.config/workspace-admin/config.toml`, with the home
+directory as the root when `PERSISTENT_DIR` is unset; the working directory
+never matters. In the image that is
+`/workspace/.config/workspace-admin/config.toml`. The absolute path is
+logged on every startup. When it is absent it is created from
 the template `workspaces/src/templates/config.toml.example`, which the
 Dockerfile copies to `$WORKSPACE_CONFIG_TEMPLATE`. Nothing is cloned until
 the user fills it in and restarts: its placeholder values are rejected.
@@ -354,7 +358,7 @@ The file holds an optional top-level `SYNC_INTERVAL_SECONDS` (1 to 86400,
 default 300; `--sync-interval` overrides it) and an `[assets.private]`
 and/or `[assets.common]` table with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and
 `GIT_REPO_TOKEN`. Every path follows from `$PERSISTENT_DIR` and the section
-name: git directories in `.local/share/workspaceadmin/<name>`, work trees in
+name: git directories in `.local/share/workspace-admin/<name>`, work trees in
 `assets/<name>`. `workspaces/src/admin/DOCUMENTATION.md` still describes the
 older layout.
 
@@ -373,13 +377,10 @@ To add new services to the workspace:
 - `NO_VNC_PORT`: Port for KasmVNC (default varies, read by
   `configure_nginx.py`)
 - `PERSISTENT_DIR`: Directory for user data persistence (default:
-  `/workspace`); also the root of every git backup path
+  `/workspace` in the image, the home directory outside it); also the
+  root of `config.toml` and every git backup path
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
-- `WORKSPACE_APP_DIR`: Directory holding `config.toml`, the git asset
-  configuration read on startup (default: current directory;
-  `custom_startup.sh` sets it to `$PERSISTENT_DIR/.config/workspaceadmin`
-  in the image)
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when it is
   missing (set by the Dockerfile; unset outside the image)
 
