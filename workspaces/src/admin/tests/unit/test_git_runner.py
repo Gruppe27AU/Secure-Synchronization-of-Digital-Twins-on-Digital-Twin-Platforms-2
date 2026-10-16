@@ -143,5 +143,5 @@ def _is_running(pid):
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
             return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
