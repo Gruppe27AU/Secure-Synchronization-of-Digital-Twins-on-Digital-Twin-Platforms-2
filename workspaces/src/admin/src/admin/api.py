@@ -56,11 +56,11 @@ def create_router(sync_status: SyncStatus) -> APIRouter:
     Create the router holding the admin service endpoints.
 
     Args:
-        sync_status: Outcome of the git backups, served by ``/git/status``.
+        sync_status: Outcome of the git backups, served by ``/storage/status``.
 
     Returns:
         Router exposing the ``/``, ``/services``, ``/health`` and
-        ``/git/status`` routes.
+        ``/storage/status`` routes.
     """
     router = APIRouter()
 
@@ -73,7 +73,7 @@ def create_router(sync_status: SyncStatus) -> APIRouter:
             "endpoints": {
                 "/services": "Get list of available workspace services",
                 "/health": "Health check endpoint",
-                "/git/status": "Outcome of the most recent git backups"
+                "/storage/status": "Outcome of the most recent git backups"
             }
         }
 
@@ -92,8 +92,8 @@ def create_router(sync_status: SyncStatus) -> APIRouter:
         """Health check endpoint."""
         return {"status": "healthy"}
 
-    @router.get("/git/status")
-    async def git_status() -> dict[str, Any]:
+    @router.get("/storage/status")
+    async def storage_status() -> dict[str, Any]:
         """
         Report how the git backup of each repository went last.
 
@@ -116,7 +116,7 @@ def create_app(
 
     Args:
         path_prefix: Optional path prefix for all routes (e.g., "dtaas-user")
-        sync_status: Outcome of the git backups. Without one, ``/git/status``
+        sync_status: Outcome of the git backups. Without one, ``/storage/status``
             reports the backup as disabled.
         on_shutdown: Called once when the server stops, for example on
             SIGTERM, before the process exits. It may block; it runs off

@@ -20,6 +20,15 @@ The main changes made so far are listed here.
   overrides the file. A value of the wrong type, out of range, or placed
   inside an `[assets]` section is logged as a warning and the default of
   300 seconds is used, so the backup keeps running
+* `config.toml` is always read from
+  `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, with the home
+  directory as the root when `PERSISTENT_DIR` is unset. Before, outside the
+  image it was read from the directory `workspace-admin` was started in, so
+  the same command could find it one day and not the next. The absolute
+  path is logged on every startup. `WORKSPACE_APP_DIR` is no longer read
+* The git directories moved from `.local/share/workspaceadmin` to
+  `.local/share/workspace-admin`, to match. Rename both `workspaceadmin`
+  directories in an existing workspace to keep its config and clones
 
 ### Fixed
 

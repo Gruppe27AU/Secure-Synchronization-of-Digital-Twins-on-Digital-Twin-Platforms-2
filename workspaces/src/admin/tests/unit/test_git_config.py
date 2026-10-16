@@ -76,7 +76,7 @@ def test_load_config_derives_paths_from_the_section_name(tmp_path):
     repos = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
     private, common = repos[0], repos[1]
 
-    git_dirs = ROOT / ".local" / "share" / "workspaceadmin"
+    git_dirs = ROOT / ".local" / "share" / "workspace-admin"
     assert private.git_dir == git_dirs / "private"
     assert private.work_tree == ROOT / "assets" / "private"
     assert common.git_dir == git_dirs / "common"
@@ -87,7 +87,7 @@ def test_load_config_places_repositories_below_the_given_root(tmp_path):
     """Test that the root comes from the caller, not from the file."""
     private = load_config(write_config(tmp_path, VALID_CONFIG), Path("/srv"))[0]
 
-    assert private.git_dir == Path("/srv/.local/share/workspaceadmin/private")
+    assert private.git_dir == Path("/srv/.local/share/workspace-admin/private")
     assert private.work_tree == Path("/srv/assets/private")
 
 

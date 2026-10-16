@@ -35,7 +35,7 @@ def fixture_template(tmp_path):
 @pytest.fixture(name="config_path")
 def fixture_config_path(tmp_path):
     """Where the config file belongs; its directory does not exist yet."""
-    return tmp_path / ".config" / "workspaceadmin" / "config.toml"
+    return tmp_path / ".config" / "workspace-admin" / "config.toml"
 
 
 def test_missing_config_is_created_from_the_template(config_path, template, caplog):

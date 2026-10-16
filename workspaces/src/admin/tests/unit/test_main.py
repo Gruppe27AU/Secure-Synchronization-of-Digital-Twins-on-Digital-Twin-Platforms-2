@@ -100,6 +100,9 @@ def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
     calls = []
     monkeypatch.setattr(sys, "argv", ["workspace-admin", "--sync-interval", "42"])
     monkeypatch.setattr(
+        main, "_print_startup_banner", lambda *_args: calls.append(("banner",))
+    )
+    monkeypatch.setattr(
         main,
         "start_git_backup",
         lambda status, interval, stop_event: calls.append(
@@ -116,10 +119,11 @@ def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
 
     cli()
 
-    assert [call[0] for call in calls] == ["backup", "serve"]
-    assert calls[0][2] == 42
+    # The banner comes first, so the backup's log lines cannot land inside it.
+    assert [call[0] for call in calls] == ["banner", "backup", "serve"]
+    assert calls[1][2] == 42
     # The API reports on the very status object the backup writes to.
-    assert calls[0][1] is calls[1][1]
+    assert calls[1][1] is calls[2][1]
 
 
 def test_cli_stops_the_git_backup_when_the_server_stops(monkeypatch):

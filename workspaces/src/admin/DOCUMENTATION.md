@@ -81,7 +81,7 @@ curl http://localhost:8091/{path-prefix}/health
 }
 ```
 
-### GET /git/status
+### GET /storage/status
 
 Reports how the git backup of each repository went last. Before this
 endpoint existed, a failing backup only showed up as a line in the
@@ -91,13 +91,13 @@ service's log, which the workspace user never sees.
 
 ```bash
 # Without path prefix
-curl http://localhost:8091/git/status
+curl http://localhost:8091/storage/status
 
 # With path prefix
-curl http://localhost:8091/{path-prefix}/git/status
+curl http://localhost:8091/{path-prefix}/storage/status
 
 # Through nginx, as the user's browser reaches it
-curl http://localhost/{path-prefix}/git/status
+curl http://localhost/{path-prefix}/storage/status
 ```
 
 nginx proxies this exact path to the admin service, next to
@@ -183,7 +183,7 @@ curl http://localhost:8091/{path-prefix}
   "endpoints": {
     "/services": "Get list of available workspace services",
     "/health": "Health check endpoint",
-    "/git/status": "Outcome of the most recent git backups"
+    "/storage/status": "Outcome of the most recent git backups"
   }
 }
 ```
@@ -525,7 +525,7 @@ Most of the time the backup needs nothing from the user. A few situations
 cannot be decided safely by a program, and there the backup stops for that
 repository, logs why, and tries again every interval until a person has
 sorted it out. It never guesses: nothing half finished is committed or
-pushed. While it waits, [`/git/status`](#get-gitstatus) shows the
+pushed. While it waits, [`/storage/status`](#get-storagestatus) shows the
 repository's `last_error.kind`, so the user can tell that something needs
 doing without reading the log.
 
@@ -738,7 +738,7 @@ decision what goes into it.
    too: an exception escaping the background thread would end the backup
    silently while the service carried on serving requests
 6. The outcome of every repository is recorded in a `SyncStatus` and
-   served by [`/git/status`](#get-gitstatus): the time, and on failure
+   served by [`/storage/status`](#get-storagestatus): the time, and on failure
    only the error's kind. The full error goes to the log
 7. When the service stops on SIGTERM or Ctrl+C, the FastAPI shutdown step
    calls `stop_git_backup()`. No new git command is started after that, and
@@ -957,7 +957,7 @@ A review found that a failing backup was silent: the only trace was a log
 line the user never sees, so a revoked token could stop the backup for
 days without anyone noticing.
 
-`/git/status` now reports the last attempt, last success and last error of
+`/storage/status` now reports the last attempt, last success and last error of
 each repository. The admin API has no authentication and binds to
 `0.0.0.0`, so the response must not reveal anything an outsider could use,
 and that drove the design:
@@ -986,7 +986,7 @@ credentials are configured. The hint about an invalid or expired token is
 still only added to the message when there is a token to blame.
 
 **Not covered:** a repository that fails to *clone* on startup is never
-scheduled, so it does not appear in `/git/status`, and if no repository
+scheduled, so it does not appear in `/storage/status`, and if no repository
 was cloned the endpoint reports `enabled: false`. A wrong token on first
 start is therefore still only visible in the log. This is left for a
 separate issue.
@@ -997,7 +997,7 @@ The user works in the same repositories, in a terminal or in VS Code, while
 the backup runs. A review found three ways the two could collide. The
 first two make the cycle stop before it changes anything, as the existing
 unfinished-merge check already did. Each has its own `SyncErrorKind`, so
-`/git/status` says why the backup is waiting.
+`/storage/status` says why the backup is waiting.
 
 - **The wrong branch, or none.** The push sends `refs/heads/<branch>`
   explicitly, but `git commit` and `git merge` act on whatever `HEAD` is.
@@ -1040,7 +1040,7 @@ unfinished-merge check already did. Each has its own `SyncErrorKind`, so
   - `sync_all()` and `sync_once()` check the event between repositories
     and between commit, pull and push, raising `SyncStopped`. That is not a
     `SyncError`: a cycle cut short this way is neither a success nor a
-    failure, and `/git/status` records nothing for it. Each step leaves the
+    failure, and `/storage/status` records nothing for it. Each step leaves the
     repository consistent, so the next start carries on where this one
     stopped.
   - The wait is limited to `SHUTDOWN_TIMEOUT_SECONDS` (8), under the 10
@@ -1133,7 +1133,7 @@ src/admin/
     ├── clone.py                   # Clones a single RepoConfig
     ├── sync.py                    # Commits and pushes one working tree
     ├── scheduler.py               # Runs the sync on a timer, in the background
-    ├── status.py                  # Outcome of recent syncs, for /git/status
+    ├── status.py                  # Outcome of recent syncs, for /storage/status
     └── bootstrap.py               # Wires the above together on startup
 ```
 
@@ -1144,7 +1144,7 @@ module imports the layer above it, so each can be tested on its own.
 
 - **HTTP API** (`src/admin/api.py`): FastAPI application factory
   (`create_app`), the router holding the `/`, `/services`, `/health` and
-  `/git/status` routes, path prefix normalization, `APP_VERSION`, and a
+  `/storage/status` routes, path prefix normalization, `APP_VERSION`, and a
   lifespan that runs an optional `on_shutdown` callback when the server
   stops. Contains transport logic only
 - **Service Discovery** (`src/admin/services.py`): `load_services()`, which
@@ -1198,14 +1198,14 @@ module imports the layer above it, so each can be tested on its own.
     repository's outcome is recorded in the `SyncStatus` it is given
   - `status.py`: `SyncStatus` holds the last attempt, success and error
     kind of every scheduled repository behind one lock, written by the
-    sync thread and read by `/git/status`. It stores a `SyncErrorKind`,
+    sync thread and read by `/storage/status`. It stores a `SyncErrorKind`,
     never an error message
   - `bootstrap.py`: `start_git_backup()` is called once from
     `admin.main.cli()` on startup and returns at once, running
     `clone_configured_repos()` and then `start_git_sync()` on the
     `git-bootstrap` daemon thread, so the HTTP API never waits for a
     remote. The thread then waits for the sync thread, so
-    `stop_git_backup()`, called on shutdown, has one thread to wait for. Until the clones are done, `/git/status` reports the backup as
+    `stop_git_backup()`, called on shutdown, has one thread to wait for. Until the clones are done, `/storage/status` reports the backup as
     disabled. `clone_configured_repos()` clones every repository
     `load_config()` returns - `private` and/or `common` - independently:
     one repository that fails to clone (bad credentials, unreachable
@@ -1245,7 +1245,7 @@ obvious test file:
 
 | Test file             | Module under test  | Covers                                     |
 | --------------------- | ------------------ | ------------------------------------------ |
-| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/git/status` serving the live status and refusing writes, the shutdown hook running once when the server stops |
+| `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/storage/status` serving the live status and refusing writes, the shutdown hook running once when the server stops |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
