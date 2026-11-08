@@ -315,22 +315,33 @@ The package is layered, and the test files mirror it:
 Dependencies point one way only: `main` → `api` → `services`.
 
 The `git/` package backs the workspace up to its remotes and is layered the
-same way, `bootstrap` → `scheduler` → `sync`/`clone` → `auth` → `config`
-→ `runner`:
+same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `command`
+→ `errors` → `auth` → `config` → `runner`:
 
 - `config.py`: reads `config.toml` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
-- `auth.py`: builds the per-command HTTP Basic header and recognises a
-  rejected token in git's stderr
+- `auth.py`: builds the HTTP Basic header, passed in git's environment
+  (`GIT_CONFIG_COUNT`) and scoped to the remote's host, never on argv; and
+  recognises a rejected token in git's stderr
+- `errors.py`: `SyncErrorKind`, `SyncError`, and `failure_kind()` sorting a
+  failure into `auth_failed`, `network` or `git_failed`
+- `command.py`: runs one git command for one repository, always with
+  `--git-dir` and `--work-tree`, so a lost `.git` file cannot redirect it
+- `checks.py`: what is checked before a commit: the user being busy (an
+  unfinished merge, another branch or detached HEAD, a fresh `index.lock`),
+  mass deletion, files over 50 MiB, conflict markers, default excludes
 - `clone.py`: clones one repository, git directory and working tree kept
-  apart
-- `sync.py`: one cycle for a cloned tree: commit, pull, push. Local files
-  win a conflict. Skips the cycle while the user is busy: an unfinished
-  merge, another branch or detached HEAD, or a fresh `index.lock`
-- `scheduler.py`: runs the cycle on a background daemon thread and records
-  each outcome in a `SyncStatus`
-- `status.py`: thread-safe record of the last attempt, success and error
-  kind per repository, served by `/storage/status`
+  apart; starts one locally on an empty remote; writes back a lost `.git`
+  file
+- `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
+  `private`): commit, pull, push; local files win a conflict; a pull that
+  fails for good pushes to `backup/<workspace-id>`. `MODE = "pull"`
+  (default for `common`): fast-forward only, never commit or push
+- `scheduler.py`: runs the cycle on a background daemon thread, clones a
+  repository whose clone failed, and records each outcome in a `SyncStatus`
+- `status.py`: thread-safe record of the backup's `state` and, per
+  repository, its state, last attempt, success and error kind, served by
+  `/storage/status`
 - `bootstrap.py`: called once from `main.cli()` on startup; creates a
   missing config file, or clones and starts the sync, on a background
   thread, so the HTTP API never waits.
@@ -357,10 +368,10 @@ Outside the image no template is set, and the backup stays disabled.
 The file holds an optional top-level `SYNC_INTERVAL_SECONDS` (1 to 86400,
 default 300; `--sync-interval` overrides it) and an `[assets.private]`
 and/or `[assets.common]` table with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and
-`GIT_REPO_TOKEN`. Every path follows from `$PERSISTENT_DIR` and the section
-name: git directories in `.local/share/workspace-admin/<name>`, work trees in
-`assets/<name>`. `workspaces/src/admin/DOCUMENTATION.md` still describes the
-older layout.
+`GIT_REPO_TOKEN`, plus an optional `MODE`. Unknown keys are logged as
+warnings. Every path follows from `$PERSISTENT_DIR` and the section name:
+git directories in `.local/share/workspace-admin/<name>`, work trees in
+`assets/<name>`.
 
 To add new services to the workspace:
 

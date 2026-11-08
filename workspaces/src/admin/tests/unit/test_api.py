@@ -191,7 +191,10 @@ def test_storage_status_reports_disabled_without_a_status(test_client):
     """Test /storage/status works, and says disabled, when no backup runs."""
     response = test_client.get("/storage/status")
     assert response.status_code == 200
-    assert response.json() == {"enabled": False, "repositories": {}}
+    data = response.json()
+    assert (data["state"], data["enabled"], data["repositories"]) == (
+        "disabled", False, {}
+    )
 
 
 def test_storage_status_serves_the_recorded_outcome():

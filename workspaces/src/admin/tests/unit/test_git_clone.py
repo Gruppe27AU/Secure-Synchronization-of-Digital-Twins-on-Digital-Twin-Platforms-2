@@ -12,8 +12,9 @@ import subprocess
 import pytest
 
 from admin.git import clone
-from admin.git.clone import CloneError, clone_asset, is_cloned
+from admin.git.clone import CloneError, clone_asset, is_cloned, restore_git_file
 from admin.git.config import RepoConfig
+from admin.git.errors import SyncErrorKind
 from admin.git.runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError
 
 
@@ -57,7 +58,7 @@ def test_clone_asset_success(monkeypatch, repo):
     """Test a successful clone creates directories and returns True."""
     captured_command = {}
 
-    def fake_run(command, _timeout):
+    def fake_run(command, _timeout, **_kwargs):
         captured_command["command"] = command
         return _fake_run_success()
 
@@ -77,7 +78,7 @@ def test_clone_asset_allows_only_https(monkeypatch, repo):
     """Test the clone refuses every transport except https."""
     captured_command = {}
 
-    def fake_run(command, _timeout):
+    def fake_run(command, _timeout, **_kwargs):
         captured_command["command"] = command
         return _fake_run_success()
 
@@ -144,6 +145,7 @@ def test_clone_asset_raises_clear_error_on_invalid_token(monkeypatch, repo):
     message = str(excinfo.value)
     assert "invalid or expired" in message
     assert "invalid-token" not in message
+    assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
 
 
 def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
@@ -177,7 +179,11 @@ def test_clone_asset_raises_plain_error_without_credentials(monkeypatch, repo):
 
 
 def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo):
-    """Test clone_asset passes a one-off Authorization header, not a stored URL."""
+    """Test the header goes in the environment, scoped to the host, not on argv.
+
+    A process's arguments can be read by any user of the machine; its
+    environment only by its own user.
+    """
     repo = RepoConfig(
         name=repo.name,
         repo_url=repo.repo_url,
@@ -186,30 +192,32 @@ def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo
         git_dir=repo.git_dir,
         work_tree=repo.work_tree,
     )
-    captured_command = {}
+    captured = {}
 
-    def fake_run(command, _timeout):
-        captured_command["command"] = command
+    def fake_run(command, _timeout, env=None):
+        captured["command"] = command
+        captured["env"] = env
         return _fake_run_success()
 
     monkeypatch.setattr(clone, "run_git", fake_run)
 
     clone_asset(repo)
 
-    command = captured_command["command"]
-    assert any(
-        part.startswith("http.extraHeader=Authorization: Basic ")
-        for part in command[: command.index("clone")]
+    assert not any("extraHeader" in part for part in captured["command"])
+    assert captured["env"]["GIT_CONFIG_KEY_0"] == (
+        "http.https://example.com/.extraHeader"
     )
-    # The token must never appear in plain text in the command.
-    assert "secret-token" not in " ".join(command)
+    assert captured["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
+    # The token must never appear in plain text anywhere.
+    assert "secret-token" not in " ".join(captured["command"])
+    assert "secret-token" not in captured["env"]["GIT_CONFIG_VALUE_0"]
 
 
 def test_clone_asset_uses_the_remote_time_limit(monkeypatch, repo):
     """Test the clone gets the long time limit meant for network commands."""
     captured = {}
 
-    def fake_run(_command, timeout):
+    def fake_run(_command, timeout, **_kwargs):
         captured["timeout"] = timeout
         return _fake_run_success()
 
@@ -223,10 +231,50 @@ def test_clone_asset_uses_the_remote_time_limit(monkeypatch, repo):
 def test_clone_asset_raises_clone_error_on_timeout(monkeypatch, repo):
     """Test a clone that hangs is reported as a failed clone."""
 
-    def fake_run(_command, _timeout):
+    def fake_run(_command, _timeout, **_kwargs):
         raise GitTimeoutError("git did not finish within 900 seconds and was stopped")
 
     monkeypatch.setattr(clone, "run_git", fake_run)
 
-    with pytest.raises(CloneError, match="did not finish within 900 seconds"):
+    with pytest.raises(CloneError, match="did not finish within 900 seconds") as excinfo:
         clone_asset(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.TIMEOUT
+
+
+def _cloned(repo):
+    """Lay out a cloned repository whose working tree has lost its .git file."""
+    repo.git_dir.mkdir(parents=True)
+    (repo.git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    repo.work_tree.mkdir(parents=True)
+    return repo.work_tree / ".git"
+
+
+def test_restore_git_file_writes_a_lost_git_file_back(repo, caplog):
+    """Test the user's own git commands find the backup repository again."""
+    git_file = _cloned(repo)
+
+    with caplog.at_level("WARNING"):
+        restore_git_file(repo)
+
+    assert git_file.read_text(encoding="utf-8") == f"gitdir: {repo.git_dir}\n"
+    assert "written back" in caplog.text
+
+
+def test_restore_git_file_leaves_an_existing_git_file_alone(repo):
+    """Test whatever is already at .git is never overwritten."""
+    git_file = _cloned(repo)
+    git_file.write_text("gitdir: elsewhere\n", encoding="utf-8")
+
+    restore_git_file(repo)
+
+    assert git_file.read_text(encoding="utf-8") == "gitdir: elsewhere\n"
+
+
+def test_restore_git_file_does_nothing_before_the_clone(repo):
+    """Test a working tree is not pointed at a git directory that is not there."""
+    repo.work_tree.mkdir(parents=True)
+
+    restore_git_file(repo)
+
+    assert not (repo.work_tree / ".git").exists()

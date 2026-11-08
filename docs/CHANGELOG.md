@@ -2,6 +2,86 @@
 
 The main changes made so far are listed here.
 
+## Week of 2-Nov-2026
+
+### Changed
+
+* **`common` is pull-only by default.** Each `[assets.*]` section takes an
+  optional `MODE = "pull"` or `"sync"`; `common` defaults to `pull`,
+  `private` to `sync`. A pull-only repository is only fast-forwarded:
+  nothing is committed or pushed, so users sharing it can no longer
+  overwrite each other's files, and a read-only token is enough. **A
+  workspace that backs up `common` stops pushing it unless its section adds
+  `MODE = "sync"`**; only do that when a single user writes to it
+* The status endpoint is `/storage/status`. It was called `/git/status`
+  when it was added, as the entries below still say; clients polling the
+  old path must be updated
+* `/storage/status` has a top-level `state` (`disabled`, `needs_setup`,
+  `config_error`, `starting`, `running`), and every repository is listed as
+  soon as the config file is read, with a `state` of its own (`cloning`,
+  `clone_failed`, `syncing`). Before, a missing config, an unfilled
+  template, a broken config and a failed clone all looked the same:
+  `{"enabled": false, "repositories": {}}`. `enabled` is kept
+* New status kinds: `network`, `timeout`, `pull_failed`, `local_changes`,
+  `file_too_large`, `renamed_on_conflict` and `mass_deletion`. Time-outs
+  and unreachable remotes are no longer reported as `git_failed`
+* The token is passed to git in its environment (`GIT_CONFIG_COUNT`)
+  instead of with `-c` on the command line, where every user of the
+  machine could read it, and the header is limited to the remote's host
+* A config key that has no effect, such as `HOME_DIR`, `WORKSPACE_APP_DIR`,
+  a per-section `GIT_DIR` or a misspelt `SYNC_INTERVAL`, is now reported
+  with a warning. A config file other users can read is warned about too
+* `private` and `common` may no longer name the same remote branch in two
+  spellings: the URLs are compared without a trailing `/` or `.git` and
+  with the host in lowercase
+* The git backup code is split further: `errors.py` (status kinds),
+  `command.py` (running one command for one repository) and `checks.py`
+  (what is checked before a commit) are new, beside a smaller `sync.py`
+
+### Added
+
+* A pull that fails for good - the remote's history rewritten, the branch
+  renamed or deleted on the forge - no longer stops every push. The
+  workspace's branch is pushed to `backup/<workspace-id>` on the remote
+  instead, on every interval, and the status reports `pull_failed`
+* A remote with no commits at all can now be used: it is started locally
+  and the first push creates the branch. Before, the clone failed and the
+  backup silently never started
+* A clone that failed is tried again on every interval, without a restart
+* Folders that are rebuilt rather than kept (`.venv/`, `__pycache__/`,
+  `.ipynb_checkpoints/`, `node_modules/` and others) are never staged, and
+  files over 50 MiB are left out (`file_too_large`), so the backup cannot
+  fill the repository or hit its time limit on every cycle
+
+### Fixed
+
+* A lost `.git` file in a working tree no longer sends the git backup, and
+  its token, to another repository. Git used to look for the repository
+  itself, and without the file it found whatever repository encloses the
+  working tree, then committed and pushed there. Every command now names
+  the git directory and working tree, and the `.git` file is written back
+  before each cycle
+* The git backup no longer commits a working tree that has lost more than
+  half of its tracked files (at least ten), which would delete them on the
+  remote too. The status reports `mass_deletion`; committing the deletion
+  by hand resumes the backup
+* Git runs with `LC_ALL=C`. In a translated locale its messages, which tell
+  a rejected token, an unreachable or an empty remote apart, were not
+  recognised
+* An expired token is now recognised as one. With prompts switched off git
+  reports `could not read Username`, which was shown as `git_failed`
+  without the hint to check `GIT_REPO_TOKEN`
+* One file with a line that looks like a conflict marker no longer stops
+  every other file from being backed up: only that file is left out
+  (`conflict_markers`). A `conflict-marker-size` in `.gitattributes` lets
+  such lines through on purpose
+* A file that git renames to `<name>~HEAD` to settle a conflict between a
+  file and a directory is reported (`renamed_on_conflict`) instead of
+  silently changing name
+* `DOCUMENTATION.md` described the old config format (`HOME_DIR`,
+  `WORKSPACE_APP_DIR`, `config.env`). Its configuration, cloning and status
+  sections are rewritten
+
 ## Week of 12-Oct-2026
 
 ### Changed

@@ -1,19 +1,28 @@
 """
 Shared HTTP authentication for git commands.
 
-Builds the one-off ``-c http.extraHeader=...`` option that
-:mod:`admin.git.clone` and :mod:`admin.git.sync` pass to ``git``, so
-credentials are authenticated per command without ever being written into
-a repository's own ``.git/config`` or embedded in its remote URL. Every
-command that contacts the remote is also limited to the https transport,
-cannot fall back to a credential helper that might prompt, and gives up on a
-transfer that has stalled.
+Builds the per-command settings that :mod:`admin.git.clone` and
+:mod:`admin.git.sync` hand to ``git`` for every command that contacts the
+remote:
+
+- the ``Authorization`` header, passed through git's ``GIT_CONFIG_COUNT``
+  environment variables rather than ``-c`` on the command line, so the
+  token is never in a process's argument list, where any user of the
+  machine can read it, and never written into the repository's own
+  ``.git/config`` or remote URL. The header is scoped to the remote's own
+  host, so a command that ends up talking to any other host does not send
+  it;
+- options limiting the command to the https transport, keeping it from
+  falling back on a credential helper that might prompt, and giving up on
+  a transfer that has stalled.
+
 Also recognizes when a failed git command was rejected because of those
 credentials, so callers can raise a clear, token-free error instead of
 just forwarding git's raw failure message.
 """
 
 import base64
+from urllib.parse import urlsplit
 
 from admin.git.config import RepoConfig
 
@@ -38,7 +47,7 @@ PROTOCOL_OPTIONS = [
 #: on anything but the remote itself. Resetting ``credential.helper`` to an
 #: empty list matters because a helper such as Git Credential Manager can
 #: prompt even with ``GIT_TERMINAL_PROMPT=0``; credentials only ever come
-#: from :func:`auth_header_options`. Once the connection is up, the
+#: from :func:`auth_environment`. Once the connection is up, the
 #: ``lowSpeed`` pair aborts a transfer that has moved less than 1 byte per
 #: second for 60 seconds, well before
 #: :data:`admin.git.runner.REMOTE_TIMEOUT_SECONDS` would. It does not cover
@@ -56,15 +65,17 @@ NO_WAIT_OPTIONS = [
 #: Substrings that appear in git/GitLab's own stderr when HTTP credentials
 #: are rejected, matched case-insensitively. Deliberately specific (no bare
 #: "401"/"403") so an unrelated number in an error message cannot trigger a
-#: false positive.
+#: false positive. With prompts switched off, a 401 to a header git did not
+#: build itself ends in git failing to ask for a username instead.
 _AUTH_FAILURE_MARKERS = (
     "authentication failed",
     "http basic: access denied",
     "invalid credentials",
     "returned error: 401",
     "returned error: 403",
+    "could not read username",
+    "could not read password",
 )
-
 
 #: Username sent with the token. HTTP Basic needs one, but the forge
 #: identifies the user by the token alone; GitLab documents ``oauth2``.
@@ -84,29 +95,53 @@ def _basic_auth_value(credentials: str) -> str:
     return base64.b64encode(credentials.encode("utf-8")).decode("ascii")
 
 
-def auth_header_options(repo: RepoConfig) -> list[str]:
+def header_scope(repo_url: str) -> str:
     """
-    Build the one-off git options that authenticate a request.
+    Return the URL prefix the ``Authorization`` header is limited to.
+
+    The whole host rather than the repository's own path, because a forge
+    may redirect within its host, for example from ``.../repo`` to
+    ``.../repo.git/``, and the header has to survive that.
+
+    Args:
+        repo_url: The repository's https URL.
+
+    Returns:
+        The scheme and host with a trailing slash, for example
+        ``https://gitlab.com/``.
+    """
+    parts = urlsplit(repo_url)
+    return f"{parts.scheme}://{parts.netloc}/"
+
+
+def auth_environment(repo: RepoConfig) -> dict[str, str]:
+    """
+    Build the environment that authenticates a command's requests.
+
+    ``GIT_CONFIG_COUNT`` with ``GIT_CONFIG_KEY_0`` and ``GIT_CONFIG_VALUE_0``
+    is git's way of passing one-off settings in the environment.
 
     Args:
         repo: Repository configuration, possibly without credentials.
 
     Returns:
-        The ``-c http.extraHeader=...`` pair, or an empty list when no
-        credentials are configured.
+        The variables setting ``http.<host>.extraHeader``, or an empty
+        mapping when no credentials are configured.
     """
     if not repo.token:
-        return []
+        return {}
 
     credentials = f"{TOKEN_USERNAME}:{repo.token}"
-    return [
-        "-c",
-        f"http.extraHeader=Authorization: Basic "
-        f"{_basic_auth_value(credentials)}",
-    ]
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": f"http.{header_scope(repo.repo_url)}.extraHeader",
+        "GIT_CONFIG_VALUE_0": (
+            f"Authorization: Basic {_basic_auth_value(credentials)}"
+        ),
+    }
 
 
-def remote_options(repo: RepoConfig) -> list[str]:
+def remote_options() -> list[str]:
     """
     Build the one-off git options for a command that contacts the remote.
 
@@ -114,16 +149,13 @@ def remote_options(repo: RepoConfig) -> list[str]:
     path, ``ssh://`` or ``ext::`` - is refused by git itself, even if it
     got past :mod:`admin.git.config` or was edited into ``.git/config``.
     No credential helper is consulted and a stalled transfer is abandoned
-    (:data:`NO_WAIT_OPTIONS`).
-
-    Args:
-        repo: Repository configuration, possibly without credentials.
+    (:data:`NO_WAIT_OPTIONS`). The credentials are not among them; they
+    come from :func:`auth_environment`.
 
     Returns:
-        The protocol restriction and :data:`NO_WAIT_OPTIONS`, followed by
-        :func:`auth_header_options`.
+        The protocol restriction and :data:`NO_WAIT_OPTIONS`.
     """
-    return [*PROTOCOL_OPTIONS, *NO_WAIT_OPTIONS, *auth_header_options(repo)]
+    return [*PROTOCOL_OPTIONS, *NO_WAIT_OPTIONS]
 
 
 def is_auth_failure(stderr: str) -> bool:

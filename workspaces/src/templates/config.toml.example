@@ -12,9 +12,15 @@ GIT_REPO_BRANCH = "main"
 # HTTP token for authentication
 GIT_REPO_TOKEN = "gitlab-api-token"
 
-# Uncomment to also back up files shared between users.
+# Uncomment to also receive files shared between users. common is
+# pull-only by default: other users' changes arrive, but nothing you change
+# in /workspace/assets/common is committed or pushed, so nobody's files are
+# overwritten. A read-only token is enough.
 # [assets.common]
 # GIT_REPO_URL = "https://gitlab.com/username/repository.git"
 # GIT_REPO_BRANCH = "main"
 # # HTTP token for authentication
 # GIT_REPO_TOKEN = "gitlab-api-token"
+# # "pull" (default for common) or "sync" (default for private). Only use
+# # "sync" for common if a single user writes to it.
+# MODE = "pull"

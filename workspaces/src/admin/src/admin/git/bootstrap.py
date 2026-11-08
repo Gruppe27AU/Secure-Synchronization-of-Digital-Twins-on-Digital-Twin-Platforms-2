@@ -17,13 +17,14 @@ from pathlib import Path
 from admin.git.clone import CloneError, clone_asset, is_cloned
 from admin.git.config import (
     ConfigError,
+    PlaceholderError,
     RepoConfig,
     load_config,
     load_sync_interval,
 )
 from admin.git.provision import provision_config
 from admin.git.scheduler import start_sync_scheduler
-from admin.git.status import SyncStatus
+from admin.git.status import BackupState, SyncStatus
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def _log_missing_config(config_path: Path) -> None:
     logger.info("%s not found; git backup is disabled", config_path)
 
 
-def _load_repos(failure_message: str) -> list[RepoConfig]:
+def _load_repos(failure_message: str, status: SyncStatus) -> list[RepoConfig]:
     """
     Load the configured repositories, treating a missing file as "disabled".
 
@@ -74,6 +75,8 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
     Args:
         failure_message: Prefix for the error logged when the file exists
             but cannot be used.
+        status: Told when the file still needs filling in or cannot be
+            used.
 
     Returns:
         The configured repositories, or an empty list when the file is
@@ -87,12 +90,16 @@ def _load_repos(failure_message: str) -> list[RepoConfig]:
 
     try:
         return load_config(config_path, _root_dir())
+    except PlaceholderError as exc:
+        logger.error("%s: %s", failure_message, exc)
+        status.set_state(BackupState.NEEDS_SETUP)
     except ConfigError as exc:
         logger.error("%s: %s", failure_message, exc)
-        return []
+        status.set_state(BackupState.CONFIG_ERROR)
+    return []
 
 
-def clone_configured_repos() -> dict[str, bool]:
+def clone_configured_repos(status: SyncStatus) -> dict[str, bool]:
     """
     Clone every repository described in ``config.toml``.
 
@@ -103,7 +110,12 @@ def clone_configured_repos() -> dict[str, bool]:
     independently: one that fails to clone (bad credentials, unreachable
     remote, ...) is logged and skipped rather than stopping the others, so
     a single broken remote does not prevent the admin service from
-    starting or the rest of the workspace assets from being cloned.
+    starting or the rest of the workspace assets from being cloned. The
+    scheduler tries it again on every interval.
+
+    Args:
+        status: Where the repositories are listed as soon as the file has
+            been read, and the outcome of each clone recorded.
 
     Returns:
         One entry per configured repository, mapping its name to whether
@@ -111,13 +123,23 @@ def clone_configured_repos() -> dict[str, bool]:
         already cloned, or because cloning failed). Empty when the config
         file is missing or cannot be used at all.
     """
+    repos = _load_repos("Cannot clone git assets", status)
+    if repos:
+        status.configure(
+            [repo.name for repo in repos],
+            cloned={repo.name for repo in repos if is_cloned(repo.git_dir)},
+        )
+
     results = {}
-    for repo in _load_repos("Cannot clone git assets"):
+    for repo in repos:
         try:
             results[repo.name] = clone_asset(repo)
         except CloneError as exc:
             logger.error("%s", exc)
+            status.record_clone_failure(repo.name, exc.kind)
             results[repo.name] = False
+        else:
+            status.record_cloned(repo.name)
 
     return results
 
@@ -128,18 +150,17 @@ def start_git_sync(
     stop_event: threading.Event | None = None,
 ) -> tuple[threading.Thread, threading.Event] | None:
     """
-    Start committing and pushing the cloned repositories periodically.
+    Start committing and pushing the configured repositories periodically.
 
     Reads the same config file as :func:`clone_configured_repos` and
-    schedules every repository that has actually been cloned, so
-    repositories added to the config later are picked up as soon as they
-    exist on disk.
+    schedules every repository in it. One that is not cloned yet, because
+    its clone failed, is cloned again on every interval instead.
     Failures are logged, not raised, so a broken git configuration does
     not prevent the admin service from starting.
 
     Args:
         status: Where the outcome of every synchronization is recorded.
-            Left disabled when nothing is scheduled.
+            Not marked running when nothing is scheduled.
         interval_seconds: Seconds to wait between synchronizations. None
             reads ``SYNC_INTERVAL_SECONDS`` from the config file.
         stop_event: Set this to stop the sync. A new one is made when
@@ -149,16 +170,8 @@ def start_git_sync(
         The background thread and the event that stops it, or None when
         there is nothing to synchronize.
     """
-    repos = _load_repos("Cannot start git sync")
+    repos = _load_repos("Cannot start git sync", status)
     if not repos:
-        return None
-
-    cloned_repos = [repo for repo in repos if is_cloned(repo.git_dir)]
-    if not cloned_repos:
-        logger.warning(
-            "No cloned repositories found for %s; git sync not started",
-            _config_path(),
-        )
         return None
 
     if interval_seconds is None:
@@ -166,13 +179,12 @@ def start_git_sync(
             interval_seconds = load_sync_interval(_config_path())
         except ConfigError as exc:
             logger.error("Cannot start git sync: %s", exc)
+            status.set_state(BackupState.CONFIG_ERROR)
             return None
 
     if stop_event is None:
         stop_event = threading.Event()
-    thread = start_sync_scheduler(
-        cloned_repos, interval_seconds, stop_event, status
-    )
+    thread = start_sync_scheduler(repos, interval_seconds, stop_event, status)
 
     return thread, stop_event
 
@@ -198,11 +210,12 @@ def _clone_then_sync(
     try:
         config_path = _config_path()
         if provision_config(config_path, _template_path()):
+            status.set_state(BackupState.NEEDS_SETUP)
             return
         if not config_path.is_file():
             _log_missing_config(config_path)
             return
-        clone_configured_repos()
+        clone_configured_repos(status)
         if stop_event.is_set():
             return
         started = start_git_sync(status, interval_seconds, stop_event)
@@ -224,8 +237,8 @@ def start_git_backup(
     Cloning talks to the network and can take minutes, so it runs on a
     background daemon thread, followed by :func:`start_git_sync` once it is
     done. The HTTP API therefore comes up straight away, whatever the
-    remotes are doing. Until the clones are done, ``status`` still reports
-    the backup as disabled.
+    remotes are doing. Until the clones are done, ``status`` reports the
+    backup as starting.
 
     Args:
         status: Where the outcome of every synchronization is recorded.

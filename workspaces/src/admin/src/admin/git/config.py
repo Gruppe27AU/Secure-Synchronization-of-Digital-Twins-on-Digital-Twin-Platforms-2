@@ -13,8 +13,10 @@ the tokens.
 """
 
 import logging
+import os
 import tomllib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -42,6 +44,14 @@ PLACEHOLDER_VALUES = {
     "GIT_REPO_TOKEN": frozenset({"gitlab-api-token", "gitlab-access-token"}),
 }
 
+#: Optional key choosing how a repository is kept in step with its remote.
+MODE_KEY = "MODE"
+
+#: Every key an ``[assets.*]`` section may hold. Any other is reported, so
+#: a typo or a key from an older version of the file is not silently
+#: ignored.
+KNOWN_ASSET_KEYS = frozenset({*REQUIRED_ASSET_KEYS, MODE_KEY})
+
 #: Sections recognised under ``[assets]``. Each one is optional on its own,
 #: but at least one of them has to be configured. A name becomes part of
 #: the repository's paths, so only fixed names are accepted.
@@ -56,6 +66,12 @@ WORK_TREE_PARENT = Path("assets")
 #: Optional top-level key holding the seconds between two backups.
 SYNC_INTERVAL_KEY = "SYNC_INTERVAL_SECONDS"
 
+#: Every key the top level of the file may hold.
+KNOWN_TOP_LEVEL_KEYS = frozenset({SYNC_INTERVAL_KEY, "assets"})
+
+#: Permission bits that let anyone but the owner read or change the file.
+SHARED_PERMISSION_BITS = 0o077
+
 #: Seconds between two backups when ``SYNC_INTERVAL_SECONDS`` is not set.
 DEFAULT_SYNC_INTERVAL_SECONDS = 300
 
@@ -67,12 +83,40 @@ MIN_SYNC_INTERVAL_SECONDS = 1
 MAX_SYNC_INTERVAL_SECONDS = 86400
 
 
+class SyncMode(StrEnum):
+    """
+    How a repository is kept in step with its remote.
+
+    ``sync`` commits the workspace's changes, merges the remote's and pushes
+    the result. ``pull`` only ever takes the remote's changes: nothing is
+    committed or pushed, so a read-only token is enough, and one user's
+    files can never overwrite another's in a repository they share.
+    """
+
+    PULL = "pull"
+    SYNC = "sync"
+
+
+#: Mode of each repository whose section does not set ``MODE``. ``common``
+#: is shared between users, so it only receives unless told otherwise.
+DEFAULT_MODES = {"private": SyncMode.SYNC, "common": SyncMode.PULL}
+
+
 class ConfigError(Exception):
     """
     Raised when the git backup configuration cannot be used.
 
     The message names the file, the section and the key at fault, so the
     user knows what to edit without reading any code.
+    """
+
+
+class PlaceholderError(ConfigError):
+    """
+    Raised when a value is still the placeholder from the template.
+
+    Not a mistake but a file nobody has filled in yet, which the status
+    reports as waiting for setup rather than as an error.
     """
 
 
@@ -91,6 +135,7 @@ class RepoConfig:
     token: str = field(repr=False)
     git_dir: Path
     work_tree: Path
+    mode: SyncMode = SyncMode.SYNC
 
 
 def _read_toml(config_path: Path) -> dict[str, Any]:
@@ -261,6 +306,61 @@ def _check_config_outside_work_trees(repos: list[RepoConfig], source: Path) -> N
             )
 
 
+def _warn_unknown_keys(
+    values: dict[str, Any], known: frozenset[str], where: str, source: Path
+) -> None:
+    """
+    Log a warning for every key that has no effect.
+
+    A key from an older version of the file, such as ``HOME_DIR`` or
+    ``GIT_DIR``, or a misspelt one such as ``SYNC_INTERVAL``, would
+    otherwise be ignored without a word, and the user would wonder why it
+    does nothing.
+
+    Args:
+        values: The table to check.
+        known: The keys it may hold.
+        where: Human-readable location, used in the warning.
+        source: File the table came from, used in the warning.
+    """
+    for key in values:
+        if key not in known:
+            logger.warning(
+                "%s: '%s' in %s is not a known setting and has no effect; "
+                "expected only %s",
+                source, key, where, ", ".join(sorted(known)),
+            )
+
+
+def _mode(name: str, asset: dict[str, Any], where: str, source: Path) -> SyncMode:
+    """
+    Read a section's ``MODE``, or its default when it sets none.
+
+    Args:
+        name: Section name, which decides the default.
+        asset: The section's contents.
+        where: Human-readable location, used in the error message.
+        source: File the section came from, used in the error message.
+
+    Returns:
+        The mode.
+
+    Raises:
+        ConfigError: If ``MODE`` is set to anything but ``pull`` or ``sync``.
+    """
+    if MODE_KEY not in asset:
+        return DEFAULT_MODES.get(name, SyncMode.SYNC)
+
+    value = asset[MODE_KEY]
+    if value not in tuple(SyncMode):
+        raise ConfigError(
+            f"{source}: '{MODE_KEY}' in {where} must be "
+            + " or ".join(f'"{mode}"' for mode in SyncMode)
+            + f", got {value!r}"
+        )
+    return SyncMode(value)
+
+
 def _build_repo(
     name: str,
     asset: dict[str, Any],
@@ -285,6 +385,8 @@ def _build_repo(
             branch is unsafe to hand to git.
     """
     where = f"[assets.{name}]"
+    # A misplaced SYNC_INTERVAL_SECONDS has a warning of its own.
+    _warn_unknown_keys(asset, KNOWN_ASSET_KEYS | {SYNC_INTERVAL_KEY}, where, source)
 
     repo = RepoConfig(
         name=name,
@@ -297,17 +399,65 @@ def _build_repo(
         token=_require(asset, "GIT_REPO_TOKEN", where, source),
         git_dir=root / GIT_DIR_PARENT / name,
         work_tree=root / WORK_TREE_PARENT / name,
+        mode=_mode(name, asset, where, source),
     )
 
     # Checked only now, once _require() has proven every value a string.
     for key, placeholders in PLACEHOLDER_VALUES.items():
         if asset[key] in placeholders:
-            raise ConfigError(
+            raise PlaceholderError(
                 f"{source}: '{key}' in {where} is still the placeholder "
                 f"from config.toml.example; fill in your own value"
             )
 
     return repo
+
+
+def normalize_url(url: str) -> str:
+    """
+    Reduce a repository URL to a form in which two spellings of the same
+    remote compare equal.
+
+    The scheme and host are case-insensitive, and forges serve a repository
+    with or without a trailing ``/`` or ``.git``. The path keeps its case,
+    since some hosts tell paths apart by it.
+
+    Args:
+        url: An https repository URL.
+
+    Returns:
+        The URL with the scheme and host lowercased and any trailing ``/``
+        and ``.git`` removed, for example ``https://gitlab.com/me/priv``.
+    """
+    parts = urlsplit(url)
+    path = parts.path.rstrip("/").removesuffix(".git").rstrip("/")
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{path}"
+
+
+def _warn_shared_permissions(source: Path) -> None:
+    """
+    Warn when someone other than the owner can read or change the file.
+
+    The file holds the tokens. One provisioned from the template is created
+    readable only by its owner; one the user or operator supplies may not be.
+    Only a warning, because the permissions on a mounted volume are not
+    always the user's to change, and the backup should not stop over them.
+
+    Args:
+        source: The config file.
+    """
+    if os.name != "posix":
+        return
+    try:
+        mode = source.stat().st_mode
+    except OSError:
+        return
+    if mode & SHARED_PERMISSION_BITS:
+        logger.warning(
+            "%s holds tokens but can be read or changed by other users "
+            "(mode %o); restrict it with: chmod 600 %s",
+            source, mode & 0o777, source,
+        )
 
 
 def _check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:
@@ -326,7 +476,7 @@ def _check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:
     """
     seen: dict[tuple[str, str], str] = {}
     for repo in repos:
-        remote = (repo.repo_url, repo.branch)
+        remote = (normalize_url(repo.repo_url), repo.branch)
         if remote in seen:
             raise ConfigError(
                 f"{source}: [assets.{seen[remote]}] and [assets.{repo.name}] "
@@ -448,10 +598,13 @@ def load_config(config_path: Path, root: Path) -> list[RepoConfig]:
     """
     source = config_path
     config = _read_toml(source)
+    _warn_shared_permissions(source)
+    _warn_unknown_keys(config, KNOWN_TOP_LEVEL_KEYS, "the top level", source)
 
     assets = config.get("assets")
     if not isinstance(assets, dict):
         raise ConfigError(f"{source}: no [assets] section found")
+    _warn_unknown_keys(assets, frozenset(ASSET_NAMES), "[assets]", source)
 
     repos = []
     for name in ASSET_NAMES:

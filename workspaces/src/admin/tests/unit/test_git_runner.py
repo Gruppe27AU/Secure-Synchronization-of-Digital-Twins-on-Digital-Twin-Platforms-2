@@ -145,3 +145,24 @@ def _is_running(pid):
             return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
     except (FileNotFoundError, ProcessLookupError):
         return False
+
+
+def test_extra_environment_reaches_the_command_only():
+    """Test credentials passed as env reach the command, not the service."""
+    result = run_git(
+        _python("import os; print(os.environ.get('GIT_CONFIG_COUNT'))"),
+        30,
+        env={"GIT_CONFIG_COUNT": "1"},
+    )
+
+    assert result.stdout.strip() == "1"
+    assert "GIT_CONFIG_COUNT" not in os.environ
+
+
+def test_messages_stay_in_english(monkeypatch):
+    """Test a translated locale cannot change the text failures are told by."""
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+
+    result = run_git(_python("import os; print(os.environ['LC_ALL'])"), 30)
+
+    assert result.stdout.strip() == "C"

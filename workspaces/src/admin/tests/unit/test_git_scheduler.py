@@ -3,13 +3,16 @@ Unit tests for the periodic scheduling of the git backup.
 
 Covers :mod:`admin.git.scheduler`: synchronizing every repository, keeping
 going when one of them fails, and running until the stop event is set.
-These tests never touch git - :func:`admin.git.sync.sync_once` is replaced
-throughout.
+These tests never touch git - :func:`admin.git.sync.sync_once` and
+:func:`admin.git.clone.restore_git_file` are replaced throughout.
 """
 
 import threading
 
+import pytest
+
 from admin.git import scheduler
+from admin.git.clone import CloneError
 from admin.git.status import SyncStatus
 from admin.git.sync import SyncError, SyncErrorKind, SyncStopped
 from tests.helpers.repo_factory import make_repo
@@ -36,6 +39,79 @@ class StubStopEvent:
     def set(self):
         """Stop the loop at its next wait, like threading.Event.set."""
         self.allowed_rounds = 0
+
+
+@pytest.fixture(name="restored", autouse=True)
+def fixture_restored(monkeypatch):
+    """Record the working trees whose .git file would be written back."""
+    restored = []
+    monkeypatch.setattr(
+        scheduler, "restore_git_file", lambda repo: restored.append(repo.name)
+    )
+    return restored
+
+
+@pytest.fixture(name="not_cloned", autouse=True)
+def fixture_not_cloned(monkeypatch):
+    """Names of the repositories to treat as not cloned; all others are."""
+    not_cloned = set()
+    monkeypatch.setattr(
+        scheduler, "is_cloned", lambda git_dir: git_dir not in not_cloned
+    )
+    return not_cloned
+
+
+def _repo(name):
+    """A repository whose git_dir is its name, so not_cloned can name it."""
+    return make_repo(name, git_dir=name)
+
+
+def test_sync_all_clones_a_repository_whose_clone_failed(monkeypatch, not_cloned):
+    """Test a failed clone is retried on the interval, without a restart."""
+    not_cloned.add("private")
+    cloned, synced = [], []
+    monkeypatch.setattr(scheduler, "clone_asset", lambda repo: cloned.append(repo.name))
+    monkeypatch.setattr(
+        scheduler, "sync_once", lambda repo, _stop_event: synced.append(repo.name)
+    )
+    status = SyncStatus()
+
+    scheduler.sync_all([_repo("private"), _repo("common")], status)
+
+    assert cloned == ["private"]
+    assert synced == ["common"]
+    assert status.snapshot()["repositories"]["private"]["state"] == "syncing"
+
+
+def test_sync_all_records_a_clone_that_fails_again(monkeypatch, not_cloned):
+    """Test a clone that still fails is reported with its kind."""
+    not_cloned.add("private")
+
+    def refuse(_repo):
+        raise CloneError("denied", SyncErrorKind.AUTH_FAILED)
+
+    monkeypatch.setattr(scheduler, "clone_asset", refuse)
+    status = SyncStatus()
+
+    scheduler.sync_all([_repo("private")], status)
+
+    private = status.snapshot()["repositories"]["private"]
+    assert private["state"] == "clone_failed"
+    assert private["last_error"]["kind"] == "auth_failed"
+
+
+def test_sync_all_restores_the_git_file_before_each_sync(monkeypatch, restored):
+    """Test a lost .git file is written back before the cycle runs."""
+    order = []
+    monkeypatch.setattr(
+        scheduler,
+        "sync_once",
+        lambda repo, _stop_event: order.append(list(restored)),
+    )
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")], SyncStatus())
+
+    assert order == [["private"], ["private", "common"]]
 
 
 def test_sync_all_syncs_every_repository(monkeypatch):

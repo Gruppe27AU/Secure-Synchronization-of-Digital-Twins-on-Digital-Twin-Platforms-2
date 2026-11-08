@@ -8,6 +8,7 @@ reading the optional sync interval.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from admin.git.config import (
     ASSET_NAMES,
     DEFAULT_SYNC_INTERVAL_SECONDS,
     ConfigError,
+    SyncMode,
     load_config,
     load_sync_interval,
 )
@@ -460,3 +462,130 @@ def test_a_valid_sync_interval_logs_no_warning(tmp_path, caplog):
         load_sync_interval(config_path)
 
     assert not caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX-only")
+def test_a_config_file_others_can_read_is_warned_about(tmp_path, caplog):
+    """Test a supplied config file holding tokens readable by all is reported."""
+    config_path = write_config(tmp_path, VALID_CONFIG)
+    config_path.chmod(0o644)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path, ROOT)
+
+    assert "chmod 600" in caplog.text
+    assert "private-token" not in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX-only")
+def test_a_private_config_file_is_not_warned_about(tmp_path, caplog):
+    """Test the mode the template is provisioned with passes quietly."""
+    config_path = write_config(tmp_path, VALID_CONFIG)
+    config_path.chmod(0o600)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path, ROOT)
+
+    assert "chmod" not in caplog.text
+
+
+# --------------------------------------------------------------------------
+# MODE: pull-only or full sync
+# --------------------------------------------------------------------------
+
+
+def test_common_is_pull_only_and_private_syncs_by_default(tmp_path):
+    """Test a shared repository never has one user's files pushed over another's."""
+    repos = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
+    private, common = repos[0], repos[1]
+
+    assert private.mode is SyncMode.SYNC
+    assert common.mode is SyncMode.PULL
+
+
+@pytest.mark.parametrize("mode", ["pull", "sync"])
+def test_mode_can_be_set_per_section(tmp_path, mode):
+    """Test MODE overrides the section's default."""
+    content = VALID_CONFIG.replace(
+        'GIT_REPO_TOKEN = "common-token"',
+        f'GIT_REPO_TOKEN = "common-token"\nMODE = "{mode}"',
+    )
+
+    common = load_config(write_config(tmp_path, content), ROOT)[1]
+
+    assert common.mode is SyncMode(mode)
+
+
+@pytest.mark.parametrize("value", ['"push"', '"Pull"', "1", "true"])
+def test_an_unknown_mode_is_rejected(tmp_path, value):
+    """Test a MODE that is neither pull nor sync is named in the error."""
+    content = PRIVATE_ONLY_CONFIG + f"MODE = {value}\n"
+
+    with pytest.raises(ConfigError, match=r"'MODE' in \[assets.private\] must be"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+# --------------------------------------------------------------------------
+# Keys that have no effect, and two spellings of one remote
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("content", "key", "where"),
+    [
+        ('HOME_DIR = "/home/dtaas-user"\n' + VALID_CONFIG, "HOME_DIR", "top level"),
+        ("SYNC_INTERVAL = 600\n" + VALID_CONFIG, "SYNC_INTERVAL", "top level"),
+        (PRIVATE_ONLY_CONFIG + 'GIT_DIR = "somewhere-else"\n', "GIT_DIR",
+         "[assets.private]"),
+        (VALID_CONFIG + '\n[assets.shared]\nGIT_REPO_URL = "x"\n', "shared",
+         "[assets]"),
+    ],
+)
+def test_a_key_with_no_effect_is_warned_about(tmp_path, caplog, content, key, where):
+    """Test an old or misspelt key is reported, not silently ignored."""
+    with caplog.at_level("WARNING"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+    assert f"'{key}' in" in caplog.text
+    assert where in caplog.text
+    assert "no effect" in caplog.text
+
+
+def test_known_keys_are_not_warned_about(tmp_path, caplog):
+    """Test a complete, current config file loads without a warning."""
+    content = "SYNC_INTERVAL_SECONDS = 60\n" + VALID_CONFIG + 'MODE = "pull"\n'
+    config_path = write_config(tmp_path, content)
+    config_path.chmod(0o600)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path, ROOT)
+
+    assert not caplog.text
+
+
+@pytest.mark.parametrize(
+    "other_spelling",
+    [
+        "https://gitlab.com/user/private",
+        "https://gitlab.com/user/private/",
+        "https://GitLab.com/user/private.git",
+        "https://gitlab.com/user/private.git/",
+    ],
+)
+def test_two_spellings_of_one_remote_are_rejected(tmp_path, other_spelling):
+    """Test .git, a trailing slash or letter case do not make a second remote."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", other_spelling
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    with pytest.raises(ConfigError, match="both use"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_paths_that_differ_in_case_are_different_remotes(tmp_path):
+    """Test the path keeps its case, since some hosts tell paths apart by it."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com/User/Private.git"
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    assert len(load_config(write_config(tmp_path, content), ROOT)) == 2
