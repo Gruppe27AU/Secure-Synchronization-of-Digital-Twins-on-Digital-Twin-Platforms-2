@@ -16,6 +16,11 @@ from admin.git.runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError, run_git
 
 logger = logging.getLogger(__name__)
 
+#: The file in the working tree that points git at the separate git
+#: directory, and what it holds before the path.
+GIT_FILE = ".git"
+GIT_FILE_PREFIX = "gitdir: "
+
 
 class CloneError(Exception):
     """Raised when cloning a repository fails."""
@@ -33,6 +38,37 @@ def is_cloned(git_dir: Path) -> bool:
         True if ``git_dir`` already holds a git directory.
     """
     return (git_dir / "HEAD").is_file()
+
+
+def restore_git_file(repo: RepoConfig) -> None:
+    """
+    Write back a lost ``.git`` file in a cloned working tree.
+
+    The backup does not need it, since :mod:`admin.git.sync` names the
+    repository explicitly, but the user's own git commands in the working
+    tree do: without it they would act on whatever repository encloses the
+    working tree. Anything already at that path is left alone, and a
+    failure is logged rather than raised for the same reason.
+
+    Args:
+        repo: Repository whose working tree to repair.
+    """
+    git_file = repo.work_tree / GIT_FILE
+    if git_file.exists() or not repo.work_tree.is_dir() or not is_cloned(repo.git_dir):
+        return
+
+    try:
+        git_file.write_text(f"{GIT_FILE_PREFIX}{repo.git_dir}\n", encoding="utf-8")
+    except OSError as error:
+        logger.warning(
+            "Repository '%s' has lost %s, and it could not be written back: %s",
+            repo.name,
+            git_file,
+            error,
+        )
+        return
+
+    logger.warning("Repository '%s' had lost %s; written back", repo.name, git_file)
 
 
 def _build_clone_command(repo: RepoConfig) -> list[str]:

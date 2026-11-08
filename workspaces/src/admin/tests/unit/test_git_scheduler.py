@@ -3,11 +3,13 @@ Unit tests for the periodic scheduling of the git backup.
 
 Covers :mod:`admin.git.scheduler`: synchronizing every repository, keeping
 going when one of them fails, and running until the stop event is set.
-These tests never touch git - :func:`admin.git.sync.sync_once` is replaced
-throughout.
+These tests never touch git - :func:`admin.git.sync.sync_once` and
+:func:`admin.git.clone.restore_git_file` are replaced throughout.
 """
 
 import threading
+
+import pytest
 
 from admin.git import scheduler
 from admin.git.status import SyncStatus
@@ -36,6 +38,30 @@ class StubStopEvent:
     def set(self):
         """Stop the loop at its next wait, like threading.Event.set."""
         self.allowed_rounds = 0
+
+
+@pytest.fixture(name="restored", autouse=True)
+def fixture_restored(monkeypatch):
+    """Record the working trees whose .git file would be written back."""
+    restored = []
+    monkeypatch.setattr(
+        scheduler, "restore_git_file", lambda repo: restored.append(repo.name)
+    )
+    return restored
+
+
+def test_sync_all_restores_the_git_file_before_each_sync(monkeypatch, restored):
+    """Test a lost .git file is written back before the cycle runs."""
+    order = []
+    monkeypatch.setattr(
+        scheduler,
+        "sync_once",
+        lambda repo, _stop_event: order.append(list(restored)),
+    )
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")], SyncStatus())
+
+    assert order == [["private"], ["private", "common"]]
 
 
 def test_sync_all_syncs_every_repository(monkeypatch):

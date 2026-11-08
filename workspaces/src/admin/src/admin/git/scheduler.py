@@ -9,6 +9,7 @@ admin service's HTTP server.
 import logging
 import threading
 
+from admin.git.clone import restore_git_file
 from admin.git.config import RepoConfig
 from admin.git.status import SyncStatus
 from admin.git.sync import SyncError, SyncErrorKind, SyncStopped, sync_once
@@ -49,6 +50,7 @@ def sync_all(
         if stop_event is not None and stop_event.is_set():
             return
         try:
+            restore_git_file(repo)
             sync_once(repo, stop_event)
         except SyncStopped as stopped:
             logger.info("%s", stopped)

@@ -2,6 +2,21 @@
 
 The main changes made so far are listed here.
 
+## Week of 2-Nov-2026
+
+### Fixed
+
+* A lost `.git` file in a working tree no longer sends the git backup, and
+  its token, to another repository. Git used to look for the repository
+  itself, and without the file it found whatever repository encloses the
+  working tree, then committed and pushed there. Every command now names
+  the git directory and working tree, and the `.git` file is written back
+  before each cycle
+* The git backup no longer commits a working tree that has lost more than
+  half of its tracked files (at least ten), which would delete them on the
+  remote too. The status reports `mass_deletion`; committing the deletion
+  by hand resumes the backup
+
 ## Week of 12-Oct-2026
 
 ### Changed

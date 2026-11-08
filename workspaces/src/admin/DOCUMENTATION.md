@@ -149,6 +149,7 @@ reachable through nginx.
 | `wrong_branch` | Another branch than `GIT_REPO_BRANCH` is checked out (see [Conflicts](#another-branch-is-checked-out)) |
 | `detached_head` | No branch is checked out, for example during `git bisect` (see [Conflicts](#another-branch-is-checked-out)) |
 | `index_locked` | Another git command was running in the repository, or an old `index.lock` could not be removed (see [Conflicts](#another-git-command-is-running)) |
+| `mass_deletion` | More than half of the tracked files are missing from the working tree (see [Conflicts](#most-files-are-missing)) |
 | `git_failed` | Any other failing git command, for example an unreachable remote or a merge stopped by an untracked file |
 | `unexpected` | An error that is not a git failure, for example `git` missing from the image |
 
@@ -686,6 +687,36 @@ therefore removes an `index.lock` that is more than an hour old and goes
 ahead, logging a warning. An hour, rather than a few minutes, so that a
 `git commit` editor left open over a break is not mistaken for a crash. A
 running git command never holds the lock that long in practice.
+
+### Most files are missing
+
+When more than half of the tracked files, and at least ten, are missing
+from the working tree, the backup does not commit, so the files are not
+deleted on the remote either:
+
+```text
+ERROR admin.git.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. If that is intended, commit the deletion there by hand to resume the backup
+```
+
+A folder that has been emptied is far more often an accident, such as a
+move, a clean-up that went too far or a restore that has not finished, than
+a decision. If you did mean to delete the files, commit the deletion
+yourself and the next interval pushes it:
+
+```bash
+cd /workspace/assets/private
+git add -A && git commit -m "Remove old results"
+```
+
+### The `.git` file is missing
+
+Every backup command names its git directory and working tree explicitly,
+so a lost `.git` file in the working tree can never make the backup commit
+into, or push from, a repository further up, such as one you keep at
+`/workspace`. Before each cycle the backup also writes the file back, with
+a warning in the log, so your own git commands in the folder find the
+backup repository again. An existing `.git` file or directory is never
+overwritten.
 
 ### What the backup does not check
 

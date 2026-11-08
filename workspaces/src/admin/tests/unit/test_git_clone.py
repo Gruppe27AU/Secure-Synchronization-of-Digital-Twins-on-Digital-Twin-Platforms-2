@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from admin.git import clone
-from admin.git.clone import CloneError, clone_asset, is_cloned
+from admin.git.clone import CloneError, clone_asset, is_cloned, restore_git_file
 from admin.git.config import RepoConfig
 from admin.git.runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError
 
@@ -230,3 +230,41 @@ def test_clone_asset_raises_clone_error_on_timeout(monkeypatch, repo):
 
     with pytest.raises(CloneError, match="did not finish within 900 seconds"):
         clone_asset(repo)
+
+
+def _cloned(repo):
+    """Lay out a cloned repository whose working tree has lost its .git file."""
+    repo.git_dir.mkdir(parents=True)
+    (repo.git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    repo.work_tree.mkdir(parents=True)
+    return repo.work_tree / ".git"
+
+
+def test_restore_git_file_writes_a_lost_git_file_back(repo, caplog):
+    """Test the user's own git commands find the backup repository again."""
+    git_file = _cloned(repo)
+
+    with caplog.at_level("WARNING"):
+        restore_git_file(repo)
+
+    assert git_file.read_text(encoding="utf-8") == f"gitdir: {repo.git_dir}\n"
+    assert "written back" in caplog.text
+
+
+def test_restore_git_file_leaves_an_existing_git_file_alone(repo):
+    """Test whatever is already at .git is never overwritten."""
+    git_file = _cloned(repo)
+    git_file.write_text("gitdir: elsewhere\n", encoding="utf-8")
+
+    restore_git_file(repo)
+
+    assert git_file.read_text(encoding="utf-8") == "gitdir: elsewhere\n"
+
+
+def test_restore_git_file_does_nothing_before_the_clone(repo):
+    """Test a working tree is not pointed at a git directory that is not there."""
+    repo.work_tree.mkdir(parents=True)
+
+    restore_git_file(repo)
+
+    assert not (repo.work_tree / ".git").exists()

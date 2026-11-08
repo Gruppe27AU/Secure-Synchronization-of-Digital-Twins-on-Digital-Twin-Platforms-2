@@ -21,6 +21,14 @@ Every command that names the branch puts ``--`` before its positional
 arguments and spells the branch out as a full refspec, so a branch value can
 never be read as a git option such as ``--upload-pack``.
 
+Every command names the git directory and working tree explicitly rather
+than letting git find them through the ``.git`` file in the working tree.
+That file is easily lost - a clean-up of hidden files, a folder restored
+from a zip - and git would then walk up and commit into, and push from,
+whatever repository encloses the workspace, credentials and all. For the
+same reason a working tree that has lost most of its files is not
+committed: that is far more often an accident than a clean-up.
+
 The user works in the same repository with their own git commands, so a
 cycle only starts when the repository can be left to it for a moment: on
 the configured branch, with no operation half finished and no other git
@@ -72,6 +80,15 @@ INDEX_LOCK_FILE = "index.lock"
 #: live ``git commit`` holds the lock for as long as its editor is open.
 STALE_LOCK_SECONDS = 3600
 
+#: A cycle that would delete more than this share of the tracked files
+#: refuses to commit, since an emptied working tree is far more likely an
+#: accident than a clean-up.
+MASS_DELETION_FRACTION = 0.5
+
+#: Below this many deleted files the share is not checked, so a small
+#: repository can still lose its only README.
+MASS_DELETION_MIN_FILES = 10
+
 
 class SyncErrorKind(StrEnum):
     """
@@ -90,6 +107,7 @@ class SyncErrorKind(StrEnum):
     INDEX_LOCKED = "index_locked"
     UNRESOLVED_CONFLICTS = "unresolved_conflicts"
     CONFLICT_MARKERS = "conflict_markers"
+    MASS_DELETION = "mass_deletion"
     UNEXPECTED = "unexpected"
 
 
@@ -129,6 +147,23 @@ def _identity_options() -> list[str]:
         "-c",
         f"user.email={COMMIT_AUTHOR_EMAIL}",
     ]
+
+
+def _repository_options(repo: RepoConfig) -> list[str]:
+    """
+    Build the git options that name the repository explicitly.
+
+    Without them git finds the repository through the ``.git`` file in the
+    working tree, and when that file is gone, through whatever repository
+    encloses the working tree.
+
+    Args:
+        repo: Repository the command is for.
+
+    Returns:
+        The ``--git-dir=...`` and ``--work-tree=...`` options.
+    """
+    return [f"--git-dir={repo.git_dir}", f"--work-tree={repo.work_tree}"]
 
 
 def _execute(
@@ -213,7 +248,14 @@ def _run_git(
             :data:`admin.git.runner.LOCAL_TIMEOUT_SECONDS` whatever
             ``check`` is.
     """
-    command = ["git", "-C", str(repo.work_tree), *(options or []), *args]
+    command = [
+        "git",
+        "-C",
+        str(repo.work_tree),
+        *_repository_options(repo),
+        *(options or []),
+        *args,
+    ]
     return _execute(repo, command, action, check, LOCAL_TIMEOUT_SECONDS)
 
 
@@ -245,6 +287,7 @@ def _run_remote_git(
         "git",
         "-C",
         str(repo.work_tree),
+        *_repository_options(repo),
         *remote_options(repo),
         *args,
     ]
@@ -405,28 +448,6 @@ def _take_local_side(
             ["rm", "--quiet", "--", *removed],
             "keep the local deletion of the conflicted files",
         )
-
-
-def _git_dir(repo: RepoConfig) -> Path:
-    """
-    Locate the repository's git directory.
-
-    Asked of git rather than assumed to be ``.git``, because
-    :mod:`admin.git.clone` keeps it apart from the working tree.
-
-    Args:
-        repo: Repository to inspect.
-
-    Returns:
-        The absolute path of the git directory.
-
-    Raises:
-        SyncError: If the git directory cannot be located.
-    """
-    result = _run_git(
-        repo, ["rev-parse", "--absolute-git-dir"], "locate the git directory"
-    )
-    return Path(result.stdout.strip())
 
 
 def _operation_in_progress(git_dir: Path) -> str | None:
@@ -591,10 +612,9 @@ def _ensure_safe_to_sync(repo: RepoConfig) -> None:
             in progress, the configured branch is not checked out or files
             are unmerged.
     """
-    git_dir = _git_dir(repo)
-    _ensure_index_unlocked(repo, git_dir)
+    _ensure_index_unlocked(repo, repo.git_dir)
 
-    marker = _operation_in_progress(git_dir)
+    marker = _operation_in_progress(repo.git_dir)
     if marker:
         raise SyncError(
             f"Not synchronizing repository '{repo.name}': a git operation is "
@@ -674,6 +694,59 @@ def _has_conflict_marker(repo: RepoConfig, path: str) -> bool:
     )
 
 
+def _count_files(repo: RepoConfig, args: list[str], action: str) -> int:
+    """
+    Count the paths an ``ls-files -z`` listing prints.
+
+    Args:
+        repo: Repository to list in.
+        args: The ``ls-files`` options selecting the files.
+        action: What the count is for, used in error messages.
+
+    Returns:
+        The number of paths listed.
+
+    Raises:
+        SyncError: If the listing cannot be read.
+    """
+    result = _run_git(repo, ["ls-files", "-z", *args], action)
+    return len([path for path in result.stdout.split("\0") if path])
+
+
+def _ensure_no_mass_deletion(repo: RepoConfig) -> None:
+    """
+    Refuse to commit when most of the tracked files have disappeared.
+
+    A working tree that has been emptied, wholly or mostly, is far more
+    often an accident - a folder moved away, a restore that has not
+    finished - than a clean-up, and committing it would delete those files
+    on the remote too. Deleting that much on purpose takes one commit by
+    hand, after which the backup carries on.
+
+    Args:
+        repo: Repository about to be committed in.
+
+    Raises:
+        SyncError: If more than :data:`MASS_DELETION_FRACTION` of the
+            tracked files, and at least :data:`MASS_DELETION_MIN_FILES`, are
+            missing, or the files cannot be counted.
+    """
+    deleted = _count_files(repo, ["--deleted"], "count the deleted files")
+    if deleted < MASS_DELETION_MIN_FILES:
+        return
+
+    tracked = _count_files(repo, ["--cached"], "count the tracked files")
+    if deleted <= tracked * MASS_DELETION_FRACTION:
+        return
+
+    raise SyncError(
+        f"Not committing in repository '{repo.name}': {deleted} of {tracked} "
+        f"tracked files are missing from {repo.work_tree}. If that is "
+        f"intended, commit the deletion there by hand to resume the backup",
+        SyncErrorKind.MASS_DELETION,
+    )
+
+
 def commit_local_changes(repo: RepoConfig) -> bool:
     """
     Commit whatever the user changed in the working tree.
@@ -683,9 +756,10 @@ def commit_local_changes(repo: RepoConfig) -> bool:
     soon as the remote had anything to deliver.
 
     Nothing is committed while the user is in the middle of something -
-    see :func:`_ensure_safe_to_sync` - or while a staged file still holds
-    conflict markers. The first check runs before anything else, so a
-    repository the user is busy with is never pulled into or pushed either.
+    see :func:`_ensure_safe_to_sync` - while most of the tracked files are
+    missing, or while a staged file still holds conflict markers. The first
+    check runs before anything else, so a repository the user is busy with
+    is never pulled into or pushed either.
 
     Args:
         repo: Repository to commit in.
@@ -694,14 +768,17 @@ def commit_local_changes(repo: RepoConfig) -> bool:
         True if a commit was made, False if the working tree was clean.
 
     Raises:
-        SyncError: If the repository is not safe to touch, conflict
-            markers are found, or staging or committing fails.
+        SyncError: If the repository is not safe to touch, most tracked
+            files are missing, conflict markers are found, or staging or
+            committing fails.
     """
     _ensure_safe_to_sync(repo)
 
     if not has_changes(repo):
         logger.info("No changes in repository '%s'; nothing to commit", repo.name)
         return False
+
+    _ensure_no_mass_deletion(repo)
 
     _run_git(repo, ["add", "-A"], "stage changes")
 

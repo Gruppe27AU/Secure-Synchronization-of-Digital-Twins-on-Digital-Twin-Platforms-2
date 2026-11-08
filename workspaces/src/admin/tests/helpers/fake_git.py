@@ -18,7 +18,6 @@ _PLAIN_KEYS = {
     "commit": "commit",
     "push": "push",
     "fetch": "fetch",
-    "rev-parse": "git-dir",
     "symbolic-ref": "head",
     "ls-files": "unmerged",
     "show": "staged-file",
@@ -32,6 +31,8 @@ _PLAIN_KEYS = {
 #: Subcommands run more than one way, told apart by one of their arguments.
 #: Checked before ``_PLAIN_KEYS``.
 _ARGUMENT_KEYS = (
+    ("ls-files", "--deleted", "deleted-files"),
+    ("ls-files", "--cached", "tracked-files"),
     ("ls-files", "-z", "conflicted-files"),
     ("add", "--", "mark-resolved"),
     ("commit", "--no-edit", "merge-commit"),
@@ -74,8 +75,6 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
             makes the merge fail, as real git does.
         deleted_locally: Conflicted files the workspace deleted.
         failing: Command key that should fail, for example ``"push"``.
-        git_dir: What ``git rev-parse --absolute-git-dir`` prints. The
-            default does not exist, so no operation is in progress.
         head: What ``git symbolic-ref --quiet HEAD`` prints. None makes it
             exit with status 1 and print nothing, as for a detached HEAD.
         head_after_fetch: When set, ``head`` becomes this once the fetch
@@ -84,6 +83,9 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
         marker_output: What ``git diff --cached --check`` prints. Non-empty
             makes it exit with status 2, as real git does.
         staged_files: Staged content per path, read by ``git show :<path>``.
+        deleted_files: How many tracked files ``git ls-files --deleted``
+            lists as missing from the working tree.
+        tracked_files: How many files ``git ls-files --cached`` lists.
         commands: Every command that was run, filled in as they arrive.
     """
 
@@ -93,12 +95,13 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
     conflicts: list = field(default_factory=list)
     deleted_locally: list = field(default_factory=list)
     failing: str | None = None
-    git_dir: str = "/nonexistent/git-dir"
     head: str | None = "refs/heads/main"
     head_after_fetch: str | None = None
     unmerged_output: str = ""
     marker_output: str = ""
     staged_files: dict = field(default_factory=dict)
+    deleted_files: int = 0
+    tracked_files: int = 0
     commands: list = field(default_factory=list)
     timeouts: list = field(default_factory=list)
 
@@ -142,11 +145,14 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
                 + [_unmerged_entries(path, "13") for path in self.deleted_locally]
             )
 
+        if key in ("deleted-files", "tracked-files"):
+            count = self.deleted_files if key == "deleted-files" else self.tracked_files
+            return "".join(f"file{number}\0" for number in range(count))
+
         return {
             "status": self.status_output,
             "incoming": str(self.incoming),
             "outgoing": str(self.outgoing),
-            "git-dir": self.git_dir,
             "head": self.head,
             "unmerged": self.unmerged_output,
         }.get(key, "")
