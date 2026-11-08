@@ -2,48 +2,73 @@
 Unit tests for shared git HTTP authentication.
 
 Covers :mod:`admin.git.auth`: building the credentials header, leaving it
-out when no credentials are configured, restricting remote commands to
-https without waiting on credential helpers or stalled transfers, and
-recognizing rejected credentials in git's stderr without mistaking
-unrelated failures for them.
+out when no credentials are configured, keeping it off the command line and
+limited to the remote's host, restricting remote commands to https without
+waiting on credential helpers or stalled transfers, and recognizing rejected
+credentials in git's stderr without mistaking unrelated failures for them.
 """
 
 import base64
 from dataclasses import replace
 
+import pytest
+
 from admin.git.auth import (
     NO_WAIT_OPTIONS,
-    PROTOCOL_OPTIONS,
-    auth_header_options,
+    auth_environment,
+    header_scope,
     is_auth_failure,
     remote_options,
 )
 from tests.helpers.repo_factory import make_repo
 
 
-def test_auth_header_options_empty_without_credentials():
-    """Test a repository without credentials gets no auth options."""
-    repo = make_repo()
-
-    assert not auth_header_options(repo)
+def test_auth_environment_empty_without_credentials():
+    """Test a repository without credentials gets no auth settings."""
+    assert not auth_environment(make_repo())
 
 
-def test_auth_header_options_builds_basic_auth_header():
+def test_auth_environment_builds_basic_auth_header():
     """Test the header is a correctly base64-encoded Basic auth value."""
     repo = replace(make_repo(), token="secret-token")
 
-    options = auth_header_options(repo)
+    env = auth_environment(repo)
 
-    assert options[0] == "-c"
     expected = base64.b64encode(b"oauth2:secret-token").decode("ascii")
-    assert options[1] == f"http.extraHeader=Authorization: Basic {expected}"
-    # The token must never appear in plain text in the built options.
-    assert "secret-token" not in options[1]
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_VALUE_0"] == f"Authorization: Basic {expected}"
+    # The token must never appear in plain text in the built settings.
+    assert "secret-token" not in "".join(env.values())
 
 
-def test_remote_options_restrict_to_https_without_credentials():
-    """Test the protocol restriction is applied even without credentials."""
-    assert remote_options(make_repo()) == [
+def test_auth_header_is_scoped_to_the_remote_host():
+    """Test a request to any other host does not get the header."""
+    repo = replace(
+        make_repo(repo_url="https://gitlab.example.org:8443/me/priv.git"),
+        token="secret-token",
+    )
+
+    assert auth_environment(repo)["GIT_CONFIG_KEY_0"] == (
+        "http.https://gitlab.example.org:8443/.extraHeader"
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "scope"),
+    [
+        ("https://gitlab.com/me/priv.git", "https://gitlab.com/"),
+        ("https://gitlab.com/me/priv", "https://gitlab.com/"),
+        ("https://host:8443/a/b/c.git", "https://host:8443/"),
+    ],
+)
+def test_header_scope_is_scheme_and_host(url, scope):
+    """Test the scope survives a redirect within the host."""
+    assert header_scope(url) == scope
+
+
+def test_remote_options_restrict_to_https():
+    """Test the protocol restriction is applied."""
+    assert remote_options() == [
         "-c",
         "protocol.allow=never",
         "-c",
@@ -54,24 +79,13 @@ def test_remote_options_restrict_to_https_without_credentials():
 
 def test_remote_options_never_wait_for_a_helper_or_a_stalled_transfer():
     """Test credential helpers are switched off and stalls are abandoned."""
-    options = remote_options(make_repo())
+    options = remote_options()
 
     # An empty value resets the list, so no helper configured on the
     # machine (such as Git Credential Manager) is ever asked.
     assert "credential.helper=" in options
     assert "http.lowSpeedLimit=1" in options
     assert "http.lowSpeedTime=60" in options
-
-
-def test_remote_options_add_the_auth_header_after_the_restriction():
-    """Test credentials are appended to, not instead of, the restriction."""
-    repo = replace(make_repo(), token="secret-token")
-
-    assert remote_options(repo) == [
-        *PROTOCOL_OPTIONS,
-        *NO_WAIT_OPTIONS,
-        *auth_header_options(repo),
-    ]
 
 
 def test_is_auth_failure_recognizes_gitlab_access_denied():
@@ -119,3 +133,17 @@ def test_is_auth_failure_false_for_unrelated_errors():
 def test_is_auth_failure_does_not_match_bare_numbers():
     """Test an unrelated message that happens to contain '401' is not flagged."""
     assert is_auth_failure("fatal: exit code 401 from hook") is False
+
+
+def test_is_auth_failure_recognizes_a_401_git_could_not_answer():
+    """Test the 401 of an expired token, with prompts off, counts as rejected.
+
+    The forge answers 401 to the header, git wants to ask for a username
+    instead, and cannot, because prompts are switched off.
+    """
+    stderr = (
+        "fatal: could not read Username for 'https://gitlab.com': "
+        "terminal prompts disabled"
+    )
+
+    assert is_auth_failure(stderr) is True

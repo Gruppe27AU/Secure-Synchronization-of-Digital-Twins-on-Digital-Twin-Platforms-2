@@ -11,6 +11,8 @@ command can wait forever - neither for a person nor for the network:
   ``SSH_ASKPASS``. Credential helpers ignore both settings, so
   :func:`admin.git.auth.remote_options` resets those separately.
 - Standard input is empty, so nothing can block reading it.
+- Messages are in English (``LC_ALL=C``), because what went wrong is told
+  from their text.
 - Each command has a time limit. When it runs out, the command and every
   process it started are stopped, and :class:`GitTimeoutError` is raised.
 
@@ -37,8 +39,12 @@ REMOTE_TIMEOUT_SECONDS = 900
 #: signal, before it is killed outright.
 _TERMINATE_GRACE_SECONDS = 5
 
-#: Environment additions that stop git from ever asking for input.
-_NO_PROMPT_ENVIRONMENT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": ""}
+#: Environment additions that stop git from ever asking for input, and keep
+#: its messages in English. Which failure a command hit - a rejected token,
+#: an empty remote, a missing branch - is told from git's own text, and in
+#: a German locale "Remote branch main not found" would arrive as
+#: "Remote-Branch main nicht ... gefunden".
+_FIXED_ENVIRONMENT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "LC_ALL": "C"}
 
 _POSIX = os.name == "posix"
 
@@ -51,14 +57,19 @@ class GitTimeoutError(Exception):
     """Raised when a git command does not finish within its time limit."""
 
 
-def _environment() -> dict[str, str]:
+def _environment(extra: dict[str, str] | None = None) -> dict[str, str]:
     """
     Build the environment git runs in.
 
+    Args:
+        extra: Variables to add for this command only, such as the
+            credentials from :func:`admin.git.auth.auth_environment`.
+
     Returns:
-        The service's own environment with prompting switched off.
+        The service's own environment with prompting switched off and
+        ``extra`` added.
     """
-    return {**os.environ, **_NO_PROMPT_ENVIRONMENT}
+    return {**os.environ, **_FIXED_ENVIRONMENT, **(extra or {})}
 
 
 def _signal_group(process: subprocess.Popen[str], signum: int) -> None:
@@ -102,13 +113,18 @@ def _stop(process: subprocess.Popen[str]) -> None:
         process.wait()
 
 
-def run_git(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+def run_git(
+    command: list[str], timeout: float, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """
     Run one git command without letting it prompt or hang.
 
     Args:
         command: The full command, starting with ``git``.
         timeout: Seconds the command may take.
+        env: Variables to add to the environment for this command only.
+            Unlike the command line, the environment of a process can only
+            be read by its own user, so credentials belong here.
 
     Returns:
         The completed process, with its output captured as text. A
@@ -125,7 +141,7 @@ def run_git(command: list[str], timeout: float) -> subprocess.CompletedProcess[s
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=_environment(),
+        env=_environment(env),
         start_new_session=_POSIX,
     ) as process:
         try:

@@ -10,7 +10,9 @@ import itertools
 import threading
 from datetime import datetime, timedelta, timezone
 
-from admin.git.status import SyncStatus
+import pytest
+
+from admin.git.status import BackupState, SyncStatus
 from admin.git.sync import SyncErrorKind
 
 START = datetime(2026, 10, 9, 12, 0, 0, tzinfo=timezone.utc)
@@ -24,7 +26,11 @@ def step_clock():
 
 def test_status_starts_disabled_and_empty():
     """Test nothing is reported before the backup is enabled."""
-    assert SyncStatus().snapshot() == {"enabled": False, "repositories": {}}
+    assert SyncStatus().snapshot() == {
+        "state": "disabled",
+        "enabled": False,
+        "repositories": {},
+    }
 
 
 def test_enable_lists_repositories_with_no_attempt_yet():
@@ -33,14 +39,17 @@ def test_enable_lists_repositories_with_no_attempt_yet():
     status.enable(["private", "common"])
 
     assert status.snapshot() == {
+        "state": "running",
         "enabled": True,
         "repositories": {
             "private": {
+                "state": "syncing",
                 "last_attempt": None,
                 "last_success": None,
                 "last_error": None,
             },
             "common": {
+                "state": "syncing",
                 "last_attempt": None,
                 "last_success": None,
                 "last_error": None,
@@ -56,6 +65,7 @@ def test_record_success_sets_attempt_and_success():
     status.record_success("private")
 
     assert status.snapshot()["repositories"]["private"] == {
+        "state": "syncing",
         "last_attempt": "2026-10-09T12:00:00+00:00",
         "last_success": "2026-10-09T12:00:00+00:00",
         "last_error": None,
@@ -69,6 +79,7 @@ def test_record_failure_reports_only_the_kind():
     status.record_failure("private", SyncErrorKind.AUTH_FAILED)
 
     assert status.snapshot()["repositories"]["private"] == {
+        "state": "syncing",
         "last_attempt": "2026-10-09T12:00:00+00:00",
         "last_success": None,
         "last_error": {
@@ -128,3 +139,70 @@ def test_concurrent_writers_lose_no_update():
         thread.join()
 
     assert sorted(status.snapshot()["repositories"]) == sorted(names)
+
+
+# --------------------------------------------------------------------------
+# States: telling "not set up" apart from setup failures
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "state",
+    [BackupState.NEEDS_SETUP, BackupState.CONFIG_ERROR, BackupState.STARTING],
+)
+def test_a_backup_that_is_not_running_says_why(state):
+    """Test each state before running is reported, and none counts as enabled."""
+    status = SyncStatus()
+    status.set_state(state)
+
+    snapshot = status.snapshot()
+
+    assert snapshot["state"] == str(state)
+    assert snapshot["enabled"] is False
+
+
+def test_configure_lists_repositories_before_they_are_cloned():
+    """Test the repositories show up as soon as the config file is read."""
+    status = SyncStatus()
+    status.configure(["private", "common"], cloned={"common"})
+
+    snapshot = status.snapshot()
+
+    assert snapshot["state"] == "starting"
+    assert snapshot["repositories"]["private"]["state"] == "cloning"
+    assert snapshot["repositories"]["common"]["state"] == "syncing"
+
+
+def test_a_failed_clone_is_reported_with_its_kind():
+    """Test a clone that failed is visible, with why, and not as a sync."""
+    status = SyncStatus(clock=step_clock())
+    status.configure(["private"])
+    status.record_clone_failure("private", SyncErrorKind.AUTH_FAILED)
+
+    assert status.snapshot()["repositories"]["private"] == {
+        "state": "clone_failed",
+        "last_attempt": "2026-10-09T12:00:00+00:00",
+        "last_success": None,
+        "last_error": {"kind": "auth_failed", "at": "2026-10-09T12:00:00+00:00"},
+    }
+
+
+def test_a_clone_that_succeeds_later_is_syncing():
+    """Test a retried clone moves the repository on."""
+    status = SyncStatus()
+    status.configure(["private"])
+    status.record_clone_failure("private", SyncErrorKind.NETWORK)
+    status.record_cloned("private")
+
+    assert status.snapshot()["repositories"]["private"]["state"] == "syncing"
+
+
+def test_enable_keeps_a_failed_clone_failed():
+    """Test starting the scheduler does not hide a clone that failed."""
+    status = SyncStatus()
+    status.configure(["private"])
+    status.record_clone_failure("private", SyncErrorKind.NETWORK)
+    status.enable(["private"])
+
+    assert status.snapshot()["state"] == "running"
+    assert status.snapshot()["repositories"]["private"]["state"] == "clone_failed"

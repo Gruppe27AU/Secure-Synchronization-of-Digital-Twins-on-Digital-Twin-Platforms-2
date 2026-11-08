@@ -9,7 +9,7 @@ a working tree that has lost most of its files is not committed.
 
 import pytest
 
-from admin.git import sync as sync_module
+from admin.git import checks
 from admin.git.scheduler import sync_all
 from admin.git.status import SyncStatus
 from admin.git.sync import SyncError, SyncErrorKind, sync_once
@@ -65,7 +65,7 @@ def test_a_lost_git_file_is_written_back_for_the_user(world, enclosing):
 
 def test_an_emptied_working_tree_is_not_committed(world, monkeypatch):
     """Test losing every file never deletes them on the remote."""
-    monkeypatch.setattr(sync_module, "MASS_DELETION_MIN_FILES", 2)
+    monkeypatch.setattr(checks, "MASS_DELETION_MIN_FILES", 2)
     work_tree = world.workspace.work_tree
     for name in SEED_FILES:
         (work_tree / name).unlink()
@@ -81,7 +81,7 @@ def test_an_emptied_working_tree_is_not_committed(world, monkeypatch):
 
 def test_a_deletion_committed_by_hand_is_pushed(world, monkeypatch):
     """Test the way out of the guard: commit the deletion yourself."""
-    monkeypatch.setattr(sync_module, "MASS_DELETION_MIN_FILES", 2)
+    monkeypatch.setattr(checks, "MASS_DELETION_MIN_FILES", 2)
     work_tree = world.workspace.work_tree
     for name in SEED_FILES:
         (work_tree / name).unlink()

@@ -1,15 +1,17 @@
 """
 Periodic scheduling of the git backup.
 
-Decides *when* :mod:`admin.git.sync` runs, and nothing about git itself.
-The synchronization happens on a background thread, so it never blocks the
-admin service's HTTP server.
+Decides *when* :mod:`admin.git.sync` and :mod:`admin.git.clone` run, and
+nothing about git itself. The synchronization happens on a background
+thread, so it never blocks the admin service's HTTP server. A repository
+that could not be cloned is tried again on every interval, so a remote that
+was unreachable, or a token fixed in the forge, needs no restart.
 """
 
 import logging
 import threading
 
-from admin.git.clone import restore_git_file
+from admin.git.clone import CloneError, clone_asset, is_cloned, restore_git_file
 from admin.git.config import RepoConfig
 from admin.git.status import SyncStatus
 from admin.git.sync import SyncError, SyncErrorKind, SyncStopped, sync_once
@@ -18,6 +20,28 @@ logger = logging.getLogger(__name__)
 
 #: Name of the background thread, so it is recognisable in a stack dump.
 SYNC_THREAD_NAME = "git-sync"
+
+
+def _clone(repo: RepoConfig, status: SyncStatus) -> None:
+    """
+    Clone one repository and record how it went.
+
+    Every exception is caught, for the same reason as in :func:`sync_all`.
+
+    Args:
+        repo: Repository to clone.
+        status: Where the outcome is recorded.
+    """
+    try:
+        clone_asset(repo)
+    except CloneError as error:
+        logger.error("%s", error)
+        status.record_clone_failure(repo.name, error.kind)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Unexpected error while cloning repository '%s'", repo.name)
+        status.record_clone_failure(repo.name, SyncErrorKind.UNEXPECTED)
+    else:
+        status.record_cloned(repo.name)
 
 
 def sync_all(
@@ -30,7 +54,9 @@ def sync_all(
 
     A repository that fails is logged and skipped, so one broken remote
     cannot stop the others from being backed up. The full error goes to the
-    log only; the status gets its kind, which is safe to serve.
+    log only; the status gets its kind, which is safe to serve. A
+    repository that is not cloned yet, because its last clone failed, is
+    cloned instead of synchronized.
 
     Every exception is caught, not just :class:`SyncError`. This runs on a
     background thread, where an escaping exception would end the thread and
@@ -49,6 +75,9 @@ def sync_all(
     for repo in repos:
         if stop_event is not None and stop_event.is_set():
             return
+        if not is_cloned(repo.git_dir):
+            _clone(repo, status)
+            continue
         try:
             restore_git_file(repo)
             sync_once(repo, stop_event)
@@ -102,7 +131,8 @@ def start_sync_scheduler(
 
     The thread is a daemon, so it does not keep the process alive on
     shutdown. The first synchronization happens after one interval, not
-    immediately, because the repositories were just cloned.
+    immediately, because the repositories were just cloned. Any that could
+    not be cloned are tried again at each interval.
 
     Args:
         repos: Repositories to synchronize.
