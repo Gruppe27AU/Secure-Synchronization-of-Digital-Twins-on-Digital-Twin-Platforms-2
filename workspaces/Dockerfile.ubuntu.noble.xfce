@@ -34,16 +34,28 @@ COPY ./src/install/ ${INST_DIR}
 COPY ./src/admin/ ${ADMIN_DIR}
 
 RUN bash ${INST_DIR}/image_wegovy.sh
+COPY ./src/resources/.bashrc /home/kasm-default-profile/.bashrc
 
 FROM configure AS install-full
 
-RUN bash ${INST_DIR}/firefox/install_firefox.sh
-RUN bash ${INST_DIR}/nginx/install_nginx.sh
-RUN bash ${INST_DIR}/vscode/install_vscode_server.sh
-RUN bash ${INST_DIR}/jupyter/install_jupyter.sh
+ENV JAVA_HOME=/opt/java
+
+RUN mkdir /usr/local/npm-packages
+
+RUN bash ${INST_DIR}/packages/install_python.sh
+RUN python3 ${INST_DIR}/packages/install_code_server.py
+RUN python3 ${INST_DIR}/packages/install_java.py
+RUN python3 ${INST_DIR}/packages/install_nginx.py
+RUN python3 ${INST_DIR}/packages/install_jupyter.py
+RUN python3 ${INST_DIR}/packages/install_uv.py
+RUN python3 ${INST_DIR}/packages/install_typescript.py
+RUN python3 ${INST_DIR}/packages/install_firefox.py
 RUN bash ${INST_DIR}/admin/install_admin.sh
 RUN bash ${INST_DIR}/dtaas_cleanup.sh
 RUN bash ${INST_DIR}/kasm_fixes.sh
+
+RUN chown -R 1000:0 /usr/local/npm-packages
+ENV PATH="${PATH}:/usr/local/npm-packages/bin"
 
 FROM configure AS install-minimal
 
@@ -51,7 +63,8 @@ FROM configure AS install-minimal
 ENV VSCODE_DISABLED=1 \
     JUPYTER_DISABLED=1
 
-RUN bash ${INST_DIR}/nginx/install_nginx.sh
+RUN bash ${INST_DIR}/packages/install_python.sh
+RUN python3 ${INST_DIR}/packages/install_nginx.py
 RUN bash ${INST_DIR}/admin/install_admin.sh
 RUN bash ${INST_DIR}/dtaas_cleanup.sh
 RUN bash ${INST_DIR}/kasm_fixes.sh
@@ -79,6 +92,8 @@ RUN mkdir -p /www/Downloads && \
 
 RUN adduser "$(id -un 1000)" sudo && \
     passwd -d "$(id -un 1000)"
+
+ENV PATH="${PATH}:/home/${MAIN_USER}/.local/bin"
 
 RUN python3 -c "import os, shlex; print('\n'.join(f'export {k}={shlex.quote(v)}' for k, v in os.environ.items()))" >> ${STARTUPDIR}/.docker_set_envs && \
     chmod 755 ${STARTUPDIR}/.docker_set_envs

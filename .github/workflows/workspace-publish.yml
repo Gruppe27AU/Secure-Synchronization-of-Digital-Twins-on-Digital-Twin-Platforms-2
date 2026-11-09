@@ -7,6 +7,7 @@ on:
       - "Dockerfile Lint"
       - "Lint Scripts"
       - "Test All Compose Files"
+      - "Test Fully Installed Workspace Image"
     types:
       - completed
     branches:
@@ -45,7 +46,7 @@ jobs:
 
           # Define required workflows
           # the workflow names must match exactly with those in the required workflow files
-          WORKFLOWS=("Dockerfile Lint" "Lint Scripts" "Test All Compose Files")
+          WORKFLOWS=("Dockerfile Lint" "Lint Scripts" "Test All Compose Files" "Test Fully Installed Workspace Image")
           ALL_SUCCESS=true
 
           for workflow in "${WORKFLOWS[@]}"; do

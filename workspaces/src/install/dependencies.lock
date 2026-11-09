@@ -1,0 +1,84 @@
+{
+  "packages": {
+    "code-server": {
+      "type": "bin-tar",
+      "compression": "gz",
+      "amd64": {
+        "source": "https://github.com/coder/code-server/releases/download/v4.143.1/code-server-4.143.1-linux-amd64.tar.gz",
+        "checksum": "614877cf71005f14ea252bd2d9b1c12237cf7d73681ef150f0dff7f13849fdb5"
+      },
+      "arm64": {
+        "source": "https://github.com/coder/code-server/releases/download/v4.143.1/code-server-4.143.1-linux-arm64.tar.gz",
+        "checksum": "51481a891754dc2585b86d007aec24ac675453fc5ef6cfa346c4462449277384"
+      }
+    },
+    "firefox": {
+      "type": "apt",
+      "ppa": "ppa:mozillateam/ppa",
+      "additionalPackages": ["p11-kit-modules"]
+    },
+    "java": {
+      "type": "bin-tar",
+      "compression": "gz",
+      "amd64": {
+        "source": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_x64_linux_hotspot_25.0.4.1_1.tar.gz",
+        "checksum": "dbb698396d478e7fa2b1e50f4103324b2a99b90569ee27c33f2261f9215cf41e"
+      },
+      "arm64": {
+        "source": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.4.1_1.tar.gz",
+        "checksum": "69df11a02cfa3ef7d7ca645e03edce6778ec090e100f6ae2b42097865730ac52"
+      }
+    },
+    "jupyter": {
+      "type": "pip-venv",
+      "pyPackages": {
+        "jupyterlab": {
+          "version": "4.6.4"
+        },
+        "notebook": {
+          "version": "7.6.3"
+        }
+      }
+    },
+    "nginx": {
+      "type": "apt",
+      "gpgKeyUrl": "https://nginx.org/keys/nginx_signing.key",
+      "repository": "http://nginx.org/packages/ubuntu"
+    },
+    "node": {
+      "type": "bin-tar",
+      "compression": "xz",
+      "amd64": {
+        "source": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz",
+        "checksum": "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997"
+      },
+      "arm64": {
+        "source": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz",
+        "checksum": "406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92"
+      }
+    },
+    "typescript": {
+      "type": "npm",
+      "jsPackages": {
+        "typescript": {
+          "version": "7.0.2"
+        },
+        "tsx": {
+          "version": "4.23.15"
+        },
+        "@types/node": {
+          "version": "26.6.5"
+        }
+      }
+    },
+    "uv": {
+      "type": "pip-venv",
+      "pyPackages": {
+        "uv": {
+          "version": "0.13.3"
+        }
+      }
+    }
+  },
+  "lockVersion": "0.4.0"
+}

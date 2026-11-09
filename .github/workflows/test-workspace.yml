@@ -1,0 +1,131 @@
+name: Test Fully Installed Workspace Image
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'workspaces/src/**'
+      - 'workspaces/Dockerfile.ubuntu.noble.xfce'
+      - '.github/workflows/test-workspace.yml'
+      - '.github/actions/check-connectivity/**'
+      - '.github/actions/check-service-health/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test-workspace-image:
+    name: Build and Test Workspace Image
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.arch.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build workspace image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ./workspaces
+          file: workspaces/Dockerfile.ubuntu.noble.xfce
+          platforms: ${{ matrix.arch.platform }}
+          load: true
+          tags: workspace:latest
+          cache-from: type=gha,scope=full-${{ matrix.arch.platform }}
+          cache-to: type=gha,mode=max,scope=full-${{ matrix.arch.platform }}
+
+      - name: Start services
+        shell: bash
+        run: |
+          docker compose -f workspaces/test/dtaas/compose.yml up -d --no-build
+
+      - name: Check service health
+        uses: ./.github/actions/check-service-health
+        with:
+          compose_file: workspaces/test/dtaas/compose.yml
+
+      - name: Test service endpoint
+        uses: ./.github/actions/check-connectivity
+        with:
+          url: "http://localhost/user1/services"
+          expected_response_code: "200"
+
+      - name: Verify installed binaries are available
+        shell: bash
+        run: |
+          echo "Checking installed binaries..."
+          FAILED=""
+          for binary in python3 uv node npm tsc tsx java javac jupyter nginx firefox code-server; do
+            if docker exec -u 1000 workspace bash -c ". /dockerstartup/.docker_set_envs && which $binary > /dev/null 2>&1"; then
+              if [ "$binary" = "nginx" ]; then
+                VERSION=$(docker exec -u 1000 workspace bash -c ". /dockerstartup/.docker_set_envs && $binary -v 2>&1 | awk 'NR==1'") && rc=0 || rc=$?
+              else
+                VERSION=$(docker exec -u 1000 workspace bash -c ". /dockerstartup/.docker_set_envs && $binary --version 2>/dev/null | awk 'NR==1'") && rc=0 || rc=$?
+              fi
+              if [ $rc -ne 0 ]; then
+                echo "❌ $binary: failed to get version (exit code $rc) - got output: $VERSION"
+                FAILED="$FAILED $binary"
+                continue
+              fi
+              echo "✅ $binary: $VERSION"
+            else
+              echo "❌ $binary: not found on PATH"
+              FAILED="$FAILED $binary"
+            fi
+          done
+          if [ -n "$FAILED" ]; then
+            echo ""
+            echo "Failing binaries:$FAILED"
+            exit 1
+          fi
+
+      - name: Test Jupyter notebook endpoint
+        uses: ./.github/actions/check-connectivity
+        with:
+          url: "http://localhost/user1/tree"
+          expected_response_code: "200"
+
+      - name: Test Jupyter Lab endpoint
+        uses: ./.github/actions/check-connectivity
+        with:
+          url: "http://localhost/user1/lab"
+          expected_response_code: "200"
+
+      - name: Show service logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "TEST FAILED - PRINTING DIAGNOSTICS:"
+          echo ""
+          echo "========================================"
+          echo "|           Services Status            |"
+          echo "========================================"
+          docker compose -f workspaces/test/dtaas/compose.yml ps
+          echo ""
+          echo "========================================"
+          echo "|            Workspace Logs            |"
+          echo "========================================"
+          docker compose -f workspaces/test/dtaas/compose.yml \
+            logs workspace
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f workspaces/test/dtaas/compose.yml down -v
