@@ -79,59 +79,34 @@ jobs:
           - compose_file: workspaces/test/dtaas/compose.yml
             startup_timeout: 30
             connectivity_endpoint: "http://localhost/user/services"
-            connectivity_expected_response_code: "200"
-            use_env_file: false
             basic_test: true
-            tls_test: false
-            no_forward_auth_service: false
-            ignore_health_of_services: ""
           - compose_file: workspaces/test/dtaas/compose.traefik.yml
             startup_timeout: 0
             connectivity_endpoint: "http://localhost/user/services"
-            connectivity_expected_response_code: "200"
-            use_env_file: false
-            basic_test: false
-            tls_test: false
-            no_forward_auth_service: true
-            ignore_health_of_services: ""
           - compose_file: workspaces/test/dtaas/compose.traefik.secure.yml
             startup_timeout: 60
             connectivity_endpoint: "http://localhost/auth"
             connectivity_expected_response_code: "303"
             use_env_file: true
-            basic_test: false
-            tls_test: false
-            no_forward_auth_service: false
-            ignore_health_of_services: "dtaas-traefik-forward-auth-1"
           - compose_file: workspaces/test/dtaas/compose.traefik.secure.tls.yml
             startup_timeout: 60
             connectivity_endpoint: "http://localhost/auth"
             connectivity_expected_response_code: "301"
             use_env_file: true
-            basic_test: false
             tls_test: true
-            no_forward_auth_service: false
-            ignore_health_of_services: "dtaas-traefik-forward-auth-1"
           - compose_file: workspaces/test/dtaas/ci/compose.traefik.secure.yml
             startup_timeout: 180
             connectivity_endpoint: ""
             connectivity_expected_response_code: ""
             use_env_file: true
-            basic_test: false
-            tls_test: false
             dex_test: true
-            no_forward_auth_service: false
-            ignore_health_of_services: ""
           - compose_file: workspaces/test/dtaas/ci/compose.traefik.secure.tls.yml
             startup_timeout: 180
             connectivity_endpoint: ""
             connectivity_expected_response_code: ""
             use_env_file: true
-            basic_test: false
             tls_test: true
             dex_test: true
-            no_forward_auth_service: false
-            ignore_health_of_services: ""
         arch:
           - platform: linux/amd64
             runner: ubuntu-latest
@@ -157,5 +132,4 @@ jobs:
           basic_test: ${{ matrix.composition.basic_test }}
           tls_test: ${{ matrix.composition.tls_test }}
           dex_test: ${{ matrix.composition.dex_test }}
-          no_forward_auth_service: ${{ matrix.composition.no_forward_auth_service }}
           ignore_health_of_services: ${{ matrix.composition.ignore_health_of_services }}

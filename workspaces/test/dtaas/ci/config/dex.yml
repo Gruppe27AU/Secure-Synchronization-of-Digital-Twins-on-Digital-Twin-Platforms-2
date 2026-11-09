@@ -4,9 +4,9 @@
 # GitHub Actions.  It is NOT suitable for production use – credentials are
 # hardcoded and storage is ephemeral (in-memory).
 #
-# Registered client:
-#   ID:     traefik-forward-auth
-#   Secret: ci-test-client-secret
+# Registered clients:
+#   ID: traefik-forward-auth  Secret: ci-test-client-secret
+#   ID: dtaas-workspace        Secret: ci-workspace-secret
 #
 # Test users:
 #   user1@localhost / password
@@ -32,6 +32,13 @@ staticClients:
     redirectURIs:
       - http://localhost/_oauth
       - https://localhost/_oauth
+
+  - id: dtaas-workspace
+    secret: ci-workspace-secret
+    name: DTaaS Workspace (CI)
+    redirectURIs:
+      - http://localhost/login-relay/callback
+      - https://localhost/login-relay/callback
 
 enablePasswordDB: true
 

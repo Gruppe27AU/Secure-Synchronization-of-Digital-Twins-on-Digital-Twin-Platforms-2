@@ -1,0 +1,97 @@
+# ORY Oathkeeper configuration for DTaaS workspace authentication.
+#
+# Authentication:
+#   oauth2_introspection: Validates the dtaas_access_token cookie via login-relay,
+#   which acts as an OIDC gateway and forwards the request to Keycloak.
+#   Returns 401 if token is expired/revoked.
+#
+# Authorization:
+#   remote_json: Calls login-relay /authz/workspace/<user> server-to-server.
+#   Checks that preferred_username from introspection matches the URL path prefix.
+#
+# Session lifecycle:
+#   - Browser authenticates via authorization-code flow; login-relay sets dtaas_access_token cookie
+#   - Cookie max_age matches the token's expires_in from the authorization-code exchange
+#   - On expiry, Oathkeeper redirects to login-relay to re-authenticate
+#
+# User identity headers (X-User-Name, X-User-Subject, X-User-Groups) are injected
+# by the header mutator and forwarded by Traefik's forwardAuth to upstream services.
+# Path-based routing to workspace containers is handled by Traefik rules (not nginx).
+# Traefik uses the decision API (port 4456) via forwardAuth middleware.
+
+serve:
+  proxy:
+    port: 4455
+    host: "0.0.0.0"
+  api:
+    port: 4456
+    host: "0.0.0.0"
+
+access_rules:
+  matching_strategy: regexp
+  repositories:
+    - file:///tmp/access-rules.yml
+
+log:
+  level: info
+  format: json
+
+errors:
+  # All errors redirect to the login-relay. For unauthorized/not_found this
+  # initiates a Keycloak authorization-code flow. For forbidden (wrong-user workspace access),
+  # the login-relay detects the mismatch via the dtaas_access_token cookie and
+  # returns 403 directly, breaking what would otherwise be a redirect loop.
+  fallback:
+    - redirect
+  handlers:
+    redirect:
+      enabled: true
+      config:
+        to: "${LOGIN_RELAY_URL}"
+        # Append the original request URL as ?return_to=<url> so the login-relay
+        # can redirect the user back to their workspace after Keycloak login.
+        return_to_query_param: return_to
+    json:
+      enabled: true
+      config:
+        verbose: false
+
+authenticators:
+  noop:
+    enabled: true
+
+  oauth2_introspection:
+    enabled: true
+    config:
+      # login-relay acts as the OIDC gateway — it forwards introspection requests
+      # to Keycloak using its own client credentials and returns the response.
+      # Oathkeeper only needs to know about login-relay, not Keycloak directly.
+      introspection_url: "http://login-relay:8080/token/introspect"
+
+authorizers:
+  allow:
+    enabled: true
+
+  deny:
+    enabled: true
+
+  remote_json:
+    enabled: true
+    config:
+      # Global defaults required by the Oathkeeper v26 schema when remote_json
+      # is enabled. Per-rule config in access-rules.yml overrides remote with
+      # the user-specific URL (http://login-relay:8080/authz/workspace/<user>).
+      remote: http://login-relay:8080/authz/workspace/default
+      payload: '{"subject":{"id":{{ .Subject | toJson }},"extra":{{ .Extra | toJson }}}}'
+
+mutators:
+  noop:
+    enabled: true
+
+  header:
+    enabled: true
+    config:
+      headers:
+        X-User-Name: "{{ print .Extra.username }}"
+        X-User-Subject: "{{ .Subject }}"
+        X-User-Groups: "{{ .Extra.groups | toJson }}"

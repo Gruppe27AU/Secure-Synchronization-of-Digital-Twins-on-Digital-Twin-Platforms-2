@@ -1,0 +1,74 @@
+# CI access rules — Dex OIDC provider, TLS compose.
+#
+# Uses authorizer: allow for workspace rules because Dex tokens include a
+# "name" claim (not "username"/"preferred_username"), so the production
+# remote_json RBAC check would reject all requests.  Authentication via
+# oauth2_introspection is still tested end-to-end.
+#
+# Known gap — RBAC E2E isolation:
+# Cross-user access control (user1 cannot reach /user2) is NOT enforced here
+# because the authorizer is allow, not remote_json.  This gap exists because
+# Dex's introspection response omits the username/preferred_username claim that
+# login-relay's /authz/workspace/<user> endpoint requires; switching to
+# remote_json would cause all workspace requests to fail with 403 in CI.
+# RBAC isolation logic is covered by TestAuthzWorkspace unit tests in
+# login-relay/tests/test_main.py.  Full E2E RBAC coverage requires a Keycloak
+# stack (compose.traefik.secure.tls.yml) where the correct claims are present.
+
+# Rule 1: user1 workspace.
+- id: dtaas-user1-workspace
+  version: "v0.36.0-beta.1"
+  match:
+    url: "<^https?://[^/]*/user1(/.*)?$>"
+    methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          cookie: dtaas_access_token
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop
+
+# Rule 2: user2 workspace.
+- id: dtaas-user2-workspace
+  version: "v0.36.0-beta.1"
+  match:
+    url: "<^https?://[^/]*/user2(/.*)?$>"
+    methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          cookie: dtaas_access_token
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop
+
+# Rule 3: login-relay and logout — public.
+- id: dtaas-login-relay-public
+  version: "v0.36.0-beta.1"
+  match:
+    url: "<^https?://[^/]*/(login-relay.*|logout)$>"
+    methods: [GET]
+  authenticators:
+    - handler: noop
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop
+
+# Rule 4: health check — public.
+- id: dtaas-public-health
+  version: "v0.36.0-beta.1"
+  match:
+    url: "<^https?://[^/]*/health$>"
+    methods: [GET, HEAD]
+  authenticators:
+    - handler: noop
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop

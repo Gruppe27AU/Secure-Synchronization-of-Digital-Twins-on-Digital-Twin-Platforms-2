@@ -1,0 +1,150 @@
+# DTaaS Oathkeeper access rules.
+# Oathkeeper validates tokens via Keycloak token introspection (authentication).
+# Authorization (RBAC) is delegated to login-relay via the remote_json authorizer
+# on workspace rules, which checks that the token's username matches the path prefix.
+#
+# IMPORTANT — Oathkeeper v26 with regexp matching_strategy requires EXACTLY ONE
+# rule to match per request. Overlapping rules cause a 500 "multiple rules" error.
+# Every URL pattern must be non-overlapping.
+#
+# Unknown paths (e.g. /user1 when USERNAME1=sandra) match no rule → Oathkeeper
+# returns a "no rule matched" error → fallback redirect fires → login-relay.
+# The login-relay normalises unknown return_to paths to "/" to prevent redirect
+# loops: after Keycloak login the user lands at the SPA root instead of looping.
+
+# Rule 1: SPA gateway — known SPA paths require an active token (cookie).
+#
+# NOTE — X-User-* header spoofing on the SPA route:
+# The noop mutator means Oathkeeper does not set X-User-Name/Subject/Groups
+# for SPA requests, so Traefik does not inject those authResponseHeaders here.
+# However, Traefik does not strip inbound X-User-* headers by default, so a
+# client-supplied X-User-Name could reach client:4000 on this route.
+# The DTaaS SPA (client:4000) does not currently trust these headers for access
+# control — it reads identity from the Keycloak token directly. If that ever
+# changes, add a Traefik middleware to strip inbound X-User-* headers on this
+# route before enabling header-based authz on the SPA.
+- id: dtaas-spa-gateway
+  version: "v0.36.0-beta.1"
+  description: >
+    Requires an active dtaas-workspace token (cookie: dtaas_access_token),
+    validated via Keycloak introspection.
+    Proxies to the DTaaS web client. Covers the SPA root and known sub-paths.
+  match:
+    url: "<^https?://[^/]*(/($|assets(/.*)?$|library(/.*)?$|digitaltwins(/.*)?$|preview(/.*)?$|create(/.*)?$|env\\.js$|static(/.*)?$|favicon\\.ico$|manifest\\.json$|logo[^/]*\\.(png|svg|ico)$))?$>"
+    methods:
+      - GET
+      - HEAD
+      - POST
+      - OPTIONS
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          cookie: dtaas_access_token
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop
+
+# Rule 2: user1 workspace.
+- id: dtaas-user1-workspace
+  version: "v0.36.0-beta.1"
+  description: >
+    Requires an active Keycloak token whose preferred_username matches the path
+    prefix (${USERNAME1}), validated via introspection. The remote_json authorizer
+    delegates the username check to login-relay, which returns 200 only when the
+    token belongs to that user.
+  match:
+    url: "<^https?://[^/]*/${USERNAME1}(/.*)?$>"
+    methods:
+      - GET
+      - HEAD
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          header: Authorization
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          cookie: dtaas_access_token
+  authorizer:
+    handler: remote_json
+    config:
+      remote: http://login-relay:8080/authz/workspace/${USERNAME1}
+      payload: '{"subject":{"id":{{ .Subject | toJson }},"extra":{{ .Extra | toJson }}}}'
+  mutators:
+    - handler: header
+
+# Rule 3: user2 workspace.
+- id: dtaas-user2-workspace
+  version: "v0.36.0-beta.1"
+  description: >
+    Requires an active Keycloak token whose preferred_username matches the path
+    prefix (${USERNAME2}), validated via introspection. The remote_json authorizer
+    delegates the username check to login-relay, which returns 200 only when the
+    token belongs to that user.
+  match:
+    url: "<^https?://[^/]*/${USERNAME2}(/.*)?$>"
+    methods:
+      - GET
+      - HEAD
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+  authenticators:
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          header: Authorization
+    - handler: oauth2_introspection
+      config:
+        token_from:
+          cookie: dtaas_access_token
+  authorizer:
+    handler: remote_json
+    config:
+      remote: http://login-relay:8080/authz/workspace/${USERNAME2}
+      payload: '{"subject":{"id":{{ .Subject | toJson }},"extra":{{ .Extra | toJson }}}}'
+  mutators:
+    - handler: header
+
+# Rule 4: login-relay and logout — public, no authentication required.
+- id: dtaas-login-relay-public
+  version: "v0.36.0-beta.1"
+  description: >
+    Allow unauthenticated GET access to the login-relay and /logout.
+  match:
+    url: "<^https?://[^/]*/(login-relay.*|logout)$>"
+    methods:
+      - GET
+  authenticators:
+    - handler: noop
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop
+
+# Rule 5: health check — public, no authentication required.
+- id: dtaas-public-health
+  version: "v0.36.0-beta.1"
+  description: >
+    Allow unauthenticated GET/HEAD access to health-check endpoints.
+  match:
+    url: "<^https?://[^/]*/health$>"
+    methods:
+      - GET
+      - HEAD
+  authenticators:
+    - handler: noop
+  authorizer:
+    handler: allow
+  mutators:
+    - handler: noop

@@ -36,10 +36,6 @@ inputs:
     description: Whether to run the TLS test (true/false)
     required: false
     default: false
-  no_forward_auth_service:
-    description: Whether the composition has a forward-auth service (true/false)
-    required: false
-    default: false
   ignore_health_of_services:
     description: Comma-separated list of service names to ignore in health check (e.g. "service1,service2")
     required: false
@@ -175,6 +171,29 @@ runs:
         url: ${{ inputs.connectivity_endpoint }}
         expected_response_code: ${{ inputs.connectivity_expected_response_code }}
 
+    - name: Wait for workspace admin service to be ready
+      if: ${{ inputs.dex_test == 'true' }}
+      shell: bash
+      run: |
+        echo "Waiting for admin service inside user1 to respond on port 8091..."
+        max_attempts=24
+        for i in $(seq 1 $max_attempts); do
+          code=$(docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
+            exec -T user1 bash -c \
+            "curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/user1/services 2>/dev/null" \
+            2>/dev/null || echo "000")
+          if [ "$code" = "200" ]; then
+            echo "✅ Admin service ready (HTTP $code) on attempt $i"
+            break
+          fi
+          if [ "$i" = "$max_attempts" ]; then
+            echo "❌ Admin service not ready after $max_attempts attempts (last HTTP code: $code)"
+            exit 1
+          fi
+          echo "Attempt $i/$max_attempts: admin returned HTTP $code — retrying in 5s"
+          sleep 5
+        done
+
     - name: Verify auth is enforced (expect redirect, not 200)
       if: ${{ inputs.dex_test == 'true' }}
       shell: bash
@@ -196,8 +215,16 @@ runs:
       shell: bash
       run: |
         pip install --quiet requests
-        python3 workspaces/test/dtaas/ci/scripts/ci_auth_login.py \
-          http://localhost user1 http://dex:5556 password
+        if [ "${{ inputs.tls_test }}" = "true" ]; then
+          python3 workspaces/test/dtaas/ci/scripts/ci_auth_login.py \
+            --path services \
+            --ca-bundle workspaces/test/dtaas/ci/certs/rootCA.crt \
+            https://localhost user1 http://dex:5556 password
+        else
+          python3 workspaces/test/dtaas/ci/scripts/ci_auth_login.py \
+            --path services \
+            http://localhost user1 http://dex:5556 password
+        fi
 
     - name: Test HTTP to HTTPS redirect
       if: ${{ inputs.tls_test == 'true' }}
@@ -249,14 +276,6 @@ runs:
             logs traefik
           echo ""
         fi
-        if [ "${{ inputs.basic_test }}" = "false" ] && [ "${{ inputs.no_forward_auth_service }}" = "false" ]; then
-          echo "========================================"
-          echo "|      Traefik Forward Auth Logs       |"
-          echo "========================================"
-          docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
-            logs traefik-forward-auth
-          echo ""
-        fi
         if [ "${{ inputs.dex_test }}" = "true" ]; then
           echo "========================================"
           echo "|       Dex Authentication Logs        |"
@@ -264,7 +283,43 @@ runs:
           docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
             logs dex
           echo ""
+          echo "========================================"
+          echo "|          Oathkeeper Logs             |"
+          echo "========================================"
+          docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
+            logs oathkeeper 2>/dev/null || echo "(oathkeeper not in this compose)"
+          echo ""
+          echo "========================================"
+          echo "|         Login-Relay Logs             |"
+          echo "========================================"
+          docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
+            logs login-relay 2>/dev/null || echo "(login-relay not in this compose)"
+          echo ""
+          echo "========================================"
+          echo "|    Admin Service Process Status      |"
+          echo "========================================"
+          docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
+            exec -T user1 bash -c \
+            "ps aux | grep -E 'workspace-admin|uvicorn' | grep -v grep" \
+            2>/dev/null || echo "(exec failed - container may have exited)"
+          echo ""
+          echo "========================================"
+          echo "|   Admin Service Direct Curl Test     |"
+          echo "========================================"
+          docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
+            exec -T user1 bash -c \
+            "curl -sv http://localhost:8091/user1/services 2>&1" \
+            2>/dev/null || echo "(curl inside user1 failed)"
+          echo ""
+          echo "========================================"
+          echo "|   Nginx → Admin Proxy Curl Test      |"
+          echo "========================================"
+          docker compose -f ${{ inputs.compose_file }} $ENV_FILE_ARG \
+            exec -T user1 bash -c \
+            "curl -sv http://localhost:8080/user1/services 2>&1" \
+            2>/dev/null || echo "(curl via nginx inside user1 failed)"
         fi
+        echo ""
         echo "========================================"
         echo "|            Workspace Logs            |"
         echo "========================================"

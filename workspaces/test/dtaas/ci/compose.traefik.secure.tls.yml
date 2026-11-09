@@ -1,30 +1,30 @@
-# Self-contained CI compose for testing Traefik OAuth2 authorization over HTTPS.
+# Self-contained CI compose for testing Oathkeeper + login-relay auth over HTTPS.
 #
 # Intended ONLY for GitHub Actions – do NOT use in production.
+#
+# Replaces traefik-forward-auth with the production Oathkeeper + login-relay
+# architecture so CI tests the same auth flow used in production.
+# Dex is used as a lightweight OIDC provider instead of Keycloak.
+# login-relay is configured via OIDC_* overrides to point at Dex's endpoints.
 #
 # Prerequisites (handled automatically by the CI workflow):
 #   1. Generate mkcert certificates in workspaces/test/dtaas/ci/certs/
 #        fullchain.pem  (certificate)
 #        privkey.pem    (private key)
-#        rootCA.crt     (mkcert root CA, used to build the forward-auth image)
-#   2. Build the CA-aware traefik-forward-auth image:
-#        docker build -t traefik-forward-auth-local:latest \
-#            workspaces/test/dtaas/ci/certs/
+#   2. Build the workspace image:
+#        docker build -t workspace:latest -f Dockerfile .
 #
 # Usage:
 #   docker compose -f workspaces/test/dtaas/ci/compose.traefik.secure.tls.yml up -d
 #
-# The CI runner must add "127.0.0.1 dex" to /etc/hosts so that the OAuth
-# redirect from traefik-forward-auth (pointing at http://dex:5556/...) can be
-# followed by curl/Python running on the host.
+# The CI runner must add "127.0.0.1 dex" to /etc/hosts so that Dex redirect
+# URIs (http://dex:5556/...) resolve correctly from the host.
 
 name: workspace-ci-tls
 
 services:
 
   # ── Dex OIDC provider ──────────────────────────────────────────────────────
-  # Dex itself runs over plain HTTP on port 5556.  The redirect URI it issues
-  # back to the browser is https://localhost/_oauth (registered in dex.yml).
   dex:
     image: dexidp/dex:v2.41.1
     restart: unless-stopped
@@ -63,39 +63,79 @@ services:
       - frontend
       - users
 
-  # ── traefik-forward-auth (OIDC via Dex, CA-aware image) ───────────────────
-  # Uses a custom image that embeds the mkcert root CA so that HTTPS redirects
-  # through localhost are validated instead of rejected.
-  traefik-forward-auth:
-    image: traefik-forward-auth-local:latest
+  # ── Oathkeeper (forwardAuth decision API) ─────────────────────────────────
+  # Validates dtaas_access_token cookies via login-relay's introspection proxy.
+  # Traefik calls the decision API (port 4456) via forwardAuth middleware.
+  oathkeeper:
+    image: oryd/oathkeeper:v26.2.0
     restart: unless-stopped
-    environment:
-      - LOG_LEVEL=trace
-      - DEFAULT_PROVIDER=oidc
-      # Internal Docker network URL for the OIDC discovery document fetch.
-      - PROVIDERS_OIDC_ISSUER_URL=http://dex:5556/dex
-      - PROVIDERS_OIDC_CLIENT_ID=traefik-forward-auth
-      - PROVIDERS_OIDC_CLIENT_SECRET=ci-test-client-secret
-      - SECRET=ci-test-hmac-secret-at-least-32-chars!!
-      # No INSECURE_COOKIE – cookies must be Secure over HTTPS.
-      - CONFIG=/conf
-      - AUTH_HOST=localhost
-      - COOKIE_DOMAIN=localhost
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        sed \
+          -e 's|$${LOGIN_RELAY_URL}|'"$$LOGIN_RELAY_URL"'|g' \
+          /etc/oathkeeper/config/oathkeeper.yml > /tmp/oathkeeper.yml &&
+        cp /etc/oathkeeper/rules/access-rules.yml /tmp/access-rules.yml &&
+        oathkeeper serve -c /tmp/oathkeeper.yml
     volumes:
-      - ./config/conf:/conf
+      - "../oathkeeper:/etc/oathkeeper/config"
+      - "./oathkeeper:/etc/oathkeeper/rules"
+    environment:
+      - LOGIN_RELAY_URL=https://localhost/login-relay
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.redirect.entryPoints=web-secure"
-      - "traefik.http.routers.redirect.rule=Host(`localhost`) && PathPrefix(`/_oauth`)"
-      - "traefik.http.routers.redirect.tls=true"
-      - "traefik.http.middlewares.traefik-forward-auth.forwardauth.address=http://traefik-forward-auth:4181"
-      - "traefik.http.middlewares.traefik-forward-auth.forwardauth.authResponseHeaders=X-Forwarded-User"
-      - "traefik.http.services.traefik-forward-auth.loadbalancer.server.port=4181"
-    depends_on:
-      - dex
+      - "traefik.http.middlewares.oathkeeper-auth.forwardauth.address=http://oathkeeper:4456/decisions"
+      - "traefik.http.middlewares.oathkeeper-auth.forwardauth.authResponseHeaders=X-User-Name,X-User-Subject,X-User-Groups"
     networks:
       - frontend
       - users
+    depends_on:
+      - dex
+
+  # ── login-relay (Keycloak auth code relay, configured for Dex in CI) ───────
+  login-relay:
+    build:
+      context: ../login-relay
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    environment:
+      - SERVER_DNS=localhost
+      - KEYCLOAK_CLIENT_ID=dtaas-workspace
+      - KEYCLOAK_CLIENT_SECRET=ci-workspace-secret
+      # Placeholder values — unused when OIDC_* overrides below are set,
+      # but KEYCLOAK_PUBLIC_URL and KEYCLOAK_REALM are required env vars.
+      - KEYCLOAK_PUBLIC_URL=http://dex:5556
+      - KEYCLOAK_INTERNAL_URL=http://dex:5556
+      - KEYCLOAK_REALM=dex
+      # Dex endpoint overrides (replace Keycloak-derived URLs).
+      - OIDC_AUTH_URL_PUBLIC=http://dex:5556/dex/auth
+      - OIDC_TOKEN_URL_INTERNAL=http://dex:5556/dex/token
+      - OIDC_JWKS_URL_INTERNAL=http://dex:5556/dex/keys
+      - OIDC_INTROSPECTION_URL_INTERNAL=http://dex:5556/dex/token/introspection
+      - OIDC_ISSUER=http://dex:5556/dex
+      - WORKSPACE_USERS=user1,user2
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.login-relay.entryPoints=web-secure"
+      - "traefik.http.routers.login-relay.rule=Host(`localhost`) && (PathPrefix(`/login-relay`) || Path(`/logout`))"
+      - "traefik.http.routers.login-relay.tls=true"
+      - "traefik.http.routers.login-relay.middlewares=login-relay-ratelimit"
+      - "traefik.http.services.login-relay.loadbalancer.server.port=8080"
+      - "traefik.http.middlewares.login-relay-ratelimit.ratelimit.average=20"
+      - "traefik.http.middlewares.login-relay-ratelimit.ratelimit.burst=10"
+      - "traefik.http.middlewares.login-relay-ratelimit.ratelimit.period=1m"
+    networks:
+      - frontend
+      - users
+    depends_on:
+      - dex
 
   # ── user1 workspace ────────────────────────────────────────────────────────
   user1:
@@ -112,17 +152,17 @@ services:
       - "traefik.http.routers.u1.entryPoints=web-secure"
       - "traefik.http.routers.u1.rule=Host(`localhost`) && PathPrefix(`/user1`)"
       - "traefik.http.routers.u1.tls=true"
-      - "traefik.http.routers.u1.middlewares=traefik-forward-auth"
+      - "traefik.http.services.u1.loadbalancer.server.port=8080"
+      - "traefik.http.routers.u1.middlewares=oathkeeper-auth"
     networks:
       - users
 
   # ── user2 workspace ────────────────────────────────────────────────────────
   user2:
-    image: mltooling/ml-workspace-minimal:0.13.2
+    image: workspace:latest
     restart: unless-stopped
     environment:
-      - AUTHENTICATE_VIA_JUPYTER=
-      - WORKSPACE_BASE_URL=user2
+      - MAIN_USER=user2
     volumes:
       - ./files/user2:/workspace
       - ./files/common:/workspace/common
@@ -132,7 +172,8 @@ services:
       - "traefik.http.routers.u2.entryPoints=web-secure"
       - "traefik.http.routers.u2.rule=Host(`localhost`) && PathPrefix(`/user2`)"
       - "traefik.http.routers.u2.tls=true"
-      - "traefik.http.routers.u2.middlewares=traefik-forward-auth"
+      - "traefik.http.services.u2.loadbalancer.server.port=8080"
+      - "traefik.http.routers.u2.middlewares=oathkeeper-auth"
     networks:
       - users
 

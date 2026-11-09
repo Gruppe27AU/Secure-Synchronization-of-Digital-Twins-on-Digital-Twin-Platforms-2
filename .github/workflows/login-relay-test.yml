@@ -1,0 +1,38 @@
+name: Login Relay Test
+
+on:
+  push:
+    paths:
+      - 'workspaces/test/dtaas/login-relay/**'
+      - '.github/workflows/login-relay-test.yml'
+  pull_request:
+    paths:
+      - 'workspaces/test/dtaas/login-relay/**'
+      - '.github/workflows/login-relay-test.yml'
+  workflow_dispatch:
+
+jobs:
+  run-tests:
+    name: Test Login Relay
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: workspaces/test/dtaas/login-relay
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pytest
+        run: |
+          pytest --tb=short

@@ -16,7 +16,11 @@ The `compose.traefik.secure.yml` file sets up:
 
 - **Traefik** reverse proxy on port 80
 - **Keycloak** identity provider with OIDC support
-- **traefik-forward-auth** for OIDC authentication
+- **Oathkeeper** — JWT proxy; validates tokens and forwards authenticated
+  requests to workspaces
+- **login-relay** — lightweight login relay service; initiates the Keycloak
+  authorization code flow and sets the `dtaas_access_token` cookie after
+  successful authentication
 - **client** - DTaaS web interface
 - **user1** workspace using the workspace image
 - **user2** workspace using the mltooling/ml-workspace-minimal image
@@ -25,24 +29,8 @@ The `compose.traefik.secure.yml` file sets up:
 ## ⚙️ Initial Configuration
 
 Please follow the steps in [`CONFIGURATION.md`](CONFIGURATION.md)
-for the `compose.traefik.secure.yml` composition AND the setup instructions
-for Keycloak in [`KEYCLOAK_SETUP.md`](KEYCLOAK_SETUP.md) before building
+for the `compose.traefik.secure.yml` composition before building
 the workspace and running the setup.
-
-### Create Workspace Files
-
-All the deployment options require user directories for
-storing workspace files. These need to
-be created for `USERNAME1` and `USERNAME2` set in
-`workspaces/test/dtaas/config/.env` file.
-
-```bash
-# create required files
-cp -R workspaces/test/dtaas/files/user1 workspaces/test/dtaas/files/<USERNAME1>
-cp -R workspaces/test/dtaas/files/user1 workspaces/test/dtaas/files/<USERNAME2>
-# set file permissions for use inside the container
-sudo chown -R 1000:100 workspaces/test/dtaas/files
-```
 
 ## :rocket: Start Services
 
@@ -56,92 +44,47 @@ This will:
 
 1. Start the Traefik reverse proxy on port 80
 2. Start Keycloak identity provider at `/auth`
-3. Start traefik-forward-auth for OIDC authentication
-4. Start the DTaaS web client interface
-5. Start workspace instances for both users
+3. Start Oathkeeper JWT proxy (validates tokens, routes workspace traffic)
+4. Start the login-relay service at `/login-relay`
+5. Start the DTaaS web client interface
+6. Start workspace instances for both users
 
 **Note**: First-time startup may take a few minutes for Keycloak to initialize.
 
 ## :gear: Configure Keycloak
 
-After starting the services, you need to configure Keycloak.
-See [KEYCLOAK_SETUP.md](KEYCLOAK_SETUP.md) for detailed instructions.
-
-Quick steps:
-
-1. For non-`localhost` scenarios, **Disable SSL requirement** on
-   the new realm (see below)
-2. Access Keycloak at `http://<SERVER_DNS>/auth`
-3. Login with admin credentials from `.env`
-4. Create a realm named `dtaas` (or match your `KEYCLOAK_REALM`)
-5. Create an OIDC client named `dtaas-workspace`
-6. Create users in Keycloak
-7. Update `.env` with the client secret
-8. Restart services
-
-### Disable Realm SSL Requirement (HTTP only)
-
-Keycloak defaults all realms to `sslRequired=external`, which rejects HTTP
-requests arriving from non-localhost addresses. Since this composition runs
-over plain HTTP behind Traefik, you must disable the SSL requirement for
-the **master** realm and any new realm you create.
-
-Using the Keycloak CLI inside the container:
-
-```bash
-# Authenticate to the Keycloak admin CLI
-docker exec dtaas-keycloak-1 /opt/keycloak/bin/kcadm.sh \
-  config credentials --server http://localhost:8080/auth \
-  --realm master --user <KEYCLOAK_ADMIN> --password <KEYCLOAK_ADMIN_PASSWORD>
-
-# Disable SSL on the master realm
-docker exec dtaas-keycloak-1 /opt/keycloak/bin/kcadm.sh \
-  update realms/master -s sslRequired=NONE
-
-# Disable SSL on the dtaas realm (after creating it)
-docker exec dtaas-keycloak-1 /opt/keycloak/bin/kcadm.sh \
-  update realms/dtaas -s sslRequired=NONE
-```
-
-Replace `<KEYCLOAK_ADMIN>` and `<KEYCLOAK_ADMIN_PASSWORD>` with the values
-from your `.env` file.
-
-Alternatively, you can do this via the Keycloak Admin Console:
-
-1. Go to **Realm Settings** → **General**
-2. Set **Require SSL** to **None**
-3. Save. Repeat for each realm.
+After starting the services, Keycloak must be configured.
+To do this, follow the steps in [KEYCLOAK_SETUP.md](./KEYCLOAK_SETUP.md).
 
 ## :technologist: Accessing Workspaces
 
-Once all services are running and Keycloak is configured, access them through Traefik at `http://localhost`.
+Once all services are running and Keycloak is configured, access them through Traefik at `http://<DOMAIN_NAME>`.
 
 ### Initial Access
 
-1. Navigate to `http://localhost` in your web browser
+1. Navigate to `http://<DOMAIN_NAME>` in your web browser
 2. You will be redirected to Keycloak for authentication
 3. Log in with a user you created in Keycloak
 4. You will be redirected back to the DTaaS web interface
 
 ### Keycloak Admin Console
 
-- **URL**: `http://localhost/auth`
+- **URL**: `http://<DOMAIN_NAME>/auth`
 - Access to manage users, roles, clients, and authentication settings
 - Login with `KEYCLOAK_ADMIN` credentials from `.env`
 
 ### DTaaS Web Client
 
-- **URL**: `http://localhost/`
-- Access to the main DTaaS web interface (requires authentication)
+- **URL**: `http://<DOMAIN_NAME>/`
 
-### User1 Workspace (workspace)
+### User1 Workspace
 
 All endpoints require authentication:
 
-- **VNC Desktop**: `http://localhost/user1/tools/vnc`
-- **VS Code**: `http://localhost/user1/tools/vscode`
-- **Jupyter Notebook**: `http://localhost/user1`
-- **Jupyter Lab**: `http://localhost/user1/lab`
+- **VNC Desktop**: `http://<DOMAIN_NAME>/user1/tools/vnc`
+- **VS Code**: `http://<DOMAIN_NAME>/user1/tools/vscode`
+- **Jupyter Notebook**: `http://<DOMAIN_NAME>/user1`
+- **Jupyter Lab**: `http://<DOMAIN_NAME>/user1/lab`
 
 #### Service Discovery
 
@@ -152,7 +95,7 @@ for frontend applications.
 **Example**: Get service list for user1
 
 ```bash
-curl http://localhost/user1/services
+curl http://<DOMAIN_NAME>/user1/services
 ```
 
 **Response**:
@@ -186,23 +129,17 @@ The endpoint values are dynamically populated with the user's username from the
 `MAIN_USER` environment variable. This variable corresponds to `USERNAME1` of
 `.env` file.
 
-### User2 Workspace (ml-workspace-minimal)
+### User2 Workspace
 
-All endpoints require authentication:
+- **VNC Desktop**: `http://<DOMAIN_NAME>/user2/tools/vnc`
+- **VS Code**: `http://<DOMAIN_NAME>/user2/tools/vscode`
+- **Jupyter Notebook**: `http://<DOMAIN_NAME>/user2`
+- **Jupyter Lab**: `http://<DOMAIN_NAME>/user2/lab`
 
-- **VNC Desktop**: `http://localhost/user2/tools/vnc/?password=vncpassword`
-- **VS Code**: `http://localhost/user2/tools/vscode/`
-- **Jupyter Notebook**: `http://localhost/user2`
-- **Jupyter Lab**: `http://localhost/user2/lab`
+### Logging Out
+When logged in as one of the users:
 
-### Custom URL
-
-Remember to change the following variables in URLs to the variable values
-specified in `.env`:
-
-- Change `user1` to `USERNAME1` value
-- Change `user2` to `USERNAME2` value
-- Change `localhost` in URL to the `SERVER_DNS` value
+- **URL**: `https://<DOMAIN_NAME>/logout`
 
 ## 🛑 Stopping Services
 
@@ -217,95 +154,7 @@ docker compose -f workspaces/test/dtaas/compose.traefik.secure.yml \
 
 ### Adding More Users
 
-To add additional workspace instances, add a new service in `compose.traefik.secure.yml`:
-
-```yaml
-  user3:
-    image: workspace:latest
-    restart: unless-stopped
-    build:
-      context: .
-      dockerfile: ../Dockerfile.ubuntu.noble.xfce
-    environment:
-      - MAIN_USER=${USERNAME3:-user3}
-    volumes:
-      - ./files/user3:/workspace
-      - ./files/common:/workspace/common
-    shm_size: 512m
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.u3.entryPoints=web"
-      - "traefik.http.routers.u3.rule=Host(`${SERVER_DNS}`) && PathPrefix(`/${USERNAME3:-user3}`)"
-      - "traefik.http.routers.u3.middlewares=traefik-forward-auth"
-    networks:
-      - users
-```
-
-Add the desired `USERNAME3` variable in `.env`:
-
-```bash
-# Username Configuration
-# These usernames will be used as path prefixes for user workspaces
-# Example: http://localhost/user1, http://localhost/user2
-USERNAME1=user1
-USERNAME2=user2
-USERNAME3=user3 # <--- replace "user3" with your desired username
-```
-
-And, setup the base structure of the persistent directories for the new user:
-
-```bash
-cp -r workspaces/test/dtaas/files/user1 workspaces/test/dtaas/files/user3
-sudo chown -R 1000:100 workspaces/test/dtaas/files
-```
-
-### Using a Different OAuth Provider
-
-traefik-forward-auth supports multiple OAuth providers including GitLab, Google, Okta, and generic OAuth2.
-
-**To use GitLab instead of Keycloak:**
-
-1. Update the traefik-forward-auth environment in `compose.traefik.secure.yml`:
-
-   ```yaml
-   environment:
-     - DEFAULT_PROVIDER=generic-oauth
-     - PROVIDERS_GENERIC_OAUTH_AUTH_URL=${OAUTH_URL}/oauth/authorize
-     - PROVIDERS_GENERIC_OAUTH_TOKEN_URL=${OAUTH_URL}/oauth/token
-     - PROVIDERS_GENERIC_OAUTH_USER_URL=${OAUTH_URL}/api/v4/user
-     - PROVIDERS_GENERIC_OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}
-     - PROVIDERS_GENERIC_OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
-     - PROVIDERS_GENERIC_OAUTH_SCOPE=read_user
-   ```
-
-2. Remove the `keycloak` service from the compose file
-3. Configure GitLab OAuth application (see [CONFIGURATION.md](CONFIGURATION.md))
-4. Update `.env` with GitLab OAuth credentials
-
-See [traefik-forward-auth documentation][tfa-docs] for other providers.
-
-[tfa-docs]: https://github.com/thomseddon/traefik-forward-auth
-
-### Using External Keycloak
-
-To use an external Keycloak instance instead of the embedded one:
-
-1. Update `KEYCLOAK_ISSUER_URL` in `.env`:
-
-   ```bash
-   KEYCLOAK_ISSUER_URL=https://keycloak.example.com/auth/realms/dtaas
-   ```
-
-2. Remove the `keycloak` service from compose file (optional)
-3. Configure the client in your external Keycloak
-4. Update `.env` with client credentials
-
-**Minimal changes required!**
-
-## 🤖 Automated CI Testing
-
-For automated CI testing with Dex OIDC (no real OAuth provider needed),
-see the dedicated documentation in [`ci/README.md`](ci/README.md).
+Follow the appropriate steps in [ADDING_MORE_USER.md](./ADDING_MORE_USERS.md).
 
 ## :shield: Security Considerations
 

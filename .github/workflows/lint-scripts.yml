@@ -40,6 +40,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install flake8 pylint
+          pip install -r workspaces/test/dtaas/login-relay/requirements.txt
 
       - name: Run flake8
         run: |

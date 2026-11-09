@@ -22,54 +22,51 @@ Obtain certificates from a Certificate Authority (CA) like:
 - [ZeroSSL](https://zerossl.com/) (Free)
 - Commercial CA (Paid)
 
+Using Let's Encrypt with Certbot:
+
+```bash
+sudo apt-get update
+sudo apt-get install certbot
+
+sudo certbot certonly --standalone -d <DOMAIN_NAME>
+
+sudo cp /etc/letsencrypt/live/<DOMAIN_NAME>/fullchain.pem ./certs/
+sudo cp /etc/letsencrypt/live/<DOMAIN_NAME>/privkey.pem ./certs/
+sudo chown $USER:$USER ./certs/*.pem
+chmod 644 ./certs/fullchain.pem
+chmod 600 ./certs/privkey.pem
+```
+
 ### For Testing/Development
 
-Generate self-signed certificates, inject them into a local
-version of the forward auth image, and update the compose file
-to use the local image.
-Disregard this directory's usual requirement of the presence of
-the private key and full certificate chain.
+Generate self-signed certificates using
+[mkcert](https://github.com/FiloSottile/mkcert). The mkcert root CA must
+be trusted by your browser so that `https://<DOMAIN_NAME>` works without
+certificate warnings.
 
-(Ensure that your `/etc/hosts` file point your domain to 127.0.0.1)
+Ensure your `/etc/hosts` file maps your domain to `127.0.0.1`:
 
-#### ***Generate certificates***
+```bash
+echo "127.0.0.1  <DOMAIN_NAME>" | sudo tee -a /etc/hosts
+```
 
-From within the `test/dtaas/certs/` folder, replacing every instance of
-`foo.com` with your domain:
+From within the `test/dtaas/certs/` folder, replacing `<DOMAIN_NAME>` with
+your domain:
 
 ```bash
 wget https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-linux-amd64
 chmod 774 mkcert-v1.4.4-linux-amd64
 sudo mv mkcert-v1.4.4-linux-amd64 /usr/local/bin/mkcert
-whereis mkcert
 mkcert -install
-mkcert "foo.com" "localhost" "127.0.0.1" "::1"
-mkcert "foo.com" "*.foo.com" "localhost" "127.0.0.1" "::1"
+mkcert -cert-file fullchain.pem -key-file privkey.pem \
+  "<DOMAIN_NAME>" "*.<DOMAIN_NAME>" "localhost" "127.0.0.1" "::1"
 cp ~/.local/share/mkcert/rootCA.pem rootCA.crt
 ```
 
-#### ***Build forward auth image with your certificate***
-
-From within `test/dtaas/certs/`:
-
-```bash
-docker buildx build -t traefik-forward-auth-local:latest .
-```
-
-#### ***Update forward auth image name in compose file***
-
-Update the `traefik-forward-auth` service definition in the
-`compose.traefik.secure.tls.yml` file by replacing the line
-
-```yaml
-image: thomseddon/traefik-forward-auth:2.2.0
-```
-
-with
-
-```yaml
-image: traefik-forward-auth-local:latest
-```
+No further steps are needed. Traefik picks up the certificates via the
+`dynamic/tls.yml` volume mount. The login-relay and Oathkeeper communicate
+with Keycloak over the internal Docker network (plain HTTP), so they do not
+need to trust the self-signed cert.
 
 ## Security Notes
 

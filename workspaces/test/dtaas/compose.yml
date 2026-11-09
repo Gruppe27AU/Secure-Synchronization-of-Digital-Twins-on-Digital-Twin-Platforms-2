@@ -5,6 +5,7 @@
 services:
   workspace:
     image: workspace:latest
+    #image: intocps/workspace:latest
     container_name: workspace
     build:
       context: ../..

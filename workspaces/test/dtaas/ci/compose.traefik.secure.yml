@@ -2,19 +2,11 @@
 #
 # Intended ONLY for GitHub Actions – do NOT use in production.
 #
-# Provides:
-#   - Dex OIDC provider (port 5556, plain HTTP)
-#   - Traefik reverse proxy (port 80)
-#   - traefik-forward-auth (OIDC, insecure cookie for HTTP)
-#   - user1 workspace (workspace:latest)
-#   - user2 workspace (mltooling/ml-workspace-minimal)
-#
 # Usage:
 #   docker compose -f workspaces/test/dtaas/ci/compose.traefik.secure.yml up -d
 #
-# The CI runner must add "127.0.0.1 dex" to /etc/hosts so that the OAuth
-# redirect from traefik-forward-auth (pointing at http://dex:5556/...) can be
-# followed by curl running on the host.
+# The CI runner must add "127.0.0.1 dex" to /etc/hosts so that Dex redirect
+# URIs (http://dex:5556/...) resolve correctly from the host.
 
 name: workspace-ci
 
@@ -52,41 +44,79 @@ services:
       - frontend
       - users
 
-  # ── traefik-forward-auth (OIDC via Dex) ───────────────────────────────────
-  # NOTE: thomseddon/traefik-forward-auth:2.2.0 has a bug where it fails to
-  # handle the /_oauth callback when the route is also protected by the
-  # traefik-forward-auth middleware itself ("self-middleware" issue). The
-  # fix-dont-require-self-middleware-test1 tag contains the fix for this.
-  # Track https://github.com/thomseddon/traefik-forward-auth/issues for a
-  # stable release containing this fix.
-  traefik-forward-auth:
-    image: thomseddon/traefik-forward-auth:latest
+  # ── Oathkeeper (forwardAuth decision API) ─────────────────────────────────
+  # Validates dtaas_access_token cookies via login-relay's introspection proxy.
+  # Traefik calls the decision API (port 4456) via forwardAuth middleware.
+  oathkeeper:
+    image: oryd/oathkeeper:v26.2.0
     restart: unless-stopped
-    environment:
-      - LOG_LEVEL=trace
-      - DEFAULT_PROVIDER=oidc
-      - PROVIDERS_OIDC_ISSUER_URL=http://dex:5556/dex
-      - PROVIDERS_OIDC_CLIENT_ID=traefik-forward-auth
-      - PROVIDERS_OIDC_CLIENT_SECRET=ci-test-client-secret
-      - SECRET=ci-test-hmac-secret-at-least-32-chars!!
-      - INSECURE_COOKIE=true
-      - CONFIG=/conf
-      - AUTH_HOST=localhost
-      - COOKIE_DOMAIN=localhost
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        sed \
+          -e 's|$${LOGIN_RELAY_URL}|'"$$LOGIN_RELAY_URL"'|g' \
+          /etc/oathkeeper/config/oathkeeper.yml > /tmp/oathkeeper.yml &&
+        cp /etc/oathkeeper/rules/access-rules.yml /tmp/access-rules.yml &&
+        oathkeeper serve -c /tmp/oathkeeper.yml
     volumes:
-      - ./config/conf:/conf
+      - "../oathkeeper:/etc/oathkeeper/config"
+      - "./oathkeeper:/etc/oathkeeper/rules"
+    environment:
+      - LOGIN_RELAY_URL=http://localhost/login-relay
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.redirect.entryPoints=web"
-      - "traefik.http.routers.redirect.rule=Host(`localhost`) && PathPrefix(`/_oauth`)"
-      - "traefik.http.middlewares.traefik-forward-auth.forwardauth.address=http://traefik-forward-auth:4181"
-      - "traefik.http.middlewares.traefik-forward-auth.forwardauth.authResponseHeaders=X-Forwarded-User"
-      - "traefik.http.services.traefik-forward-auth.loadbalancer.server.port=4181"
-    depends_on:
-      - dex
+      - "traefik.http.middlewares.oathkeeper-auth.forwardauth.address=http://oathkeeper:4456/decisions"
+      - "traefik.http.middlewares.oathkeeper-auth.forwardauth.authResponseHeaders=X-User-Name,X-User-Subject,X-User-Groups"
     networks:
       - frontend
       - users
+    depends_on:
+      - dex
+
+  # ── login-relay (Keycloak auth code relay, configured for Dex in CI) ───────
+  login-relay:
+    build:
+      context: ../login-relay
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    environment:
+      - SERVER_DNS=localhost
+      - KEYCLOAK_CLIENT_ID=dtaas-workspace
+      - KEYCLOAK_CLIENT_SECRET=ci-workspace-secret
+      # Placeholder values — unused when OIDC_* overrides below are set,
+      # but KEYCLOAK_PUBLIC_URL and KEYCLOAK_REALM are required env vars.
+      - KEYCLOAK_PUBLIC_URL=http://dex:5556
+      - KEYCLOAK_INTERNAL_URL=http://dex:5556
+      - KEYCLOAK_REALM=dex
+      # Dex endpoint overrides (replace Keycloak-derived URLs).
+      - OIDC_AUTH_URL_PUBLIC=http://dex:5556/dex/auth
+      - OIDC_TOKEN_URL_INTERNAL=http://dex:5556/dex/token
+      - OIDC_JWKS_URL_INTERNAL=http://dex:5556/dex/keys
+      - OIDC_INTROSPECTION_URL_INTERNAL=http://dex:5556/dex/token/introspection
+      - OIDC_ISSUER=http://dex:5556/dex
+      - TLS=false
+      - WORKSPACE_USERS=user1,user2
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.login-relay.entryPoints=web"
+      - "traefik.http.routers.login-relay.rule=Host(`localhost`) && (PathPrefix(`/login-relay`) || Path(`/logout`))"
+      - "traefik.http.routers.login-relay.middlewares=login-relay-ratelimit"
+      - "traefik.http.services.login-relay.loadbalancer.server.port=8080"
+      - "traefik.http.middlewares.login-relay-ratelimit.ratelimit.average=20"
+      - "traefik.http.middlewares.login-relay-ratelimit.ratelimit.burst=10"
+      - "traefik.http.middlewares.login-relay-ratelimit.ratelimit.period=1m"
+    networks:
+      - frontend
+      - users
+    depends_on:
+      - dex
 
   # ── user1 workspace ────────────────────────────────────────────────────────
   user1:
@@ -102,7 +132,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.u1.entryPoints=web"
       - "traefik.http.routers.u1.rule=Host(`localhost`) && PathPrefix(`/user1`)"
-      - "traefik.http.routers.u1.middlewares=traefik-forward-auth"
+      - "traefik.http.routers.u1.middlewares=oathkeeper-auth"
     networks:
       - users
 
@@ -121,7 +151,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.u2.entryPoints=web"
       - "traefik.http.routers.u2.rule=Host(`localhost`) && PathPrefix(`/user2`)"
-      - "traefik.http.routers.u2.middlewares=traefik-forward-auth"
+      - "traefik.http.routers.u2.middlewares=oathkeeper-auth"
     networks:
       - users
 

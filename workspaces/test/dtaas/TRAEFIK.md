@@ -135,34 +135,7 @@ docker compose -f workspaces/test/dtaas/compose.traefik.yml --env-file workspace
 
 ### Adding More Users
 
-To add additional workspace instances, add a new service in `compose.traefik.yml`:
-
-```yaml
-user3:
-  image: workspace:latest
-  restart: unless-stopped
-    build:
-      context: ../..
-      dockerfile: Dockerfile.ubuntu.noble.xfce
-  environment:
-    - MAIN_USER=${USERNAME3:-user3}
-  volumes:
-    - ./files/user3:/workspace
-    - ./files/common:/workspace/common
-  shm_size: 512m
-  labels:
-    - "traefik.enable=true"
-    - "traefik.http.routers.u3.entryPoints=web"
-    - "traefik.http.routers.u3.rule=PathPrefix(`/${USERNAME3:-user3}`)"
-  networks:
-    - users
-```
-
-And then, setup the base structure of the persistent directories for the new user:
-
-```bash
-cp -r workspaces/test/dtaas/files/user1 workspaces/test/dtaas/files/user3
-```
+Follow the appropriate steps in [ADDING_MORE_USER.md](./ADDING_MORE_USERS.md).
 
 ## :shield: Security Considerations
 

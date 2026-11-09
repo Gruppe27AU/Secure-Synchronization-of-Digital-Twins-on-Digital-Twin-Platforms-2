@@ -1,0 +1,167 @@
+name: Publish Login Relay Docker Image
+
+on:
+  workflow_run:
+    workflows:
+      - "Login Relay Test"
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for the image (e.g., 0.1.0)'
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: read
+
+jobs:
+  check-prerequisites:
+    name: Check Prerequisites
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+    steps:
+      - name: Check prerequisite workflow
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          REPO="${{ github.repository }}"
+
+          echo "Checking Login Relay Test workflow for SHA: $SHA"
+
+          WORKFLOWS=("Login Relay Test")
+          ALL_SUCCESS=true
+
+          for workflow in "${WORKFLOWS[@]}"; do
+            echo "Checking: $workflow"
+
+            STATUS=$(gh api \
+              "/repos/$REPO/actions/workflows" \
+              --jq ".workflows[] | select(.name==\"$workflow\") | .id" \
+              | head -1 | xargs -I {} gh api \
+              "/repos/$REPO/actions/workflows/{}/runs?head_sha=$SHA&per_page=1" \
+              --jq '.workflow_runs[0].conclusion // "not_found"')
+
+            echo "  Status: $STATUS"
+
+            if [ "$STATUS" != "success" ]; then
+              echo "  $workflow has not succeeded (status: $STATUS)"
+              ALL_SUCCESS=false
+            else
+              echo "  $workflow succeeded"
+            fi
+          done
+
+          if [ "$ALL_SUCCESS" = true ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "All prerequisite workflows succeeded"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Not all prerequisites met - skipping publish"
+          fi
+
+  publish-ghcr:
+    name: Publish to GitHub Container Registry
+    runs-on: ubuntu-latest
+    needs: check-prerequisites
+    if: needs.check-prerequisites.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Set up QEMU for multi-platform builds
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        with:
+          images: ghcr.io/${{ github.repository }}/login-relay
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix={{branch}}-
+            type=ref,event=branch
+
+      - name: Build and push multi-platform image to GHCR
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ./workspaces/test/dtaas/login-relay
+          file: workspaces/test/dtaas/login-relay/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish-dockerhub:
+    name: Publish to Docker Hub
+    runs-on: ubuntu-latest
+    needs: check-prerequisites
+    if: needs.check-prerequisites.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Set up QEMU for multi-platform builds
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        with:
+          images: ${{ secrets.DOCKERHUB_SCOPE }}/login-relay
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix={{branch}}-
+            type=ref,event=branch
+
+      - name: Build and push multi-platform image to Docker Hub
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ./workspaces/test/dtaas/login-relay
+          file: workspaces/test/dtaas/login-relay/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

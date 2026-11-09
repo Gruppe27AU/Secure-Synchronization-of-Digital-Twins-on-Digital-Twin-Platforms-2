@@ -12,6 +12,11 @@ lives beside the code it describes, not here.
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor code of conduct |
 | [PENDING_ISSUES.md](PENDING_ISSUES.md) | Known issues awaiting work |
 | [POTENTIAL_IMPROVEMENTS.md](POTENTIAL_IMPROVEMENTS.md) | Improvement backlog |
+| [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) | Planned pull requests for storage backup and login-relay, in build order |
+| [design/storage/](design/storage/README.md) | Storage backup design, with its reading order |
+| [design/workspace-admin/](design/workspace-admin/README.md) | workspace-admin requirements, `config.toml`, `/config` page, PKCE sign-in, CLI |
+| [design/auth/LOGIN_RELAY.md](design/auth/LOGIN_RELAY.md) | login-relay and Oathkeeper design, requirements and API |
+| [specs/](specs/), [plans/](plans/), [tasks/](tasks/) | Spec, implementation plan and task list per feature |
 
 ## Elsewhere in the repository
 
