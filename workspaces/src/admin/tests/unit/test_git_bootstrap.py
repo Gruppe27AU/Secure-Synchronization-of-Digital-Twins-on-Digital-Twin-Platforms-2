@@ -16,23 +16,33 @@ from admin.git import bootstrap
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
 from admin.git.errors import SyncErrorKind
+from admin.git.locate import CONFIG_ENV_VAR
 from admin.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
 from tests.helpers.templates import EXAMPLE_CONFIG_PATH
 
 
+@pytest.fixture(name="persistent_dir", autouse=True)
+def fixture_persistent_dir(tmp_path, monkeypatch):
+    """Point $PERSISTENT_DIR at a directory of its own, apart from the config."""
+    persistent_dir = tmp_path / "persistent"
+    persistent_dir.mkdir()
+    monkeypatch.setenv("PERSISTENT_DIR", str(persistent_dir))
+    return persistent_dir
+
+
 @pytest.fixture(name="config_file", autouse=True)
 def fixture_config_file(tmp_path, monkeypatch):
     """
-    Point $PERSISTENT_DIR at a directory holding a config.toml.
+    Point $WORKSPACE_ADMIN_CONFIG at a config.toml outside $PERSISTENT_DIR.
 
     The file's contents do not matter, since the tests replace
     ``load_config``; it only has to exist for the bootstrap to get that far.
     """
-    config_path = tmp_path / bootstrap.CONFIG_DIR / bootstrap.DEFAULT_CONFIG_FILE
+    config_path = tmp_path / "config" / "config.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PERSISTENT_DIR", str(tmp_path))
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(config_path))
     return config_path
 
 
@@ -54,7 +64,7 @@ def test_missing_config_disables_cloning(config_file, monkeypatch, caplog):
     monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
 
     with caplog.at_level("INFO"):
-        assert not bootstrap.clone_configured_repos(SyncStatus())
+        assert not bootstrap.clone_configured_repos(SyncStatus(), config_file)
 
     assert "git backup is disabled" in caplog.text
     assert "ERROR" not in caplog.text
@@ -68,7 +78,7 @@ def test_missing_config_disables_sync(config_file, monkeypatch, caplog):
     monkeypatch.setattr(bootstrap, "start_sync_scheduler", _fail_if_called)
 
     with caplog.at_level("INFO"):
-        assert bootstrap.start_git_sync(status) is None
+        assert bootstrap.start_git_sync(status, config_file) is None
 
     assert "git backup is disabled" in caplog.text
     assert status.snapshot()["enabled"] is False
@@ -81,12 +91,12 @@ def test_unedited_template_clones_nothing(config_file, monkeypatch, caplog):
     monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
 
     with caplog.at_level("ERROR"):
-        assert not bootstrap.clone_configured_repos(SyncStatus())
+        assert not bootstrap.clone_configured_repos(SyncStatus(), config_file)
 
     assert "placeholder" in caplog.text
 
 
-def test_clone_configured_repos_clones_every_entry(monkeypatch):
+def test_clone_configured_repos_clones_every_entry(config_file, monkeypatch):
     """Test clone_configured_repos loads config and clones each entry."""
     private_repo = make_repo("private")
     common_repo = make_repo("common")
@@ -103,11 +113,14 @@ def test_clone_configured_repos_clones_every_entry(monkeypatch):
 
     monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
 
-    assert bootstrap.clone_configured_repos(SyncStatus()) == {"private": True, "common": True}
+    assert bootstrap.clone_configured_repos(SyncStatus(), config_file) == {
+        "private": True,
+        "common": True,
+    }
     assert cloned_with == [private_repo, common_repo]
 
 
-def test_clone_configured_repos_clones_private_only(monkeypatch):
+def test_clone_configured_repos_clones_private_only(config_file, monkeypatch):
     """Test a config with only [assets.private] clones just that repository."""
     private_repo = make_repo("private")
     monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
@@ -120,21 +133,21 @@ def test_clone_configured_repos_clones_private_only(monkeypatch):
 
     monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
 
-    assert bootstrap.clone_configured_repos(SyncStatus()) == {"private": True}
+    assert bootstrap.clone_configured_repos(SyncStatus(), config_file) == {"private": True}
     assert cloned_with["repo"] is private_repo
 
 
-def test_clone_configured_repos_skips_already_cloned_repos(monkeypatch):
+def test_clone_configured_repos_skips_already_cloned_repos(config_file, monkeypatch):
     """Test a repository clone_asset reports as skipped is reflected as False."""
     private_repo = make_repo("private")
     monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
     monkeypatch.setattr(bootstrap, "clone_asset", lambda _repo: False)
 
-    assert bootstrap.clone_configured_repos(SyncStatus()) == {"private": False}
+    assert bootstrap.clone_configured_repos(SyncStatus(), config_file) == {"private": False}
 
 
 def test_clone_configured_repos_returns_empty_when_config_load_fails(
-    monkeypatch, caplog
+    config_file, monkeypatch, caplog
 ):
     """Test a broken config file logs an error and clones nothing."""
 
@@ -144,13 +157,13 @@ def test_clone_configured_repos_returns_empty_when_config_load_fails(
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
 
     with caplog.at_level("ERROR"):
-        assert not bootstrap.clone_configured_repos(SyncStatus())
+        assert not bootstrap.clone_configured_repos(SyncStatus(), config_file)
 
     assert "Cannot clone git assets" in caplog.text
 
 
 def test_clone_configured_repos_one_failure_does_not_block_the_other(
-    monkeypatch, caplog
+    config_file, monkeypatch, caplog
 ):
     """Test a failing private clone is logged and skipped, common still clones."""
     private_repo = make_repo("private")
@@ -167,42 +180,10 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
     monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
 
     with caplog.at_level("ERROR"):
-        result = bootstrap.clone_configured_repos(SyncStatus())
+        result = bootstrap.clone_configured_repos(SyncStatus(), config_file)
 
     assert result == {"private": False, "common": True}
     assert "git clone failed for repository 'private'" in caplog.text
-
-
-def test_config_path_is_below_persistent_dir(monkeypatch):
-    """Test the config file is resolved below $PERSISTENT_DIR."""
-    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
-
-    path = bootstrap._config_path()  # pylint: disable=protected-access
-
-    assert path == Path("/some/persistent/dir/.config/workspace-admin/config.toml")
-
-
-@pytest.mark.parametrize("value", [None, ""])
-def test_config_path_defaults_to_home(monkeypatch, value):
-    """Test an unset or empty $PERSISTENT_DIR puts the config in the home directory."""
-    if value is None:
-        monkeypatch.delenv("PERSISTENT_DIR", raising=False)
-    else:
-        monkeypatch.setenv("PERSISTENT_DIR", value)
-
-    path = bootstrap._config_path()  # pylint: disable=protected-access
-
-    assert path == Path.home() / ".config" / "workspace-admin" / "config.toml"
-
-
-def test_config_path_ignores_working_directory(monkeypatch, tmp_path):
-    """Test the working directory does not change where the config is read."""
-    monkeypatch.delenv("PERSISTENT_DIR", raising=False)
-    before = bootstrap._config_path()  # pylint: disable=protected-access
-
-    monkeypatch.chdir(tmp_path)
-
-    assert bootstrap._config_path() == before  # pylint: disable=protected-access
 
 
 def test_root_dir_uses_persistent_dir(monkeypatch):
@@ -223,22 +204,26 @@ def test_root_dir_defaults_to_home(monkeypatch):
     assert root == Path.home()
 
 
-def test_load_repos_passes_the_root_to_load_config(monkeypatch, tmp_path):
-    """Test the root from the environment reaches load_config."""
+def test_load_repos_keeps_the_root_on_persistent_dir(
+    config_file, persistent_dir, monkeypatch
+):
+    """Test a config file outside $PERSISTENT_DIR leaves the repositories there."""
+    assert not config_file.is_relative_to(persistent_dir)
     received = {}
 
-    def fake_load_config(_path, root):
+    def fake_load_config(path, root):
+        received["path"] = path
         received["root"] = root
         return []
 
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
 
-    bootstrap.clone_configured_repos(SyncStatus())
+    bootstrap.clone_configured_repos(SyncStatus(), config_file)
 
-    assert received["root"] == tmp_path
+    assert received == {"path": config_file, "root": persistent_dir}
 
 
-def test_start_git_sync_schedules_every_configured_repository(monkeypatch):
+def test_start_git_sync_schedules_every_configured_repository(config_file, monkeypatch):
     """Test a repository whose clone failed is scheduled too, to be retried."""
     private_repo = make_repo("private")
     common_repo = make_repo("common")
@@ -261,7 +246,7 @@ def test_start_git_sync_schedules_every_configured_repository(monkeypatch):
     )
 
     status = SyncStatus()
-    thread, stop_event = bootstrap.start_git_sync(status, 60)
+    thread, stop_event = bootstrap.start_git_sync(status, config_file, 60)
 
     assert thread == "thread"
     assert scheduled["repos"] == [private_repo, common_repo]
@@ -271,7 +256,7 @@ def test_start_git_sync_schedules_every_configured_repository(monkeypatch):
     assert scheduled["status"] is status
 
 
-def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog):
+def test_start_git_sync_returns_none_when_config_load_fails(config_file, monkeypatch, caplog):
     """Test a broken config file does not stop the service from starting."""
 
     def fake_load_config(_path, _root):
@@ -281,7 +266,7 @@ def test_start_git_sync_returns_none_when_config_load_fails(monkeypatch, caplog)
     status = SyncStatus()
 
     with caplog.at_level("ERROR"):
-        assert bootstrap.start_git_sync(status) is None
+        assert bootstrap.start_git_sync(status, config_file) is None
 
     assert "Cannot start git sync" in caplog.text
     assert status.snapshot()["enabled"] is False
@@ -294,7 +279,7 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
     release_clone = threading.Event()
     steps = []
 
-    def slow_clone(_status):
+    def slow_clone(_status, _config_path):
         steps.append("clone")
         clone_started.set()
         release_clone.wait(timeout=30)
@@ -303,7 +288,7 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
     monkeypatch.setattr(
         bootstrap,
         "start_git_sync",
-        lambda status, interval, _stop_event: steps.append((status, interval)),
+        lambda status, _config_path, interval, _stop_event: steps.append((status, interval)),
     )
     status = SyncStatus()
 
@@ -323,9 +308,9 @@ def test_start_git_backup_returns_while_the_clone_is_still_running(monkeypatch):
 
 def test_start_git_backup_runs_on_a_named_daemon_thread(monkeypatch):
     """Test the thread cannot keep the process alive and is recognisable."""
-    monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda _status: {})
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda _status, _config_path: {})
     monkeypatch.setattr(
-        bootstrap, "start_git_sync", lambda status, interval, _stop_event: None
+        bootstrap, "start_git_sync", lambda status, _config_path, interval, _stop_event: None
     )
 
     thread = bootstrap.start_git_backup(SyncStatus(), 60)
@@ -348,25 +333,63 @@ def test_start_git_backup_logs_the_config_path(config_file, monkeypatch, caplog,
     assert f"Git backup config file: {config_file}" in caplog.text
 
 
-def test_start_git_backup_logs_a_relative_root_as_absolute(
+def test_start_git_backup_logs_a_relative_config_as_absolute(
     monkeypatch, caplog, tmp_path
 ):
-    """Test a relative $PERSISTENT_DIR is logged as a full path."""
+    """Test a relative $WORKSPACE_ADMIN_CONFIG is logged as a full path."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PERSISTENT_DIR", "relative")
+    monkeypatch.setenv(CONFIG_ENV_VAR, "relative/config.toml")
     monkeypatch.setattr(bootstrap, "_clone_then_sync", lambda *_args: None)
 
     with caplog.at_level("INFO"):
         bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
 
-    expected = tmp_path / "relative" / bootstrap.CONFIG_DIR / "config.toml"
+    expected = tmp_path / "relative" / "config.toml"
     assert f"Git backup config file: {expected}" in caplog.text
+
+
+def test_start_git_backup_discovers_the_config_once(config_file, monkeypatch, tmp_path):
+    """Test every step reads the file chosen on startup, even once the variable changes."""
+    discovered = []
+    real_discover_config = bootstrap.discover_config
+
+    def counting_discover_config():
+        discovered.append(None)
+        return real_discover_config()
+
+    read_from = []
+
+    def fake_load_config(path, _root):
+        read_from.append(path)
+        return [make_repo("private")]
+
+    def clone_then_change_the_variable(_repo):
+        monkeypatch.setenv(CONFIG_ENV_VAR, str(tmp_path / "elsewhere.toml"))
+        return True
+
+    def fake_load_sync_interval(path):
+        read_from.append(path)
+        return 60
+
+    finished = threading.Thread(target=lambda: None)
+    finished.start()
+    monkeypatch.setattr(bootstrap, "discover_config", counting_discover_config)
+    monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
+    monkeypatch.setattr(bootstrap, "clone_asset", clone_then_change_the_variable)
+    monkeypatch.setattr(bootstrap, "load_sync_interval", fake_load_sync_interval)
+    monkeypatch.setattr(bootstrap, "start_sync_scheduler", lambda *_args: finished)
+
+    bootstrap.start_git_backup(SyncStatus()).join(timeout=30)
+
+    assert len(discovered) == 1
+    # Loaded for the clone, loaded again for the sync, and read for the interval.
+    assert read_from == [config_file, config_file, config_file]
 
 
 def test_start_git_backup_logs_an_unexpected_error(monkeypatch, caplog):
     """Test an error on the background thread is logged, not lost."""
 
-    def broken_clone(_status):
+    def broken_clone(_status, _config_path):
         raise RuntimeError("disk on fire")
 
     monkeypatch.setattr(bootstrap, "clone_configured_repos", broken_clone)
@@ -431,10 +454,12 @@ def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch
     assert config_file.is_file()
     steps = []
     monkeypatch.setattr(
-        bootstrap, "clone_configured_repos", lambda _status: steps.append("clone")
+        bootstrap, "clone_configured_repos", lambda _status, _config_path: steps.append("clone")
     )
     monkeypatch.setattr(
-        bootstrap, "start_git_sync", lambda status, interval, _stop_event: steps.append("sync")
+        bootstrap,
+        "start_git_sync",
+        lambda status, _config_path, interval, _stop_event: steps.append("sync"),
     )
 
     bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
@@ -442,7 +467,7 @@ def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch
     assert steps == ["clone", "sync"]
 
 
-def test_start_git_sync_uses_the_stop_event_it_is_given(monkeypatch):
+def test_start_git_sync_uses_the_stop_event_it_is_given(config_file, monkeypatch):
     """Test the caller's event is the one that stops the scheduler."""
     monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("common")])
     monkeypatch.setattr(bootstrap, "is_cloned", lambda git_dir: True)
@@ -457,7 +482,7 @@ def test_start_git_sync_uses_the_stop_event_it_is_given(monkeypatch):
     )
     stop_event = threading.Event()
 
-    _, returned = bootstrap.start_git_sync(SyncStatus(), 60, stop_event)
+    _, returned = bootstrap.start_git_sync(SyncStatus(), config_file, 60, stop_event)
 
     assert scheduled["stop_event"] is stop_event
     assert returned is stop_event
@@ -466,7 +491,7 @@ def test_start_git_sync_uses_the_stop_event_it_is_given(monkeypatch):
 def _start_a_waiting_sync(started):
     """Build a start_git_sync whose sync thread runs until it is stopped."""
 
-    def fake_start_git_sync(_status, _interval, stop_event):
+    def fake_start_git_sync(_status, _config_path, _interval, stop_event):
         thread = threading.Thread(target=stop_event.wait, daemon=True)
         thread.start()
         started.append(thread)
@@ -478,7 +503,7 @@ def _start_a_waiting_sync(started):
 def test_start_git_backup_lives_as_long_as_the_sync(monkeypatch):
     """Test the returned thread is the one to wait for on shutdown."""
     started = []
-    monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda _status: {})
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", lambda _status, _config_path: {})
     monkeypatch.setattr(bootstrap, "start_git_sync", _start_a_waiting_sync(started))
     stop_event = threading.Event()
 
@@ -496,7 +521,7 @@ def test_start_git_backup_does_not_start_the_sync_once_stopped(monkeypatch):
     """Test a shutdown during the clone leaves the sync unstarted."""
     stop_event = threading.Event()
 
-    def clone_during_shutdown(_status):
+    def clone_during_shutdown(_status, _config_path):
         stop_event.set()
         return {}
 
@@ -551,25 +576,25 @@ def test_start_git_sync_reads_the_interval_from_the_config_file(
 
     monkeypatch.setattr(bootstrap, "load_sync_interval", fake_load_sync_interval)
 
-    assert bootstrap.start_git_sync(SyncStatus()) is not None
+    assert bootstrap.start_git_sync(SyncStatus(), config_file) is not None
 
     assert scheduled["interval_seconds"] == 120
     assert read_from == [config_file]
 
 
-def test_start_git_sync_prefers_a_given_interval(monkeypatch):
+def test_start_git_sync_prefers_a_given_interval(config_file, monkeypatch):
     """Test --sync-interval overrides the config file, which is not read."""
     scheduled = {}
     _schedule_into(scheduled, monkeypatch)
     monkeypatch.setattr(bootstrap, "load_sync_interval", _fail_if_called)
 
-    bootstrap.start_git_sync(SyncStatus(), 30)
+    bootstrap.start_git_sync(SyncStatus(), config_file, 30)
 
     assert scheduled["interval_seconds"] == 30
 
 
 def test_start_git_sync_is_not_started_when_the_interval_cannot_be_read(
-    monkeypatch, caplog
+    config_file, monkeypatch, caplog
 ):
     """Test a config file broken since the clone is logged, not raised."""
     scheduled = {}
@@ -582,7 +607,7 @@ def test_start_git_sync_is_not_started_when_the_interval_cannot_be_read(
     status = SyncStatus()
 
     with caplog.at_level("ERROR"):
-        assert bootstrap.start_git_sync(status) is None
+        assert bootstrap.start_git_sync(status, config_file) is None
 
     assert "SYNC_INTERVAL_SECONDS" in caplog.text
     assert not scheduled
@@ -640,7 +665,7 @@ def test_status_reports_a_broken_config(config_file):
     assert status.snapshot()["state"] == "config_error"
 
 
-def test_status_lists_a_repository_whose_clone_failed(monkeypatch):
+def test_status_lists_a_repository_whose_clone_failed(config_file, monkeypatch):
     """Test a failed clone shows up with its kind instead of an empty list."""
     monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("private")])
 
@@ -650,7 +675,7 @@ def test_status_lists_a_repository_whose_clone_failed(monkeypatch):
     monkeypatch.setattr(bootstrap, "clone_asset", refuse)
     status = SyncStatus()
 
-    bootstrap.clone_configured_repos(status)
+    bootstrap.clone_configured_repos(status, config_file)
 
     snapshot = status.snapshot()
     assert snapshot["state"] == "starting"

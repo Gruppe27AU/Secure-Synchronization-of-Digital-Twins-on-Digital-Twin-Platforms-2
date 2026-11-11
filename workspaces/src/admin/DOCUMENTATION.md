@@ -220,16 +220,20 @@ curl http://localhost:8091/{path-prefix}
 
 ## Configuration
 
-The git backup reads one TOML file, always from the same place:
+The git backup reads one TOML file. `admin.git.locate.discover_config()`
+chooses it once, on startup, checking in order:
 
-```text
-$PERSISTENT_DIR/.config/workspace-admin/config.toml
-```
+1. `$WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
+   is resolved against the directory the service is started in, at that
+   moment.
+2. `~/.config/workspace-admin/config.toml`.
 
-When `PERSISTENT_DIR` is unset, the home directory is used as the root
-instead. The directory the service is started in never matters, and the
-absolute path is logged on every start. In the workspace image
-`PERSISTENT_DIR` is `/workspace`, so the file is
+A file named by `$WORKSPACE_ADMIN_CONFIG` is used even when it is missing;
+the default directory is then not looked at. The chosen path is passed to
+every step of the backup, so changing the variable while the service runs
+has no effect, and its absolute form is logged on every start. Where the
+file is does not move the repositories: they stay below `$PERSISTENT_DIR`.
+In the workspace image the file is
 `/workspace/.config/workspace-admin/config.toml`; with the bundled compose
 files, `files/<username>/.config/workspace-admin/config.toml` on the host.
 
@@ -1390,8 +1394,12 @@ module imports the layer above it, so each can be tested on its own.
     raising `GitTimeoutError`. Extra environment, such as the credentials,
     is passed per command. See
     [Time limits and prompts](#time-limits-and-prompts)
-  - `config.py`: `load_config()` reads
-    `$PERSISTENT_DIR/.config/workspace-admin/config.toml` and returns a
+  - `locate.py`: `discover_config()` chooses the config file,
+    `$WORKSPACE_ADMIN_CONFIG` before
+    `~/.config/workspace-admin/config.toml`, and returns a
+    `ConfigLocation` holding the absolute path and the `ConfigRule` that
+    chose it. See [Configuration](#configuration)
+  - `config.py`: `load_config()` reads the chosen file and returns a
     `RepoConfig` per `[assets.<name>]` table (`private` and `common`), with
     both paths derived from the name and the root, and its `SyncMode`.
     Unknown keys are logged as warnings, placeholders raise
@@ -1460,10 +1468,12 @@ module imports the layer above it, so each can be tested on its own.
 
 - `ADMIN_SERVER_PORT`: Port for the admin service (default: `8091`)
 - `PATH_PREFIX`: Optional path prefix for API routes (can also be set via CLI `--path-prefix` argument)
-- `PERSISTENT_DIR`: Root of the git backup. `config.toml` is read from
-  `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, and every
-  repository is placed below it (default: the home directory;
+- `PERSISTENT_DIR`: Root of the git backup. Every repository is placed
+  below it, wherever `config.toml` is (default: the home directory;
   `/workspace` in the workspace image)
+- `WORKSPACE_ADMIN_CONFIG`: The config file of the git backup. When unset
+  or empty, `~/.config/workspace-admin/config.toml` is used. A relative
+  path is resolved against the directory the service is started in
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when the
   file is missing. Set by the Dockerfile; unset outside the image, where a
   missing file leaves the backup disabled

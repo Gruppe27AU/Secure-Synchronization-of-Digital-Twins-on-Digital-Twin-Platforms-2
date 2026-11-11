@@ -31,6 +31,7 @@ src/admin/
 ├── config/
 │   └── services_template.json    # Service catalogue
 └── git/                          # Git backup of workspace directories
+    ├── locate.py                 # Choose which config.toml to read
     ├── config.py                 # config.toml -> RepoConfig
     ├── auth.py                   # HTTP auth header (in the environment), https only
     ├── errors.py                 # Status kinds, and sorting failures by kind
@@ -50,14 +51,14 @@ endpoint reference.
 
 ## Where the Config File Lives
 
-The service always reads its config file from one place:
+The service chooses its config file once, when it starts:
 
-```text
-$PERSISTENT_DIR/.config/workspace-admin/config.toml
-```
+1. `WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
+   is resolved against the directory you start `workspace-admin` from.
+2. Otherwise `~/.config/workspace-admin/config.toml`.
 
-When `PERSISTENT_DIR` is not set, your home directory is used instead. The
-directory you start `workspace-admin` from does not matter.
+A file named by `WORKSPACE_ADMIN_CONFIG` is used even if it does not exist:
+the service never looks past it for another one.
 
 | Where it runs | Config file |
 | --- | --- |
@@ -71,7 +72,8 @@ The full path is logged every time the service starts.
 - **Locally** you create the directory and the file yourself; see
   [Run it locally](#run-it-locally).
 
-The repositories are placed below the same root: each one's files in
+The repositories are placed below `$PERSISTENT_DIR`, or your home directory
+when it is not set, wherever the config file is: each one's files in
 `assets/<name>` and its git data in `.local/share/workspace-admin/<name>`.
 
 ## Getting Started
@@ -231,11 +233,12 @@ See [Checking the backup](#checking-the-backup).
 
 #### Using another directory
 
-To keep the config file and the repositories somewhere other than your
-home directory, set `PERSISTENT_DIR` before every start. The config file
-then belongs in `$PERSISTENT_DIR/.config/workspace-admin/config.toml`:
+To use another config file, set `WORKSPACE_ADMIN_CONFIG` to it before every
+start. To keep the repositories somewhere other than your home directory,
+set `PERSISTENT_DIR`. The two are independent:
 
 ```powershell
+$env:WORKSPACE_ADMIN_CONFIG = "C:\my-workspace\.config\workspace-admin\config.toml"
 $env:PERSISTENT_DIR = "C:\my-workspace"
 poetry run workspace-admin
 ```
