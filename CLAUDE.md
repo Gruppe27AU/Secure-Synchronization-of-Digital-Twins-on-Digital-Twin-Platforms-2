@@ -364,8 +364,9 @@ resolved against the current directory), otherwise
 `~/.config/workspace-admin/config.toml`. A file named by the variable is
 used even when it is missing; nothing falls back past it. `bootstrap`
 passes the chosen path to every step, so changing the variable later has
-no effect. In the image that is
-`/workspace/.config/workspace-admin/config.toml`. The absolute path is
+no effect. In the image `custom_startup.sh` sets the variable to
+`$PERSISTENT_DIR/.config/workspace-admin/config.toml`
+(`/workspace/.config/workspace-admin/config.toml`). The absolute path is
 logged on every startup. When it is absent it is created from
 the template `workspaces/src/templates/config.toml.example`, which the
 Dockerfile copies to `$WORKSPACE_CONFIG_TEMPLATE`. Nothing is cloned until
@@ -399,7 +400,10 @@ To add new services to the workspace:
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
 - `WORKSPACE_ADMIN_CONFIG`: Config file of the git backup; when unset or
-  empty, `~/.config/workspace-admin/config.toml` is used
+  empty, `~/.config/workspace-admin/config.toml` is used. In the image
+  `custom_startup.sh` sets it in prefix form for `workspace-admin` alone,
+  so Jupyter and VS Code never see it; it is deliberately not a Dockerfile
+  `ENV`, which `.docker_set_envs` would pin over runtime values
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when it is
   missing (set by the Dockerfile; unset outside the image)
 

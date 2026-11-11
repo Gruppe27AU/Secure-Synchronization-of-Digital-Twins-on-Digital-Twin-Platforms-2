@@ -43,12 +43,18 @@ function start_vscode_server {
     DTAAS_PROCS['vscode']=$!
 }
 
+# The config file stays on the persistent volume. WORKSPACE_ADMIN_CONFIG is
+# set for workspace-admin alone, in prefix form, so Jupyter and VS Code do not
+# inherit it; not as a Dockerfile ENV, which .docker_set_envs would pin.
 function start_admin_server {
     local path_prefix="${MAIN_USER:-}"
+    local admin_config="${PERSISTENT_DIR}/.config/workspace-admin/config.toml"
     if [[ -n "${path_prefix}" ]]; then
-        workspace-admin --host 0.0.0.0 --port "${ADMIN_SERVER_PORT}" --path-prefix "${path_prefix}" &
+        WORKSPACE_ADMIN_CONFIG="${admin_config}" \
+            workspace-admin --host 0.0.0.0 --port "${ADMIN_SERVER_PORT}" --path-prefix "${path_prefix}" &
     else
-        workspace-admin --host 0.0.0.0 --port "${ADMIN_SERVER_PORT}" &
+        WORKSPACE_ADMIN_CONFIG="${admin_config}" \
+            workspace-admin --host 0.0.0.0 --port "${ADMIN_SERVER_PORT}" &
     fi
     DTAAS_PROCS['admin']=$!
 }
