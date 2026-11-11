@@ -66,7 +66,9 @@ the service never looks past it for another one.
 | Locally, Linux or macOS | `~/.config/workspace-admin/config.toml` |
 | Locally, Windows | `%USERPROFILE%\.config\workspace-admin\config.toml` |
 
-The full path is logged every time the service starts.
+The container sets `WORKSPACE_ADMIN_CONFIG` to the path in the table when
+it starts the service, so the file stays on the persistent volume. The full
+path is logged every time the service starts.
 
 - **In the container** the file is created for you the first time.
 - **Locally** you create the directory and the file yourself; see

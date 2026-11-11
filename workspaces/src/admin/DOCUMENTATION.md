@@ -233,7 +233,8 @@ the default directory is then not looked at. The chosen path is passed to
 every step of the backup, so changing the variable while the service runs
 has no effect, and its absolute form is logged on every start. Where the
 file is does not move the repositories: they stay below `$PERSISTENT_DIR`.
-In the workspace image the file is
+In the workspace image `custom_startup.sh` sets `$WORKSPACE_ADMIN_CONFIG`
+to `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, so the file is
 `/workspace/.config/workspace-admin/config.toml`; with the bundled compose
 files, `files/<username>/.config/workspace-admin/config.toml` on the host.
 
@@ -1473,7 +1474,11 @@ module imports the layer above it, so each can be tested on its own.
   `/workspace` in the workspace image)
 - `WORKSPACE_ADMIN_CONFIG`: The config file of the git backup. When unset
   or empty, `~/.config/workspace-admin/config.toml` is used. A relative
-  path is resolved against the directory the service is started in
+  path is resolved against the directory the service is started in. The
+  workspace image sets it to
+  `$PERSISTENT_DIR/.config/workspace-admin/config.toml` when it starts
+  `workspace-admin`, and only for that process: Jupyter and VS Code do
+  not see it
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when the
   file is missing. Set by the Dockerfile; unset outside the image, where a
   missing file leaves the backup disabled

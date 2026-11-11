@@ -15,6 +15,12 @@ The main changes made so far are listed here.
   is. **Outside the image, a config kept in
   `$PERSISTENT_DIR/.config/workspace-admin/` is no longer found by
   default**; point `WORKSPACE_ADMIN_CONFIG` at it
+* The workspace image sets `WORKSPACE_ADMIN_CONFIG` to
+  `$PERSISTENT_DIR/.config/workspace-admin/config.toml` when it starts
+  `workspace-admin`, so the image keeps reading
+  `/workspace/.config/workspace-admin/config.toml`: an existing workspace
+  needs no change. Only `workspace-admin` gets the variable; Jupyter and
+  VS Code do not
 
 ## Week of 2-Nov-2026
 
