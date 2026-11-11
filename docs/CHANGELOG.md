@@ -2,6 +2,20 @@
 
 The main changes made so far are listed here.
 
+## Week of 9-Nov-2026
+
+### Changed
+
+* `workspace-admin` chooses its `config.toml` on startup:
+  `WORKSPACE_ADMIN_CONFIG` when it is set and not empty, otherwise
+  `~/.config/workspace-admin/config.toml`. A relative
+  `WORKSPACE_ADMIN_CONFIG` is resolved against the directory the service is
+  started in. The file is chosen once and used by every step of the backup.
+  The repositories stay below `$PERSISTENT_DIR`, wherever the config file
+  is. **Outside the image, a config kept in
+  `$PERSISTENT_DIR/.config/workspace-admin/` is no longer found by
+  default**; point `WORKSPACE_ADMIN_CONFIG` at it
+
 ## Week of 2-Nov-2026
 
 ### Changed

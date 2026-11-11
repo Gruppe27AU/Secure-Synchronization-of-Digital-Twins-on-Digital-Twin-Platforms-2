@@ -316,8 +316,11 @@ Dependencies point one way only: `main` → `api` → `services`.
 
 The `git/` package backs the workspace up to its remotes and is layered the
 same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `command`
-→ `errors` → `auth` → `config` → `runner`:
+→ `errors` → `auth` → `config` → `runner`; `locate` depends on nothing:
 
+- `locate.py`: `discover_config()` chooses the config file,
+  `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
+  and returns the path with the rule that chose it
 - `config.py`: reads `config.toml` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
@@ -355,10 +358,13 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `comma
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.
 
-`config.toml` is always read from
-`$PERSISTENT_DIR/.config/workspace-admin/config.toml`, with the home
-directory as the root when `PERSISTENT_DIR` is unset; the working directory
-never matters. In the image that is
+`locate.discover_config()` chooses `config.toml` once on startup:
+`$WORKSPACE_ADMIN_CONFIG` when it is set and not empty (a relative path is
+resolved against the current directory), otherwise
+`~/.config/workspace-admin/config.toml`. A file named by the variable is
+used even when it is missing; nothing falls back past it. `bootstrap`
+passes the chosen path to every step, so changing the variable later has
+no effect. In the image that is
 `/workspace/.config/workspace-admin/config.toml`. The absolute path is
 logged on every startup. When it is absent it is created from
 the template `workspaces/src/templates/config.toml.example`, which the
@@ -389,9 +395,11 @@ To add new services to the workspace:
   `configure_nginx.py`)
 - `PERSISTENT_DIR`: Directory for user data persistence (default:
   `/workspace` in the image, the home directory outside it); also the
-  root of `config.toml` and every git backup path
+  root of every git backup path, wherever `config.toml` is
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
+- `WORKSPACE_ADMIN_CONFIG`: Config file of the git backup; when unset or
+  empty, `~/.config/workspace-admin/config.toml` is used
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when it is
   missing (set by the Dockerfile; unset outside the image)
 
