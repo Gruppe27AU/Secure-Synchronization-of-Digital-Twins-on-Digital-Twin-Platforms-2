@@ -13,15 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from admin.git import config as config_module
+from admin.git import validate as validate_module
 from admin.git.config import (
     ASSET_NAMES,
     DEFAULT_SYNC_INTERVAL_SECONDS,
     ConfigError,
     SyncMode,
-    load_config,
-    load_sync_interval,
 )
+from admin.git.load import load_config, load_sync_interval
 from admin.git.runner import GitTimeoutError
 from tests.helpers.templates import EXAMPLE_CONFIG_PATH
 
@@ -378,7 +377,7 @@ def test_branch_check_that_hangs_is_reported(tmp_path, monkeypatch):
     def fake_run(_command, _timeout):
         raise GitTimeoutError("git did not finish within 300 seconds and was stopped")
 
-    monkeypatch.setattr(config_module, "run_git", fake_run)
+    monkeypatch.setattr(validate_module, "run_git", fake_run)
 
     with pytest.raises(ConfigError, match="could not run git to check"):
         load_config(write_config(tmp_path, VALID_CONFIG), ROOT)

@@ -28,12 +28,9 @@ from uvicorn.logging import DefaultFormatter
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
 from admin.git.bootstrap import start_git_backup, stop_git_backup
-from admin.git.config import (
-    DEFAULT_SYNC_INTERVAL_SECONDS,
-    SYNC_INTERVAL_KEY,
-    sync_interval_problem,
-)
+from admin.git.config import DEFAULT_SYNC_INTERVAL_SECONDS, SYNC_INTERVAL_KEY
 from admin.git.status import SyncStatus
+from admin.git.validate import sync_interval_problem
 from admin.services import load_services
 
 #: Format of the service's own log records, matching uvicorn's

@@ -270,7 +270,7 @@ whole number (`300.0`, `"300"`, `true`), or is outside 1 to 86400, is
 reported as a warning and the default of 300 seconds is used instead:
 
 ```text
-WARNING admin.git.config /workspace/.config/workspace-admin/config.toml: 'SYNC_INTERVAL_SECONDS' must be between 1 and 86400 seconds, got 0; using the default of 300 seconds
+WARNING admin.git.load /workspace/.config/workspace-admin/config.toml: 'SYNC_INTERVAL_SECONDS' must be between 1 and 86400 seconds, got 0; using the default of 300 seconds
 ```
 
 The upper limit keeps the backup frequent enough to be useful, and keeps
@@ -314,7 +314,7 @@ from an older version of the file, or a misspelt one, does not silently do
 nothing:
 
 ```text
-WARNING admin.git.config <path>: 'SYNC_INTERVAL' in the top level is not a known setting and has no effect; expected only SYNC_INTERVAL_SECONDS, assets
+WARNING admin.git.validate <path>: 'SYNC_INTERVAL' in the top level is not a known setting and has no effect; expected only SYNC_INTERVAL_SECONDS, assets
 ```
 
 This covers the keys earlier versions read: `HOME_DIR`, `WORKSPACE_DIR`,
@@ -349,7 +349,7 @@ warning gives the command to fix it. It is only a warning, because the
 permissions on a mounted volume are not always the user's to change.
 
 ```text
-WARNING admin.git.config /workspace/.config/workspace-admin/config.toml holds tokens but can be read or changed by other users (mode 644); restrict it with: chmod 600 /workspace/.config/workspace-admin/config.toml
+WARNING admin.git.validate /workspace/.config/workspace-admin/config.toml holds tokens but can be read or changed by other users (mode 644); restrict it with: chmod 600 /workspace/.config/workspace-admin/config.toml
 ```
 
 ### When the file is wrong
@@ -1437,7 +1437,9 @@ src/admin/
 └── git/
     ├── __init__.py                # Git backup of workspace directories
     ├── runner.py                  # Runs git without prompts, within a time limit
-    ├── config.py                  # Reads config.toml into RepoConfig objects
+    ├── config.py                  # RepoConfig, SyncMode, ConfigError and the settings
+    ├── validate.py                # Checks the values of config.toml
+    ├── load.py                    # Reads config.toml into RepoConfig objects
     ├── auth.py                    # HTTP auth header, https-only options, rejected tokens
     ├── errors.py                  # SyncErrorKind, SyncError, sorting failures by kind
     ├── command.py                 # Runs one git command for one repository
@@ -1458,8 +1460,8 @@ src/admin/
 Dependencies point in one direction only: `main` → `api` → `services`, and
 within `git/`: `bootstrap` → `scheduler` → `sync` → `pull`/`push` →
 `commit` → `busy`/`checks` → `command` → `errors` → `auth` → `config` →
-`runner`,
-with `clone` beside `sync` and `refs` depending only on `config`. No
+`runner`, with `clone` beside `sync`, `bootstrap` reading the file through
+`load` → `validate` → `config`, and `refs` depending only on `config`. No
 module imports the layer above it, so each can be tested on its own.
 
 ### Components
@@ -1487,11 +1489,14 @@ module imports the layer above it, so each can be tested on its own.
     `~/.config/workspace-admin/config.toml`, and returns a
     `ConfigLocation` holding the absolute path and the `ConfigRule` that
     chose it. See [Configuration](#configuration)
-  - `config.py`: `load_config()` reads the chosen file and returns a
+  - `config.py`: the types `RepoConfig`, `SyncMode`, `ConfigError` and
+    `PlaceholderError`, and the names and limits of the settings
+  - `validate.py`: checks each value (https URL, branch, `MODE`, interval,
+    placeholders) and warns about unknown keys and a file others can read
+  - `load.py`: `load_config()` reads the chosen file and returns a
     `RepoConfig` per `[assets.<name>]` table (`private` and `common`), with
     both paths derived from the name and the root, and its `SyncMode`.
-    Unknown keys are logged as warnings, placeholders raise
-    `PlaceholderError`, and a file others can read is warned about
+    `load_sync_interval()` reads `SYNC_INTERVAL_SECONDS`
   - `auth.py`: `auth_environment()` builds the `GIT_CONFIG_COUNT`
     variables that carry `GIT_REPO_TOKEN`, with the fixed username
     `oauth2`, as an HTTP Basic header scoped to the remote's host (see
@@ -1596,7 +1601,7 @@ obvious test file:
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials, `SYNC_INTERVAL_SECONDS` read and defaulted, an out-of-range, mistyped or misplaced value falling back to 300 with a warning while the repositories still load |
+| `tests/unit/test_git_config.py` | `admin/git/load.py`, `validate.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials, `SYNC_INTERVAL_SECONDS` read and defaulted, an out-of-range, mistyped or misplaced value falling back to 300 with a warning while the repositories still load |
 | `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/test_git_sync.py` | `admin/git/commit.py`, `pull.py`, `push.py`, `sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |

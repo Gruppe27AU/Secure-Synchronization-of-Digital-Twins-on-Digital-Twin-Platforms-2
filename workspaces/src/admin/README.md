@@ -33,7 +33,9 @@ src/admin/
 │   └── services_template.json    # Service catalogue
 └── git/                          # Git backup of workspace directories
     ├── locate.py                 # Choose which config.toml to read
-    ├── config.py                 # config.toml -> RepoConfig
+    ├── config.py                 # RepoConfig and the settings
+    ├── validate.py               # Check the values of config.toml
+    ├── load.py                   # config.toml -> RepoConfig
     ├── auth.py                   # HTTP auth header (in the environment), https only
     ├── errors.py                 # Status kinds, and sorting failures by kind
     ├── command.py                # Run one git command for one repository

@@ -13,13 +13,8 @@ import threading
 from pathlib import Path
 
 from admin.git.clone import is_cloned
-from admin.git.config import (
-    ConfigError,
-    PlaceholderError,
-    RepoConfig,
-    load_config,
-    load_sync_interval,
-)
+from admin.git.config import ConfigError, PlaceholderError, RepoConfig
+from admin.git.load import load_config, load_sync_interval
 from admin.git.locate import discover_config
 from admin.git.provision import provision_config
 from admin.git.scheduler import clone_and_record, start_sync_scheduler

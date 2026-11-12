@@ -318,13 +318,18 @@ The `git/` package backs the workspace up to its remotes and is layered the
 same way, `bootstrap` → `scheduler` → `sync`/`clone` → `pull`/`push` →
 `commit` → `busy`/`checks` → `command` → `errors` → `auth` → `config` →
 `runner`;
+`bootstrap` also reads the file through `load` → `validate` → `config`;
 `refs` depends only on `config`, `locate` on nothing:
 
 - `locate.py`: `discover_config()` chooses the config file,
   `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
   and returns the path with the rule that chose it
-- `config.py`: reads `config.toml` and returns one `RepoConfig` per
-  repository, raising `ConfigError` on anything unusable
+- `config.py`: the types (`RepoConfig`, `SyncMode`, `ConfigError`) and the
+  settings' names and limits
+- `validate.py`: checks each value (https URL, branch, `MODE`, interval,
+  placeholders), raising `ConfigError`, and warns about unknown keys
+- `load.py`: reads `config.toml` and returns one `RepoConfig` per
+  repository
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
   (`GIT_CONFIG_COUNT`) and scoped to the remote's host, never on argv; and
   recognises a rejected token in git's stderr
