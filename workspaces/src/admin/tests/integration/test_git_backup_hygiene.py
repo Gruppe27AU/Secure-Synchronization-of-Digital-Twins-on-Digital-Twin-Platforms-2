@@ -8,6 +8,9 @@ than kept are never staged, and a file git renamed to settle a conflict is
 reported.
 """
 
+import os
+import subprocess
+
 import pytest
 
 from admin.git import checks
@@ -101,3 +104,23 @@ def test_a_users_own_tilde_head_file_is_not_reported(world):
     assert sync_once(world.workspace) is True
 
     assert world.remote_file("notes~HEAD") == "mine v2\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a non-UTF-8 file name")
+def test_a_file_name_that_is_not_utf8_is_backed_up(world):
+    """Test a Latin-1 name neither stops the cycle nor holds back other work."""
+    tree = os.fsencode(world.workspace.work_tree)
+    with open(os.path.join(tree, b"\xe6ble.txt"), "wb") as latin1:
+        latin1.write(b"apple\n")
+    write(world.workspace.work_tree / "other.txt", "unrelated work\n")
+
+    assert sync_once(world.workspace) is True
+
+    tracked = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--name-only", "main"],
+        cwd=world.remote,
+        capture_output=True,
+        check=True,
+    ).stdout.split(b"\0")
+    assert b"\xe6ble.txt" in tracked
+    assert world.remote_file("other.txt") == "unrelated work\n"

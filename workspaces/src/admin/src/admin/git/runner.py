@@ -13,6 +13,8 @@ command can wait forever - neither for a person nor for the network:
 - Standard input is empty, so nothing can block reading it.
 - Messages are in English (``LC_ALL=C``), because what went wrong is told
   from their text.
+- Output is decoded as UTF-8 with ``surrogateescape``, so a file name that
+  is not valid UTF-8 cannot stop the backup.
 - Each command has a time limit. When it runs out, the command and every
   process it started are stopped, and :class:`GitTimeoutError` is raised.
 
@@ -140,7 +142,10 @@ def run_git(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        # Paths are raw bytes; surrogateescape keeps a name that is not
+        # valid UTF-8 intact, so it can be passed back to git unchanged.
+        encoding="utf-8",
+        errors="surrogateescape",
         env=_environment(env),
         start_new_session=_POSIX,
     ) as process:

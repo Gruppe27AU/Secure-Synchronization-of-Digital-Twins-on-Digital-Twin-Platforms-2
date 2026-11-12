@@ -67,6 +67,16 @@ def test_a_failure_is_returned_not_raised():
     assert result.stderr == "fatal: nope"
 
 
+def test_output_that_is_not_utf8_is_kept_not_raised():
+    """Test an invalid byte, as in a Latin-1 file name, survives decoding."""
+    result = run_git(
+        _python(r"import sys; sys.stdout.buffer.write(b'\xe6.txt\0')"),
+        timeout=30,
+    )
+
+    assert result.stdout.encode("utf-8", "surrogateescape") == b"\xe6.txt\0"
+
+
 def test_an_overrunning_command_is_stopped_and_reported():
     """Test a command past its time limit is stopped and raises."""
     started = time.monotonic()
