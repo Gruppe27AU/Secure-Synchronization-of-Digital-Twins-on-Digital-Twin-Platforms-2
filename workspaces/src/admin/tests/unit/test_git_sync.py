@@ -18,7 +18,7 @@ from dataclasses import replace
 
 import pytest
 
-from admin.git import checks
+from admin.git import busy, checks
 from admin.git import command as command_module
 from admin.git.runner import (
     LOCAL_TIMEOUT_SECONDS,
@@ -751,7 +751,7 @@ def test_a_stale_index_lock_is_removed_and_the_cycle_goes_ahead(
     monkeypatch, repo, caplog
 ):
     """Test a lock left by a killed git process no longer wedges the backup."""
-    lock = _lock_index(repo.git_dir, age_seconds=checks.STALE_LOCK_SECONDS + 60)
+    lock = _lock_index(repo.git_dir, age_seconds=busy.STALE_LOCK_SECONDS + 60)
     fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M f.txt"))
 
     with caplog.at_level("WARNING"):
@@ -766,13 +766,13 @@ def test_a_stale_index_lock_that_cannot_be_removed_skips_the_cycle(
     monkeypatch, repo
 ):
     """Test a lock that cannot be deleted is reported rather than ignored."""
-    _lock_index(repo.git_dir, age_seconds=checks.STALE_LOCK_SECONDS + 60)
+    _lock_index(repo.git_dir, age_seconds=busy.STALE_LOCK_SECONDS + 60)
     fake_git = install_fake_git(monkeypatch, FakeGit())
 
     def refuse(_path, missing_ok=False):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(checks.Path, "unlink", refuse)
+    monkeypatch.setattr(busy.Path, "unlink", refuse)
 
     with pytest.raises(SyncError, match="cannot remove the stale") as excinfo:
         commit_local_changes(repo)

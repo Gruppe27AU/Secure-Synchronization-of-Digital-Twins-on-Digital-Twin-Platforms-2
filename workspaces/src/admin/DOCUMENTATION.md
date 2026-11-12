@@ -1441,7 +1441,8 @@ src/admin/
     ├── auth.py                    # HTTP auth header, https-only options, rejected tokens
     ├── errors.py                  # SyncErrorKind, SyncError, sorting failures by kind
     ├── command.py                 # Runs one git command for one repository
-    ├── checks.py                  # What is checked before anything is committed
+    ├── busy.py                    # Whether the user is busy with the repository
+    ├── checks.py                  # What is checked in the files to commit
     ├── clone.py                   # Clones a single RepoConfig
     ├── refs.py                    # Ref names and refspecs of the branch
     ├── commit.py                  # Commits the user's changes
@@ -1456,7 +1457,8 @@ src/admin/
 
 Dependencies point in one direction only: `main` → `api` → `services`, and
 within `git/`: `bootstrap` → `scheduler` → `sync` → `pull`/`push` →
-`commit` → `checks` → `command` → `errors` → `auth` → `config` → `runner`,
+`commit` → `busy`/`checks` → `command` → `errors` → `auth` → `config` →
+`runner`,
 with `clone` beside `sync` and `refs` depending only on `config`. No
 module imports the layer above it, so each can be tested on its own.
 
@@ -1504,9 +1506,11 @@ module imports the layer above it, so each can be tested on its own.
     clone, and turns a failure or time-out into a `SyncError` of the right
     kind; the caller logs it. `run_local()` and `run_remote()` add
     `--git-dir` and `--work-tree` for a cloned repository
-  - `checks.py`: everything checked before a commit:
-    `ensure_safe_to_sync()` (index lock, unfinished operation, branch,
-    unmerged files), `ensure_no_mass_deletion()`, `large_files()`,
+  - `busy.py`: `ensure_safe_to_sync()` stops a cycle while the user is
+    busy with the repository (index lock, unfinished operation, branch,
+    unmerged files); `ensure_on_branch()` is checked again before a merge
+  - `checks.py`: what is checked in the files about to be committed:
+    `ensure_no_mass_deletion()`, `large_files()`,
     `staged_conflict_markers()` and `ensure_default_excludes()`
   - `clone.py`: `clone_asset()` clones one `RepoConfig` with a separated
     git directory and working tree (`git clone --separate-git-dir`),

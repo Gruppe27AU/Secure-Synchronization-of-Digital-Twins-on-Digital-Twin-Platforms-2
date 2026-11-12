@@ -316,7 +316,8 @@ Dependencies point one way only: `main` → `api` → `services`.
 
 The `git/` package backs the workspace up to its remotes and is layered the
 same way, `bootstrap` → `scheduler` → `sync`/`clone` → `pull`/`push` →
-`commit` → `checks` → `command` → `errors` → `auth` → `config` → `runner`;
+`commit` → `busy`/`checks` → `command` → `errors` → `auth` → `config` →
+`runner`;
 `refs` depends only on `config`, `locate` on nothing:
 
 - `locate.py`: `discover_config()` chooses the config file,
@@ -333,9 +334,11 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `pull`/`push` →
   raising `SyncError` for the caller to log; commands in a cloned
   repository always get `--git-dir` and `--work-tree`, so a lost `.git`
   file cannot redirect them
-- `checks.py`: what is checked before a commit: the user being busy (an
-  unfinished merge, another branch or detached HEAD, a fresh `index.lock`),
-  mass deletion, files over 50 MiB, conflict markers, default excludes
+- `busy.py`: whether the user is busy with the repository, so no cycle
+  starts: an unfinished merge, another branch or detached HEAD, unresolved
+  files, a fresh `index.lock`
+- `checks.py`: what is checked in the files about to be committed: mass
+  deletion, files over 50 MiB, conflict markers, default excludes
 - `clone.py`: clones one repository, git directory and working tree kept
   apart; starts one locally on an empty remote; writes back a lost `.git`
   file

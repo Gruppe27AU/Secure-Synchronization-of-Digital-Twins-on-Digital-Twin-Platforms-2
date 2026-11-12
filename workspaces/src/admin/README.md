@@ -37,7 +37,8 @@ src/admin/
     ├── auth.py                   # HTTP auth header (in the environment), https only
     ├── errors.py                 # Status kinds, and sorting failures by kind
     ├── command.py                # Run one git command for one repository
-    ├── checks.py                 # What is checked before a commit
+    ├── busy.py                   # Whether the user is busy with the repository
+    ├── checks.py                 # What is checked in the files to commit
     ├── clone.py                  # Clone a single RepoConfig
     ├── refs.py                   # Ref names and refspecs of the branch
     ├── commit.py                 # Commit the user's changes

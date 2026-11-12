@@ -7,11 +7,11 @@ What is checked lives in :mod:`admin.git.checks`.
 import logging
 import time
 
+from admin.git.busy import ensure_safe_to_sync
 from admin.git.checks import (
     MAX_FILE_BYTES,
     ensure_default_excludes,
     ensure_no_mass_deletion,
-    ensure_safe_to_sync,
     large_files,
     staged_conflict_markers,
 )
@@ -151,7 +151,7 @@ def commit_local_changes(repo: RepoConfig) -> bool:
     Commit the user's changes, holding back large and marked files.
 
     Nothing is committed while the user is busy with the repository
-    (:func:`admin.git.checks.ensure_safe_to_sync`) or most tracked files
+    (:func:`admin.git.busy.ensure_safe_to_sync`) or most tracked files
     are missing.
 
     Returns:
