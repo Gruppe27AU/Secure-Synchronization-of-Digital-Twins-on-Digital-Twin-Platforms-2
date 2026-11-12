@@ -1527,7 +1527,8 @@ module imports the layer above it, so each can be tested on its own.
   - `scheduler.py`: `start_sync_scheduler()` runs `sync_all()` on a
     background daemon thread, every `SYNC_INTERVAL_SECONDS` from the
     config file (300 when it is not set), unless `--sync-interval`
-    overrides it. A repository that is not cloned yet is cloned instead.
+    overrides it. A repository that is not cloned yet is cloned instead,
+    by `clone_and_record()`, which `bootstrap.py` uses on startup too.
     A failing repository is logged and skipped rather than stopping the
     loop, and every exception is caught, not just `SyncError`, because the
     thread is the only thing keeping the backup alive. Each outcome is

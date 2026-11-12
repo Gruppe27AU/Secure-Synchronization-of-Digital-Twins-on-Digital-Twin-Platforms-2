@@ -1,11 +1,11 @@
 """
-Periodic scheduling of the git backup.
+Running the backup cycle on a background thread, every interval.
 
-Decides *when* :mod:`admin.git.sync` and :mod:`admin.git.clone` run, and
-nothing about git itself. The synchronization happens on a background
-thread, so it never blocks the admin service's HTTP server. A repository
-that could not be cloned is tried again on every interval, so a remote that
-was unreachable, or a token fixed in the forge, needs no restart.
+A repository whose clone failed is cloned again each interval, so a fixed
+token or a remote back online needs no restart.
+
+Every exception is caught and recorded: one escaping the thread would end
+the backup silently while the HTTP API kept running.
 """
 
 import logging
@@ -13,36 +13,61 @@ import threading
 
 from admin.git.clone import CloneError, clone_asset, is_cloned, restore_git_file
 from admin.git.config import RepoConfig
-from admin.git.status import SyncStatus
 from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.status import SyncStatus
 from admin.git.sync import SyncStopped, sync_once
 
 logger = logging.getLogger(__name__)
 
-#: Name of the background thread, so it is recognisable in a stack dump.
+#: Name of the background thread, recognisable in a stack dump.
 SYNC_THREAD_NAME = "git-sync"
 
 
-def _clone(repo: RepoConfig, status: SyncStatus) -> None:
+def clone_and_record(repo: RepoConfig, status: SyncStatus) -> bool:
     """
-    Clone one repository and record how it went.
+    Clone ``repo`` and record the outcome; failures are logged, not raised.
 
-    Every exception is caught, for the same reason as in :func:`sync_all`.
-
-    Args:
-        repo: Repository to clone.
-        status: Where the outcome is recorded.
+    Returns:
+        True if a clone was made; False if already cloned or it failed.
     """
     try:
-        clone_asset(repo)
+        cloned = clone_asset(repo)
     except CloneError as error:
         logger.error("%s", error)
         status.record_clone_failure(repo.name, error.kind)
+        return False
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("Unexpected error while cloning repository '%s'", repo.name)
         status.record_clone_failure(repo.name, SyncErrorKind.UNEXPECTED)
+        return False
+    status.record_cloned(repo.name)
+    return cloned
+
+
+def _sync_one(
+    repo: RepoConfig, status: SyncStatus, stop_event: threading.Event | None
+) -> bool:
+    """
+    Run one cycle for ``repo`` and record the outcome.
+
+    Returns:
+        False if the service is stopping; nothing is recorded then.
+    """
+    try:
+        restore_git_file(repo)
+        sync_once(repo, stop_event)
+    except SyncStopped as stopped:
+        logger.info("%s", stopped)
+        return False
+    except SyncError as error:
+        logger.error("%s", error)
+        status.record_failure(repo.name, error.kind)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Unexpected error while syncing repository '%s'", repo.name)
+        status.record_failure(repo.name, SyncErrorKind.UNEXPECTED)
     else:
-        status.record_cloned(repo.name)
+        status.record_success(repo.name)
+    return True
 
 
 def sync_all(
@@ -51,50 +76,18 @@ def sync_all(
     stop_event: threading.Event | None = None,
 ) -> None:
     """
-    Synchronize every repository once and record how each one went.
+    Run one cycle for every repository, cloning those not cloned yet.
 
-    A repository that fails is logged and skipped, so one broken remote
-    cannot stop the others from being backed up. The full error goes to the
-    log only; the status gets its kind, which is safe to serve. A
-    repository that is not cloned yet, because its last clone failed, is
-    cloned instead of synchronized.
-
-    Every exception is caught, not just :class:`SyncError`. This runs on a
-    background thread, where an escaping exception would end the thread and
-    silently stop all further backups while the service kept serving
-    requests as if nothing were wrong.
-
-    Once ``stop_event`` is set, no further step or repository is started
-    and nothing more is recorded: the round was cut short, it did not fail.
-
-    Args:
-        repos: Repositories to synchronize.
-        status: Where the outcome of each repository is recorded.
-        stop_event: Set when the service is stopping. None runs every
-            repository to the end.
+    A failing repository does not stop the others. Once ``stop_event`` is
+    set, nothing more is started or recorded.
     """
     for repo in repos:
         if stop_event is not None and stop_event.is_set():
             return
         if not is_cloned(repo.git_dir):
-            _clone(repo, status)
-            continue
-        try:
-            restore_git_file(repo)
-            sync_once(repo, stop_event)
-        except SyncStopped as stopped:
-            logger.info("%s", stopped)
+            clone_and_record(repo, status)
+        elif not _sync_one(repo, status, stop_event):
             return
-        except SyncError as error:
-            logger.error("%s", error)
-            status.record_failure(repo.name, error.kind)
-        except Exception:  # pylint: disable=broad-exception-caught
-            logger.exception(
-                "Unexpected error while syncing repository '%s'", repo.name
-            )
-            status.record_failure(repo.name, SyncErrorKind.UNEXPECTED)
-        else:
-            status.record_success(repo.name)
 
 
 def _sync_loop(
@@ -103,20 +96,7 @@ def _sync_loop(
     stop_event: threading.Event,
     status: SyncStatus,
 ) -> None:
-    """
-    Synchronize the repositories until the stop event is set.
-
-    Waiting on the event rather than sleeping means the loop can be shut
-    down immediately instead of only at the end of an interval. A round
-    already running is handed the event too, and ends after the git command
-    it is in.
-
-    Args:
-        repos: Repositories to synchronize.
-        interval_seconds: Seconds to wait between synchronizations.
-        stop_event: Set this to end the loop.
-        status: Where the outcome of each repository is recorded.
-    """
+    """Run :func:`sync_all` every interval until ``stop_event`` is set."""
     while not stop_event.wait(interval_seconds):
         sync_all(repos, status, stop_event)
 
@@ -128,25 +108,12 @@ def start_sync_scheduler(
     status: SyncStatus,
 ) -> threading.Thread:
     """
-    Start synchronizing the repositories on a background thread.
-
-    The thread is a daemon, so it does not keep the process alive on
-    shutdown. The first synchronization happens after one interval, not
-    immediately, because the repositories were just cloned. Any that could
-    not be cloned are tried again at each interval.
-
-    Args:
-        repos: Repositories to synchronize.
-        interval_seconds: Seconds to wait between synchronizations.
-        stop_event: Set this to end the loop.
-        status: Where the outcome of each repository is recorded. The
-            repositories are listed in it as soon as the thread starts.
+    Start :func:`sync_all` on a daemon thread, first after one interval.
 
     Returns:
         The started thread.
     """
     status.enable([repo.name for repo in repos])
-
     thread = threading.Thread(
         target=_sync_loop,
         args=(repos, interval_seconds, stop_event, status),
@@ -154,11 +121,9 @@ def start_sync_scheduler(
         daemon=True,
     )
     thread.start()
-
     logger.info(
         "Started git sync for %d repository/repositories every %d seconds",
         len(repos),
         interval_seconds,
     )
-
     return thread

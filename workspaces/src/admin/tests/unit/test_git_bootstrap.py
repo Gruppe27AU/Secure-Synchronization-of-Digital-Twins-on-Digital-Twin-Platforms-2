@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from admin.git import bootstrap
+from admin.git import bootstrap, scheduler
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
 from admin.git.errors import SyncErrorKind
@@ -61,7 +61,7 @@ def test_missing_config_disables_cloning(config_file, monkeypatch, caplog):
     """Test that without config.toml nothing is loaded or cloned."""
     config_file.unlink()
     monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
-    monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
+    monkeypatch.setattr(scheduler, "clone_asset", _fail_if_called)
 
     with caplog.at_level("INFO"):
         assert not bootstrap.clone_configured_repos(SyncStatus(), config_file)
@@ -88,7 +88,7 @@ def test_missing_config_disables_sync(config_file, monkeypatch, caplog):
 def test_unedited_template_clones_nothing(config_file, monkeypatch, caplog):
     """Test that copying config.toml.example unchanged sends nothing to a remote."""
     config_file.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
-    monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
+    monkeypatch.setattr(scheduler, "clone_asset", _fail_if_called)
 
     with caplog.at_level("ERROR"):
         assert not bootstrap.clone_configured_repos(SyncStatus(), config_file)
@@ -111,7 +111,7 @@ def test_clone_configured_repos_clones_every_entry(config_file, monkeypatch):
         cloned_with.append(repo)
         return True
 
-    monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
+    monkeypatch.setattr(scheduler, "clone_asset", fake_clone_asset)
 
     assert bootstrap.clone_configured_repos(SyncStatus(), config_file) == {
         "private": True,
@@ -131,7 +131,7 @@ def test_clone_configured_repos_clones_private_only(config_file, monkeypatch):
         cloned_with["repo"] = repo
         return True
 
-    monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
+    monkeypatch.setattr(scheduler, "clone_asset", fake_clone_asset)
 
     assert bootstrap.clone_configured_repos(SyncStatus(), config_file) == {"private": True}
     assert cloned_with["repo"] is private_repo
@@ -141,7 +141,7 @@ def test_clone_configured_repos_skips_already_cloned_repos(config_file, monkeypa
     """Test a repository clone_asset reports as skipped is reflected as False."""
     private_repo = make_repo("private")
     monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [private_repo])
-    monkeypatch.setattr(bootstrap, "clone_asset", lambda _repo: False)
+    monkeypatch.setattr(scheduler, "clone_asset", lambda _repo: False)
 
     assert bootstrap.clone_configured_repos(SyncStatus(), config_file) == {"private": False}
 
@@ -177,7 +177,7 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
             raise CloneError("git clone failed for repository 'private': denied")
         return True
 
-    monkeypatch.setattr(bootstrap, "clone_asset", fake_clone_asset)
+    monkeypatch.setattr(scheduler, "clone_asset", fake_clone_asset)
 
     with caplog.at_level("ERROR"):
         result = bootstrap.clone_configured_repos(SyncStatus(), config_file)
@@ -375,7 +375,7 @@ def test_start_git_backup_discovers_the_config_once(config_file, monkeypatch, tm
     finished.start()
     monkeypatch.setattr(bootstrap, "discover_config", counting_discover_config)
     monkeypatch.setattr(bootstrap, "load_config", fake_load_config)
-    monkeypatch.setattr(bootstrap, "clone_asset", clone_then_change_the_variable)
+    monkeypatch.setattr(scheduler, "clone_asset", clone_then_change_the_variable)
     monkeypatch.setattr(bootstrap, "load_sync_interval", fake_load_sync_interval)
     monkeypatch.setattr(bootstrap, "start_sync_scheduler", lambda *_args: finished)
 
@@ -672,7 +672,7 @@ def test_status_lists_a_repository_whose_clone_failed(config_file, monkeypatch):
     def refuse(_repo):
         raise CloneError("denied", SyncErrorKind.AUTH_FAILED)
 
-    monkeypatch.setattr(bootstrap, "clone_asset", refuse)
+    monkeypatch.setattr(scheduler, "clone_asset", refuse)
     status = SyncStatus()
 
     bootstrap.clone_configured_repos(status, config_file)
