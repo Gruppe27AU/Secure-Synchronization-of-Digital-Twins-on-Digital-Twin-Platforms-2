@@ -1,18 +1,9 @@
 """
-Command-line entry point for the workspace admin service.
+Command-line entry point of the workspace admin service.
 
-This module is the service's startup sequence and nothing else. It owns no
-routing and no service discovery of its own; it only decides, from the
-command line, which of the other layers to run:
-
-- :func:`build_parser` declares the command-line surface.
-- :func:`cli` runs the startup sequence: either print the service
-  catalogue (:mod:`admin.services`) and exit, or bring up the git backup
-  (:mod:`admin.git.bootstrap`) and serve the HTTP API (:mod:`admin.api`)
-  with uvicorn.
-
-Everything else in this module is a step of that sequence, split out so
-each step has a name saying what it does.
+:func:`cli` either prints the service catalogue (``--list-services``), or
+starts the git backup (:mod:`admin.git.bootstrap`) and serves the HTTP API
+(:mod:`admin.api`) with uvicorn.
 """
 
 import argparse
@@ -33,26 +24,16 @@ from admin.git.status import SyncStatus
 from admin.git.validate import sync_interval_problem
 from admin.services import load_services
 
-#: Format of the service's own log records, matching uvicorn's
-#: (``INFO:     message``, the level coloured on a terminal).
+#: Format of the service's log records, as uvicorn's (``INFO:     message``).
 LOG_FORMAT = "%(levelprefix)s %(message)s"
 
 
 def _positive_seconds(value: str) -> int:
     """
-    Validate ``--sync-interval`` as argparse parses it.
-
-    Args:
-        value: The raw command-line argument.
-
-    Returns:
-        The interval in seconds.
+    Parse ``--sync-interval``, accepting what the config file accepts.
 
     Raises:
-        argparse.ArgumentTypeError: If the value is not a whole number of
-            seconds in the range the config file accepts too. Zero would
-            turn the backup into a loop that never waits, hammering the
-            remote.
+        argparse.ArgumentTypeError: If it is not such a number of seconds.
     """
     try:
         seconds = int(value)
@@ -60,111 +41,56 @@ def _positive_seconds(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"expected a whole number of seconds, got '{value}'"
         ) from error
-
     problem = sync_interval_problem(seconds)
     if problem:
         raise argparse.ArgumentTypeError(problem)
-
     return seconds
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """
-    Declare the command-line surface of ``workspace-admin``.
-
-    Returns:
-        Parser configured with all supported command-line options.
-    """
+    """Declare the command-line options of ``workspace-admin``."""
     parser = argparse.ArgumentParser(
-        description=(
-            "Workspace Admin Service - "
-            "Service discovery for DTaaS workspaces"
-        )
+        description="Workspace Admin Service - Service discovery for DTaaS workspaces"
     )
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Host to bind the service to (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.getenv("ADMIN_SERVER_PORT", "8091")),
-        help=(
-            "Port to bind the service to "
-            "(default: $ADMIN_SERVER_PORT or 8091)"
-        )
-    )
-    parser.add_argument(
-        "--path-prefix",
-        default=os.getenv("PATH_PREFIX", "dtaas-user"),
-        help=(
-            "Path prefix for API routes "
-            "(e.g., 'dtaas-user' for routes at /dtaas-user/services)"
-        )
-    )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="Enable auto-reload for development"
-    )
-    parser.add_argument(
-        "--sync-interval",
-        type=_positive_seconds,
-        default=None,
-        help=(
-            "Seconds between git backups of the workspace, overriding "
-            f"{SYNC_INTERVAL_KEY} in config.toml "
-            f"(default: the config file's value, or {DEFAULT_SYNC_INTERVAL_SECONDS})"
-        )
-    )
-    parser.add_argument(
-        "--list-services",
-        action="store_true",
-        help="List available services and exit"
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="%(prog)s " + APP_VERSION
-    )
-
+    parser.add_argument("--host", default="0.0.0.0",
+                        help="Host to bind the service to (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=int(os.getenv("ADMIN_SERVER_PORT", "8091")),
+                        help="Port to bind the service to (default: $ADMIN_SERVER_PORT or 8091)")
+    parser.add_argument("--path-prefix", default=os.getenv("PATH_PREFIX", "dtaas-user"),
+                        help="Path prefix for API routes "
+                             "(e.g., 'dtaas-user' for routes at /dtaas-user/services)")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
+    parser.add_argument("--sync-interval", type=_positive_seconds, default=None,
+                        help=f"Seconds between git backups of the workspace, overriding "
+                             f"{SYNC_INTERVAL_KEY} in config.toml (default: the config "
+                             f"file's value, or {DEFAULT_SYNC_INTERVAL_SECONDS})")
+    parser.add_argument("--list-services", action="store_true",
+                        help="List available services and exit")
+    parser.add_argument("--version", action="version", version="%(prog)s " + APP_VERSION)
     return parser
 
 
 def _configure_logging() -> None:
-    """Send the service's log records to the console, formatted like uvicorn's."""
+    """Log to the console, formatted like uvicorn."""
     handler = logging.StreamHandler()
     handler.setFormatter(DefaultFormatter(LOG_FORMAT))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 def _print_service_catalogue() -> None:
-    """Print the service catalogue as JSON, for ``--list-services``."""
+    """Print the service catalogue as JSON."""
     print(json.dumps(load_services(), indent=2))
 
 
-def _start_git_backup(
-    interval_seconds: int | None, status: SyncStatus
-) -> Callable[[], bool]:
+def _start_git_backup(interval_seconds: int | None, status: SyncStatus) -> Callable[[], bool]:
     """
-    Start bringing the git-backed workspace assets up, without waiting.
-
-    Clones whatever the git config describes and is not on disk yet, then
-    leaves a thread committing and pushing those clones. All of it happens
-    on a background thread and reports its own failures, so neither a
-    broken git configuration nor a slow or unreachable remote delays the
-    HTTP API.
+    Start the git backup on a background thread, without waiting for it.
 
     Args:
-        interval_seconds: Seconds to wait between backups, from
-            ``--sync-interval``. None uses ``SYNC_INTERVAL_SECONDS`` from
-            the config file.
-        status: Where the outcome of every backup is recorded.
+        interval_seconds: From ``--sync-interval``; None uses the config file.
 
     Returns:
-        Stops the backup, waiting briefly for the git command it is in, so
-        a shutdown does not cut it off halfway.
+        A function that stops the backup, waiting briefly for git.
     """
     stop_event = threading.Event()
     thread = start_git_backup(status, interval_seconds, stop_event)
@@ -172,14 +98,7 @@ def _start_git_backup(
 
 
 def _print_startup_banner(host: str, port: int, prefix: str) -> None:
-    """
-    Print the endpoints the service is about to serve.
-
-    Args:
-        host: Host the service binds to.
-        port: Port the service binds to.
-        prefix: Normalized path prefix, empty when unprefixed.
-    """
+    """Print the endpoints about to be served; ``prefix`` is normalized."""
     print(f"Starting Workspace Admin Service on {host}:{port}")
     print("Service endpoints:")
     print(f"  - http://{host}:{port}{prefix}/services")
@@ -194,12 +113,11 @@ def _serve(
     on_shutdown: Callable[[], object],
 ) -> None:
     """
-    Build the application and serve it until the process is stopped.
+    Serve the HTTP API until the process stops.
 
     Args:
-        args: The parsed command-line arguments.
-        status: Outcome of the git backups, served by ``/storage/status``.
-        on_shutdown: Called when the server stops, before the process exits.
+        status: Served by ``/storage/status``.
+        on_shutdown: Called when the server stops.
     """
     uvicorn.run(
         create_app(args.path_prefix, status, on_shutdown),
@@ -210,13 +128,7 @@ def _serve(
 
 
 def cli() -> None:
-    """
-    Run the workspace admin service from the command line.
-
-    Parses the arguments and then takes one of two routes: ``--list-services``
-    prints the catalogue and exits without starting anything, and otherwise
-    the git backup is brought up and the HTTP API is served.
-    """
+    """Print the catalogue for ``--list-services``; otherwise start the backup and serve."""
     args = build_parser().parse_args()
     _configure_logging()
 
