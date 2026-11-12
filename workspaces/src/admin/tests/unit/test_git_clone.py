@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from admin.git import clone
+from admin.git import command as command_module
 from admin.git.clone import CloneError, clone_asset, is_cloned, restore_git_file
 from admin.git.config import RepoConfig
 from admin.git.errors import SyncErrorKind
@@ -62,7 +62,7 @@ def test_clone_asset_success(monkeypatch, repo):
         captured_command["command"] = command
         return _fake_run_success()
 
-    monkeypatch.setattr(clone, "run_git", fake_run)
+    monkeypatch.setattr(command_module, "run_git", fake_run)
 
     assert clone_asset(repo) is True
     assert repo.work_tree.is_dir()
@@ -82,7 +82,7 @@ def test_clone_asset_allows_only_https(monkeypatch, repo):
         captured_command["command"] = command
         return _fake_run_success()
 
-    monkeypatch.setattr(clone, "run_git", fake_run)
+    monkeypatch.setattr(command_module, "run_git", fake_run)
 
     clone_asset(repo)
 
@@ -100,14 +100,14 @@ def test_clone_asset_skips_when_already_cloned(monkeypatch, repo):
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("subprocess.run should not be called when already cloned")
 
-    monkeypatch.setattr(clone, "run_git", fail_if_called)
+    monkeypatch.setattr(command_module, "run_git", fail_if_called)
 
     assert clone_asset(repo) is False
 
 
 def test_clone_asset_raises_on_failure(monkeypatch, repo):
     """Test clone_asset raises CloneError when git clone fails."""
-    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_failure())
+    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_failure())
 
     with pytest.raises(CloneError, match="repository not found"):
         clone_asset(repo)
@@ -137,7 +137,7 @@ def test_clone_asset_raises_clear_error_on_invalid_token(monkeypatch, repo):
         git_dir=repo.git_dir,
         work_tree=repo.work_tree,
     )
-    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_auth_failure())
+    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
     with pytest.raises(CloneError) as excinfo:
         clone_asset(repo)
@@ -158,7 +158,7 @@ def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
         git_dir=repo.git_dir,
         work_tree=repo.work_tree,
     )
-    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_auth_failure())
+    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
     with pytest.raises(CloneError) as excinfo:
         clone_asset(repo)
@@ -170,7 +170,7 @@ def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
 
 def test_clone_asset_raises_plain_error_without_credentials(monkeypatch, repo):
     """Test an auth-shaped failure without configured credentials gets no hint."""
-    monkeypatch.setattr(clone, "run_git", lambda *a, **k: _fake_run_auth_failure())
+    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
     with pytest.raises(CloneError) as excinfo:
         clone_asset(repo)
@@ -199,7 +199,7 @@ def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo
         captured["env"] = env
         return _fake_run_success()
 
-    monkeypatch.setattr(clone, "run_git", fake_run)
+    monkeypatch.setattr(command_module, "run_git", fake_run)
 
     clone_asset(repo)
 
@@ -221,7 +221,7 @@ def test_clone_asset_uses_the_remote_time_limit(monkeypatch, repo):
         captured["timeout"] = timeout
         return _fake_run_success()
 
-    monkeypatch.setattr(clone, "run_git", fake_run)
+    monkeypatch.setattr(command_module, "run_git", fake_run)
 
     clone_asset(repo)
 
@@ -234,7 +234,7 @@ def test_clone_asset_raises_clone_error_on_timeout(monkeypatch, repo):
     def fake_run(_command, _timeout, **_kwargs):
         raise GitTimeoutError("git did not finish within 900 seconds and was stopped")
 
-    monkeypatch.setattr(clone, "run_git", fake_run)
+    monkeypatch.setattr(command_module, "run_git", fake_run)
 
     with pytest.raises(CloneError, match="did not finish within 900 seconds") as excinfo:
         clone_asset(repo)

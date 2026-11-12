@@ -10,7 +10,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from admin.git import clone as clone_module
 from admin.git import command as command_module
 from admin.git.clone import clone_asset
 from admin.git.config import RepoConfig
@@ -90,7 +89,6 @@ def make_world(tmp_path, monkeypatch):
 
     # The remote is a local path, which the https-only options would refuse.
     monkeypatch.setattr(command_module, "remote_options", lambda: [])
-    monkeypatch.setattr(clone_module, "remote_options", lambda: [])
 
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--quiet", "--bare", "-b", "main", str(remote))

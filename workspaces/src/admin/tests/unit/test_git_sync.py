@@ -802,7 +802,15 @@ def test_every_command_names_the_git_dir_and_working_tree(monkeypatch, repo):
         assert f"--git-dir={repo.git_dir}" in command, command_key(command)
         assert f"--work-tree={repo.work_tree}" in command, command_key(command)
         # Options after the subcommand would be read as its arguments.
-        assert command.index(f"--git-dir={repo.git_dir}") < 4
+        assert command.index(f"--git-dir={repo.git_dir}") < _subcommand_index(command)
+
+
+def _subcommand_index(command):
+    """Index of the git subcommand: the first word that is not an option."""
+    index = 1
+    while command[index].startswith("-"):
+        index += 2 if command[index] in ("-c", "-C") else 1
+    return index
 
 
 def test_commit_refuses_when_most_tracked_files_are_missing(monkeypatch, repo):

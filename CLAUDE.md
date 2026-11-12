@@ -329,8 +329,10 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `pull`/`push` →
   recognises a rejected token in git's stderr
 - `errors.py`: `SyncErrorKind`, `SyncError`, and `failure_kind()` sorting a
   failure into `auth_failed`, `network` or `git_failed`
-- `command.py`: runs one git command for one repository, always with
-  `--git-dir` and `--work-tree`, so a lost `.git` file cannot redirect it
+- `command.py`: the one runner for every git command, clone included,
+  raising `SyncError` for the caller to log; commands in a cloned
+  repository always get `--git-dir` and `--work-tree`, so a lost `.git`
+  file cannot redirect them
 - `checks.py`: what is checked before a commit: the user being busy (an
   unfinished merge, another branch or detached HEAD, a fresh `index.lock`),
   mass deletion, files over 50 MiB, conflict markers, default excludes

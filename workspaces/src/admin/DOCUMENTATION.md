@@ -549,7 +549,7 @@ A failed clone is logged, recorded in the status as `clone_failed` with the
 reason as `last_error.kind`, and the service carries on:
 
 ```text
-ERROR admin.git.clone Failed to clone repository 'common' (<url>, branch main) into <working tree>: Failed to clone for repository 'common': <git's message>
+ERROR admin.git.bootstrap Failed to clone for repository 'common': <git's message>
 ```
 
 - Each repository is cloned on its own, so a failure in `common` does not
@@ -1500,9 +1500,10 @@ module imports the layer above it, so each can be tested on its own.
   - `errors.py`: `SyncErrorKind`, the reasons `/storage/status` may report,
     and `SyncError`. `failure_kind()` sorts a failed command's output into
     `auth_failed`, `network` or `git_failed`
-  - `command.py`: `run_local()` and `run_remote()` run one git command for
-    one repository, always naming `--git-dir` and `--work-tree`, and turn a
-    failure or time-out into a `SyncError` of the right kind
+  - `command.py`: `run()` runs every git command of the backup and the
+    clone, and turns a failure or time-out into a `SyncError` of the right
+    kind; the caller logs it. `run_local()` and `run_remote()` add
+    `--git-dir` and `--work-tree` for a cloned repository
   - `checks.py`: everything checked before a commit:
     `ensure_safe_to_sync()` (index lock, unfinished operation, branch,
     unmerged files), `ensure_no_mass_deletion()`, `large_files()`,
@@ -1510,7 +1511,7 @@ module imports the layer above it, so each can be tested on its own.
   - `clone.py`: `clone_asset()` clones one `RepoConfig` with a separated
     git directory and working tree (`git clone --separate-git-dir`),
     skipping repositories that are already cloned, starting one locally on
-    an empty remote, and raising `CloneError` with a kind on failure.
+    an empty remote, and raising `CloneError`, a `SyncError`, on failure.
     `restore_git_file()` writes back a lost `.git` file
   - `refs.py`: the configured branch's ref names and refspecs
   - `commit.py`: `commit_local_changes()` commits the user's changes,
