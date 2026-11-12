@@ -14,7 +14,8 @@ import pytest
 from admin.git import scheduler
 from admin.git.clone import CloneError
 from admin.git.status import SyncStatus
-from admin.git.sync import SyncError, SyncErrorKind, SyncStopped
+from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.sync import SyncStopped
 from tests.helpers.repo_factory import make_repo
 
 

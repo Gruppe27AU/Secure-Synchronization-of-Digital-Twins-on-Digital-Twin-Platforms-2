@@ -1443,7 +1443,11 @@ src/admin/
     ├── command.py                 # Runs one git command for one repository
     ├── checks.py                  # What is checked before anything is committed
     ├── clone.py                   # Clones a single RepoConfig
-    ├── sync.py                    # Commits, pulls and pushes one working tree
+    ├── refs.py                    # Ref names and refspecs of the branch
+    ├── commit.py                  # Commits the user's changes
+    ├── pull.py                    # Fetches and merges, or fast-forwards
+    ├── push.py                    # Pushes, and backs up to backup/<id>
+    ├── sync.py                    # One cycle: commit, back up, pull, push
     ├── scheduler.py               # Runs clone and sync on a timer, in the background
     ├── status.py                  # Where the backup stands, for /storage/status
     ├── provision.py               # Creates a missing config.toml from the template
@@ -1451,8 +1455,9 @@ src/admin/
 ```
 
 Dependencies point in one direction only: `main` → `api` → `services`, and
-within `git/`: `bootstrap` → `scheduler` → `sync` → `checks` → `command`
-→ `errors` → `auth` → `config` → `runner`, with `clone` beside `sync`. No
+within `git/`: `bootstrap` → `scheduler` → `sync` → `pull`/`push` →
+`commit` → `checks` → `command` → `errors` → `auth` → `config` → `runner`,
+with `clone` beside `sync` and `refs` depending only on `config`. No
 module imports the layer above it, so each can be tested on its own.
 
 ### Components
@@ -1507,14 +1512,17 @@ module imports the layer above it, so each can be tested on its own.
     skipping repositories that are already cloned, starting one locally on
     an empty remote, and raising `CloneError` with a kind on failure.
     `restore_git_file()` writes back a lost `.git` file
+  - `refs.py`: the configured branch's ref names and refspecs
+  - `commit.py`: `commit_local_changes()` commits the user's changes,
+    holding back large and marked files (`HeldBack`). The commit identity
+    is passed per command with `git -c`, never written to `.git/config`
+  - `pull.py`: `pull_changes()` fetches and merges, aborting a conflicted
+    merge; `pull_only()` fast-forwards a `pull` repository
+  - `push.py`: `push_if_ahead()` pushes the branch;
+    `push_to_backup_branch()` force-pushes it to `backup/<workspace-id>`
   - `sync.py`: `sync_once()` runs one cycle. For a `sync` repository:
-    `commit_local_changes()`, `push_to_backup_branch()`, `pull_changes()`
-    (which aborts a conflicted merge), then `push_if_ahead()`. For a `pull`
-    repository: `pull_only()`. Held-back files are reported once the rest of
-    the cycle is done. The
-    commit identity is passed per command with `git -c`, because
-    `clone.py` deliberately leaves it out of the repository's own
-    `.git/config`
+    commit, back up, pull, push. For a `pull` repository: `pull_only()`.
+    Held-back files are reported once the rest of the cycle is done
   - `scheduler.py`: `start_sync_scheduler()` runs `sync_all()` on a
     background daemon thread, every `SYNC_INTERVAL_SECONDS` from the
     config file (300 when it is not set), unless `--sync-interval`
@@ -1584,18 +1592,18 @@ obvious test file:
 | `tests/unit/test_git_auth.py` | `admin/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
 | `tests/unit/test_git_config.py` | `admin/git/config.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials, `SYNC_INTERVAL_SECONDS` read and defaulted, an out-of-range, mistyped or misplaced value falling back to 300 with a warning while the repositories still load |
 | `tests/unit/test_git_clone.py` | `admin/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/test_git_sync.py` | `admin/git/sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
+| `tests/unit/test_git_sync.py` | `admin/git/commit.py`, `pull.py`, `push.py`, `sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
 | `tests/unit/test_git_scheduler.py` | `admin/git/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
-| `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflicts against real git: every kind aborts the merge and keeps both sides, the backup branch is pushed every cycle, a merge finished by hand is pushed |
+| `tests/integration/test_git_sync_conflicts.py` | `admin/git/pull.py`, `sync.py` | Conflicts against real git: every kind aborts the merge and keeps both sides, the backup branch is pushed every cycle, a merge finished by hand is pushed |
 | `tests/unit/test_git_errors.py` | `admin/git/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
 | `tests/integration/test_git_sync_repository.py` | `admin/git/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed |
-| `tests/integration/test_git_pull_only.py` | `admin/git/sync.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
+| `tests/integration/test_git_pull_only.py` | `admin/git/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
 | `tests/integration/test_git_remote_changes.py` | `admin/git/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work on the backup branch; an empty remote is started and filled |
 | `tests/integration/test_git_auth_failure.py` | `admin/git/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed` |
-| `tests/integration/test_git_backup_hygiene.py` | `admin/git/sync.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
+| `tests/integration/test_git_backup_hygiene.py` | `admin/git/commit.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
 it builds the `RepoConfig` objects the git tests need, so no test module has

@@ -85,6 +85,11 @@ def _run(
         ) from error
 
 
+def output_of(result: subprocess.CompletedProcess[str]) -> str:
+    """Return what git printed: stderr, or stdout when stderr is empty."""
+    return result.stderr.strip() or result.stdout.strip()
+
+
 def _raise_if_failed(
     repo: RepoConfig, result: subprocess.CompletedProcess[str], action: str
 ) -> None:
@@ -103,7 +108,7 @@ def _raise_if_failed(
     if result.returncode == 0:
         return
 
-    reason = result.stderr.strip() or result.stdout.strip()
+    reason = output_of(result)
     logger.error("Failed to %s for repository '%s': %s", action, repo.name, reason)
     message = f"Failed to {action} for repository '{repo.name}': {reason}"
     kind = failure_kind(reason)

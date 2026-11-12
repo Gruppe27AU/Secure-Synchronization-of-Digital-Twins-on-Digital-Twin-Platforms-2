@@ -13,7 +13,8 @@ import subprocess
 import pytest
 
 from admin.git import checks
-from admin.git.sync import SyncError, SyncErrorKind, sync_once
+from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.sync import sync_once
 from tests.helpers.git_world import git, write
 
 

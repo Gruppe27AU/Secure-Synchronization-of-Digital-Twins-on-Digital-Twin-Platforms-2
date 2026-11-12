@@ -315,8 +315,9 @@ The package is layered, and the test files mirror it:
 Dependencies point one way only: `main` → `api` → `services`.
 
 The `git/` package backs the workspace up to its remotes and is layered the
-same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `command`
-→ `errors` → `auth` → `config` → `runner`; `locate` depends on nothing:
+same way, `bootstrap` → `scheduler` → `sync`/`clone` → `pull`/`push` →
+`commit` → `checks` → `command` → `errors` → `auth` → `config` → `runner`;
+`refs` depends only on `config`, `locate` on nothing:
 
 - `locate.py`: `discover_config()` chooses the config file,
   `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
@@ -336,10 +337,17 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `comma
 - `clone.py`: clones one repository, git directory and working tree kept
   apart; starts one locally on an empty remote; writes back a lost `.git`
   file
+- `refs.py`: ref names and refspecs of the configured branch
+- `commit.py`: commits the user's changes, holding back large and marked
+  files (`HeldBack`)
+- `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
+  (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
+- `push.py`: pushes the branch, and force-pushes it to the workspace's own
+  `backup/<workspace-id>`
 - `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
-  `private`): commit, pull, push; local files win a conflict; a pull that
-  fails for good pushes to `backup/<workspace-id>`. `MODE = "pull"`
-  (default for `common`): fast-forward only, never commit or push
+  `private`): commit, back up, pull, push; a conflict ends the cycle.
+  `MODE = "pull"` (default for `common`): fast-forward only, never commit
+  or push
 - `scheduler.py`: runs the cycle on a background daemon thread, clones a
   repository whose clone failed, and records each outcome in a `SyncStatus`
 - `status.py`: thread-safe record of the backup's `state` and, per

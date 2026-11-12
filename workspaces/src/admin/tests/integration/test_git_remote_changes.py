@@ -10,7 +10,9 @@ at all must still be usable.
 import pytest
 
 from admin.git.clone import clone_asset
-from admin.git.sync import SyncError, SyncErrorKind, backup_branch, sync_once
+from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.push import backup_branch
+from admin.git.sync import sync_once
 from tests.helpers.git_world import git, write
 from tests.helpers.repo_factory import make_repo
 

@@ -9,15 +9,11 @@ for their size, and the default excludes. Real git is never invoked -
 
 import pytest
 
-from admin.git import checks, sync
-from admin.git.sync import (
-    HeldBack,
-    SyncError,
-    SyncErrorKind,
-    commit_local_changes,
-    push_if_ahead,
-    sync_once,
-)
+from admin.git import checks, push
+from admin.git.commit import HeldBack, commit_local_changes
+from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.push import push_if_ahead
+from admin.git.sync import sync_once
 from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
 from tests.helpers.repo_factory import make_repo
 
@@ -52,7 +48,7 @@ def test_a_pull_that_fails_for_good_names_the_backup_branch(monkeypatch, repo):
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.PULL_FAILED
-    workspace = (repo.git_dir / sync.WORKSPACE_ID_FILE).read_text().strip()
+    workspace = (repo.git_dir / push.WORKSPACE_ID_FILE).read_text().strip()
     assert fake_git.command_for("backup-push")[-2:] == [
         "origin",
         f"+refs/heads/main:refs/heads/backup/{workspace}",

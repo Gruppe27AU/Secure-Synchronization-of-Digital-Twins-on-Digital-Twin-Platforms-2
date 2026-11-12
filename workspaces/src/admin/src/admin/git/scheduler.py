@@ -14,7 +14,8 @@ import threading
 from admin.git.clone import CloneError, clone_asset, is_cloned, restore_git_file
 from admin.git.config import RepoConfig
 from admin.git.status import SyncStatus
-from admin.git.sync import SyncError, SyncErrorKind, SyncStopped, sync_once
+from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.sync import SyncStopped, sync_once
 
 logger = logging.getLogger(__name__)
 

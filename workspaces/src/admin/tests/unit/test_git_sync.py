@@ -25,18 +25,16 @@ from admin.git.runner import (
     REMOTE_TIMEOUT_SECONDS,
     GitTimeoutError,
 )
-from admin.git.sync import (
-    SyncError,
-    SyncErrorKind,
+from admin.git.commit import (
     HeldBack,
-    SyncStopped,
     build_commit_message,
     commit_local_changes,
     has_changes,
-    pull_changes,
-    push_if_ahead,
-    sync_once,
 )
+from admin.git.errors import SyncError, SyncErrorKind
+from admin.git.pull import pull_changes
+from admin.git.push import push_if_ahead
+from admin.git.sync import SyncStopped, sync_once
 from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
 from tests.helpers.repo_factory import make_repo
 

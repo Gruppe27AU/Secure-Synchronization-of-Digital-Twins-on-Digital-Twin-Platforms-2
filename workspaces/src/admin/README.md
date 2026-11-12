@@ -39,7 +39,11 @@ src/admin/
     ├── command.py                # Run one git command for one repository
     ├── checks.py                 # What is checked before a commit
     ├── clone.py                  # Clone a single RepoConfig
-    ├── sync.py                   # Commit, pull and push one working tree
+    ├── refs.py                   # Ref names and refspecs of the branch
+    ├── commit.py                 # Commit the user's changes
+    ├── pull.py                   # Fetch and merge, or fast-forward
+    ├── push.py                   # Push, and back up to backup/<id>
+    ├── sync.py                   # One cycle: commit, back up, pull, push
     ├── scheduler.py              # Run the sync on a timer, in the background
     ├── status.py                 # Where the backup stands, for /storage/status
     ├── provision.py              # Create a missing config.toml from the template
