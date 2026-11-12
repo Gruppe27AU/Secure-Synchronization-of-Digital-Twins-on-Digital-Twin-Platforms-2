@@ -4,7 +4,7 @@ Unit tests for the periodic scheduling of the git backup.
 Covers :mod:`admin.git.service.scheduler`: synchronizing every repository, keeping
 going when one of them fails, and running until the stop event is set.
 These tests never touch git - :func:`admin.git.repo.sync.sync_once` and
-:func:`admin.git.repo.clone.restore_git_file` are replaced throughout.
+:func:`admin.git.repo.clone.restore_work_tree` are replaced throughout.
 """
 
 import threading
@@ -47,7 +47,7 @@ def fixture_restored(monkeypatch):
     """Record the working trees whose .git file would be written back."""
     restored = []
     monkeypatch.setattr(
-        scheduler, "restore_git_file", lambda repo: restored.append(repo.name)
+        scheduler, "restore_work_tree", lambda repo: restored.append(repo.name)
     )
     return restored
 

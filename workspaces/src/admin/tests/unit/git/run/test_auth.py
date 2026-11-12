@@ -41,28 +41,28 @@ def test_auth_environment_builds_basic_auth_header():
     assert "secret-token" not in "".join(env.values())
 
 
-def test_auth_header_is_scoped_to_the_remote_host():
-    """Test a request to any other host does not get the header."""
+def test_auth_header_is_scoped_to_the_repository():
+    """Test another repository on the same host does not get the header."""
     repo = replace(
         make_repo(repo_url="https://gitlab.example.org:8443/me/priv.git"),
         token="secret-token",
     )
 
     assert auth_environment(repo)["GIT_CONFIG_KEY_0"] == (
-        "http.https://gitlab.example.org:8443/.extraHeader"
+        "http.https://gitlab.example.org:8443/me/priv.git.extraHeader"
     )
 
 
 @pytest.mark.parametrize(
     ("url", "scope"),
     [
-        ("https://gitlab.com/me/priv.git", "https://gitlab.com/"),
-        ("https://gitlab.com/me/priv", "https://gitlab.com/"),
-        ("https://host:8443/a/b/c.git", "https://host:8443/"),
+        ("https://gitlab.com/me/priv.git", "https://gitlab.com/me/priv.git"),
+        ("https://gitlab.com/me/priv/", "https://gitlab.com/me/priv"),
+        ("https://host:8443/a/b/c.git", "https://host:8443/a/b/c.git"),
     ],
 )
-def test_header_scope_is_scheme_and_host(url, scope):
-    """Test the scope survives a redirect within the host."""
+def test_header_scope_is_the_repository_url(url, scope):
+    """Test the scope is the repository's URL without a trailing slash."""
     assert header_scope(url) == scope
 
 

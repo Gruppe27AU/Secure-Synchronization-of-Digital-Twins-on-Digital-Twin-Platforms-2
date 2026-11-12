@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 #: Share of the tracked files that may go missing before a commit is refused.
 MASS_DELETION_FRACTION = 0.5
 
-#: Fewer deleted files than this are never refused.
+#: Below this many deleted files, only a fully emptied tree is refused.
 MASS_DELETION_MIN_FILES = 10
 
 #: End of each ``git diff --check`` line about a conflict marker.
@@ -53,7 +53,8 @@ EXCLUDE_BLOCK_END = "# <<< workspace-admin defaults"
 
 def ensure_no_mass_deletion(repo: RepoConfig) -> None:
     """
-    Refuse to commit when most tracked files are missing.
+    Refuse to commit when every tracked file is missing, or most of them and
+    at least :data:`MASS_DELETION_MIN_FILES`.
 
     An emptied tree is more often an accident than a clean-up. Deleting that
     much on purpose takes one commit by hand.
@@ -62,10 +63,11 @@ def ensure_no_mass_deletion(repo: RepoConfig) -> None:
         SyncError: ``mass_deletion``, or if the files cannot be counted.
     """
     deleted = len(list_paths(repo, ["--deleted"], "count the deleted files"))
-    if deleted < MASS_DELETION_MIN_FILES:
+    if not deleted:
         return
     tracked = len(list_paths(repo, ["--cached"], "count the tracked files"))
-    if deleted <= tracked * MASS_DELETION_FRACTION:
+    most = deleted >= MASS_DELETION_MIN_FILES and deleted > tracked * MASS_DELETION_FRACTION
+    if deleted < tracked and not most:
         return
     raise SyncError(
         f"Not committing in repository '{repo.name}': {deleted} of {tracked} "

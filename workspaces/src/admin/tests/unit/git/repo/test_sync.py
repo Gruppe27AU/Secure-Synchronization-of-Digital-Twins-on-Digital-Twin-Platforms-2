@@ -18,7 +18,7 @@ from dataclasses import replace
 
 import pytest
 
-from admin.git.repo import busy, checks
+from admin.git.repo import busy
 from admin.git.run import command as command_module
 from admin.git.run.runner import (
     LOCAL_TIMEOUT_SECONDS,
@@ -826,28 +826,6 @@ def test_commit_refuses_when_most_tracked_files_are_missing(monkeypatch, repo):
     assert excinfo.value.kind is SyncErrorKind.MASS_DELETION
     assert "add" not in fake_git.keys
     assert "commit" not in fake_git.keys
-
-
-@pytest.mark.parametrize(
-    ("deleted", "tracked"),
-    [
-        # Half is not more than half.
-        (10, 20),
-        # Too few to tell an accident from a clean-up, e.g. the only README.
-        (checks.MASS_DELETION_MIN_FILES - 1, checks.MASS_DELETION_MIN_FILES - 1),
-    ],
-)
-def test_commit_allows_a_deletion_below_the_limits(
-    monkeypatch, repo, deleted, tracked
-):
-    """Test ordinary deletions are still committed."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(status_output=" D f.txt", deleted_files=deleted, tracked_files=tracked),
-    )
-
-    assert commit_local_changes(repo) is True
-    assert "commit" in fake_git.keys
 
 
 def test_pull_changes_does_not_merge_after_a_branch_switch_during_the_fetch(

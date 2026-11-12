@@ -20,6 +20,16 @@ The main changes made so far are listed here.
   changed is named in the log, with the kind `conflict_markers` or
   `file_too_large`, instead of being reported as `pull_failed`
 * A file name that is not valid UTF-8 no longer stops the backup
+* **The token is only sent to the repository's own URL**, not to every
+  repository on the same host
+* `GIT_REPO_TOKEN` may be left out or empty for a `MODE = "pull"`
+  repository, such as a public `common`; `sync` still needs it
+* A working tree whose folder was deleted is restored from the git
+  directory on startup and before each cycle
+* A working tree whose every tracked file is missing is not committed,
+  whatever the number of files; before, fewer than ten were committed as
+  deletions. Deleting a repository's last file now takes one commit by hand
+* `https://host:443/...` and `https://host/...` count as the same remote
 * The `admin.git` package is split into `setup`, `run`, `repo` and
   `service`, and the tests mirror it. **The loggers are renamed with it**,
   for example `admin.git.scheduler` is now `admin.git.service.scheduler`;

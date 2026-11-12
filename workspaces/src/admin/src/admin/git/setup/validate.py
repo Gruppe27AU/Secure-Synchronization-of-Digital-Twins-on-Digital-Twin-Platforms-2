@@ -128,6 +128,19 @@ def mode(name: str, asset: dict[str, Any], where: str, source: Path) -> SyncMode
     return SyncMode(value)
 
 
+def token(asset: dict[str, Any], sync_mode: SyncMode, where: str, source: Path) -> str:
+    """
+    Return ``GIT_REPO_TOKEN``. A ``pull`` repository may leave it out or
+    empty, for a public remote; ``sync`` needs it to push.
+
+    Raises:
+        ConfigError: If a ``sync`` repository has none, or it is not a string.
+    """
+    if sync_mode is SyncMode.PULL and asset.get("GIT_REPO_TOKEN", "") == "":
+        return ""
+    return require(asset, "GIT_REPO_TOKEN", where, source)
+
+
 def reject_placeholders(asset: dict[str, Any], where: str, source: Path) -> None:
     """
     Refuse a template value never filled in. Call after :func:`require`.
@@ -136,7 +149,7 @@ def reject_placeholders(asset: dict[str, Any], where: str, source: Path) -> None
         PlaceholderError: If a value is a placeholder.
     """
     for key, placeholders in PLACEHOLDER_VALUES.items():
-        if asset[key] in placeholders:
+        if asset.get(key) in placeholders:
             raise PlaceholderError(
                 f"{source}: '{key}' in {where} is still the placeholder "
                 f"from config.toml.example; fill in your own value"
@@ -174,12 +187,14 @@ def warn_shared_permissions(source: Path) -> None:
 
 def normalize_url(url: str) -> str:
     """
-    Return ``url`` with scheme and host lowercased and a trailing ``/`` or
-    ``.git`` removed, so two spellings of one remote compare equal.
+    Return ``url`` with scheme and host lowercased, the default port ``:443``
+    and a trailing ``/`` or ``.git`` removed, so two spellings of one remote
+    compare equal.
     """
     parts = urlsplit(url)
+    host = parts.netloc.lower().removesuffix(":443")
     path = parts.path.rstrip("/").removesuffix(".git").rstrip("/")
-    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{path}"
+    return f"{parts.scheme.lower()}://{host}{path}"
 
 
 def check_distinct_remotes(repos: list[RepoConfig], source: Path) -> None:

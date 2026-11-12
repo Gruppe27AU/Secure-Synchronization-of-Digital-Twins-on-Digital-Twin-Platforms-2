@@ -291,7 +291,7 @@ Every repository is a `[assets.<name>]` table. Two names are recognised,
 | --- | ------- |
 | `GIT_REPO_URL` | Required. HTTPS URL of the remote. Must start with `https://` and must not contain a username or token (`user:token@`) |
 | `GIT_REPO_BRANCH` | Required. The one branch that is cloned and kept in step. Must be a valid git branch name, as checked by `git check-ref-format --branch` |
-| `GIT_REPO_TOKEN` | Required. Access token, sent with HTTP Basic authentication |
+| `GIT_REPO_TOKEN` | Access token, sent with HTTP Basic authentication. Required for `"sync"`; a `"pull"` repository may leave it out or empty, for a public remote |
 | `MODE` | Optional. `"sync"` commits, pulls and pushes; `"pull"` only takes the remote's changes. Defaults to `"sync"` for `private` and `"pull"` for `common` (see [Pull-only repositories](#pull-only-repositories)) |
 
 HTTP Basic needs a username as well, but the forge identifies the user by
@@ -517,16 +517,16 @@ See [The `.git` file is missing](#the-git-file-is-missing).
 
 `GIT_REPO_TOKEN` travels as an HTTP Basic `Authorization` header that git
 adds to every request. The header is passed to git in its environment, as
-`GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=http.https://<host>/.extraHeader`
+`GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=http.<GIT_REPO_URL>.extraHeader`
 and `GIT_CONFIG_VALUE_0=Authorization: Basic <base64 of oauth2:token>`:
 
 - **Not on the command line.** A process's arguments can be read by every
   user of the machine (`/proc/<pid>/cmdline`); its environment only by its
   own user.
-- **Only for the remote's host.** The header is scoped to
-  `https://<host>/`, so a request git makes to any other host does not
-  carry it. The whole host rather than the repository's path, because a
-  forge may redirect within its host, for example from `.../repo` to
+- **Only for the repository.** The header is scoped to `GIT_REPO_URL`
+  itself, so another repository on the same forge never receives the
+  token. git matches the scope against the remote URL once per command,
+  so the header still follows a redirect, for example from `.../repo` to
   `.../repo.git/`.
 - **Never stored.** It is not written into the git directory's config and
   not added to the remote URL.
@@ -887,8 +887,8 @@ running git command never holds the lock that long in practice.
 
 ### Most files are missing
 
-When more than half of the tracked files, and at least ten, are missing
-from the working tree, the backup does not commit, so the files are not
+When every tracked file is missing from the working tree, or more than half
+of them and at least ten, the backup does not commit, so the files are not
 deleted on the remote either:
 
 ```text
@@ -904,6 +904,22 @@ yourself and the next interval pushes it:
 cd /workspace/assets/private
 git add -A && git commit -m "Remove old results"
 ```
+
+That is also how the last file of a repository is deleted.
+
+### The working tree is deleted
+
+When the folder `/workspace/assets/<name>` itself is gone, it is restored
+from the git directory on startup and before each cycle, as of the last
+backup, with a warning in the log:
+
+```text
+WARNING admin.git.repo.clone Repository 'private' had lost /workspace/assets/private; restored from its git directory
+```
+
+Only a missing folder is restored. Files deleted inside a folder that still
+exists are your decision, within the limits of
+[Most files are missing](#most-files-are-missing).
 
 ### The `.git` file is missing
 
@@ -1503,7 +1519,7 @@ the package. The tests mirror this layout under `tests/unit/git/` and
     `load_sync_interval()` reads `SYNC_INTERVAL_SECONDS`
   - `run/auth.py`: `auth_environment()` builds the `GIT_CONFIG_COUNT`
     variables that carry `GIT_REPO_TOKEN`, with the fixed username
-    `oauth2`, as an HTTP Basic header scoped to the remote's host (see
+    `oauth2`, as an HTTP Basic header scoped to the repository's URL (see
     [How the token is sent](#how-the-token-is-sent)). `remote_options()`
     limits a command to https, switches off credential helpers and
     abandons stalled transfers. `is_auth_failure()` recognizes git's and
@@ -1607,6 +1623,7 @@ obvious test file:
 | `tests/unit/git/run/test_auth.py` | `admin/git/run/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
 | `tests/unit/git/setup/test_config.py` | `admin/git/setup/load.py`, `validate.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials, `SYNC_INTERVAL_SECONDS` read and defaulted, an out-of-range, mistyped or misplaced value falling back to 300 with a warning while the repositories still load |
 | `tests/unit/git/repo/test_clone.py` | `admin/git/repo/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/git/repo/test_checks.py` | `admin/git/repo/checks.py` | Mass deletion limits (an emptied tree of any size refused), large files, real conflict markers only, an outdated exclude block replaced, an unwritable exclude file logged |
 | `tests/unit/git/repo/test_sync.py` | `admin/git/repo/commit.py`, `pull.py`, `push.py`, `sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
 | `tests/unit/git/service/test_scheduler.py` | `admin/git/service/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |
 | `tests/unit/git/service/test_status.py` | `admin/git/service/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
@@ -1614,10 +1631,11 @@ obvious test file:
 | `tests/unit/git/service/test_bootstrap.py` | `admin/git/service/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
 | `tests/integration/git/repo/test_sync_conflicts.py` | `admin/git/repo/pull.py`, `sync.py` | Conflicts against real git: every kind aborts the merge and keeps both sides, the backup branch is pushed every cycle, a merge finished by hand is pushed |
 | `tests/unit/git/run/test_errors.py` | `admin/git/run/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
-| `tests/integration/git/repo/test_sync_repository.py` | `admin/git/repo/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed |
+| `tests/unit/git/run/test_command.py` | `admin/git/run/command.py` | Repository options before the subcommand, remote options, credentials and time limits, failures by kind with the token hint only when a token was sent, unchecked failures, time-outs, reading git's output |
+| `tests/integration/git/repo/test_sync_repository.py` | `admin/git/repo/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted working tree is restored on startup and before a cycle |
 | `tests/integration/git/repo/test_pull_only.py` | `admin/git/repo/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
 | `tests/integration/git/repo/test_remote_changes.py` | `admin/git/repo/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work on the backup branch; an empty remote is started and filled |
-| `tests/integration/git/repo/test_auth_failure.py` | `admin/git/repo/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed` |
+| `tests/integration/git/repo/test_auth_failure.py` | `admin/git/repo/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed`; the token reaches only the repository's URL, not another repository on the host |
 | `tests/integration/git/repo/test_backup_hygiene.py` | `admin/git/repo/commit.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:

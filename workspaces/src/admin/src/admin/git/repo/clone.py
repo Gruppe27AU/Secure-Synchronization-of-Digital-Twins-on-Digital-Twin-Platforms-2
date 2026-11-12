@@ -8,9 +8,9 @@ same layout and remote instead, and the first push creates the branch.
 import logging
 from pathlib import Path
 
-from admin.git.run.command import run
-from admin.git.setup.config import RepoConfig
+from admin.git.run.command import run, run_local
 from admin.git.run.errors import SyncError
+from admin.git.setup.config import RepoConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,40 @@ class CloneError(SyncError):
 def is_cloned(git_dir: Path) -> bool:
     """Check whether ``git_dir`` holds a git directory."""
     return (git_dir / "HEAD").is_file()
+
+
+def _restore_work_tree(repo: RepoConfig) -> None:
+    """
+    Recreate a deleted work tree from the index, as of the last cycle.
+
+    Only a missing folder is restored; deleted files inside one are left to
+    :func:`admin.git.repo.checks.ensure_no_mass_deletion`. A failure is
+    logged, not raised.
+    """
+    if repo.work_tree.exists() or not is_cloned(repo.git_dir):
+        return
+    try:
+        repo.work_tree.mkdir(parents=True)
+        run_local(repo, ["checkout-index", "--all"], "restore the work tree")
+    except (OSError, SyncError) as error:
+        logger.warning(
+            "Repository '%s' has lost %s, and it could not be restored: %s",
+            repo.name,
+            repo.work_tree,
+            error,
+        )
+        return
+    logger.warning(
+        "Repository '%s' had lost %s; restored from its git directory",
+        repo.name,
+        repo.work_tree,
+    )
+
+
+def restore_work_tree(repo: RepoConfig) -> None:
+    """Restore a deleted work tree and a lost ``.git`` file; failures are logged."""
+    _restore_work_tree(repo)
+    restore_git_file(repo)
 
 
 def restore_git_file(repo: RepoConfig) -> None:
@@ -150,6 +184,7 @@ def clone_asset(repo: RepoConfig) -> bool:
         logger.info(
             "Repository '%s' already cloned at %s; skipping", repo.name, repo.git_dir
         )
+        restore_work_tree(repo)
         return False
     repo.git_dir.parent.mkdir(parents=True, exist_ok=True)
     repo.work_tree.mkdir(parents=True, exist_ok=True)

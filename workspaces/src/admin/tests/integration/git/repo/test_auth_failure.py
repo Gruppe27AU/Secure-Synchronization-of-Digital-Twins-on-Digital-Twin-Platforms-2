@@ -1,5 +1,5 @@
 """
-Integration test for a rejected token, with real git and a real HTTP server.
+Integration tests for the token, with real git and a real HTTP server.
 
 A local server answers every request with 401, as a forge does for an
 expired token. With prompts switched off git does not say "Authentication
@@ -7,6 +7,8 @@ failed" then, but that it could not ask for a username, and that has to be
 recognised as a rejected token too.
 """
 
+import os
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -67,3 +69,36 @@ def test_an_expired_token_is_reported_as_an_auth_failure(
     assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
     assert "invalid or expired" in str(excinfo.value)
     assert "expired-token" not in str(excinfo.value)
+
+
+class _Recording(_Unauthorized):
+    """Refuses every request, noting which paths carried a token."""
+
+    seen: list[tuple[str, bool]] = []
+
+    def do_GET(self):  # pylint: disable=invalid-name
+        """Note the path and whether it was authenticated, then refuse."""
+        self.seen.append((self.path, "Authorization" in self.headers))
+        super().do_GET()
+
+
+def test_the_token_goes_to_the_repository_only(tmp_path, monkeypatch):
+    """Test another repository on the same host never receives the token."""
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    server = HTTPServer(("127.0.0.1", 0), _Recording)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **auth.auth_environment(
+        make_repo(repo_url=f"{base}/me/priv.git", token="secret-token")
+    )}
+    try:
+        for path in ("/me/priv.git", "/someone/else.git"):
+            subprocess.run(["git", "-c", "credential.helper=", "ls-remote", base + path],
+                           env=env, capture_output=True, check=False, timeout=30)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    sent = {path.split("/info/")[0]: has_token for path, has_token in _Recording.seen}
+    assert sent == {"/me/priv.git": True, "/someone/else.git": False}

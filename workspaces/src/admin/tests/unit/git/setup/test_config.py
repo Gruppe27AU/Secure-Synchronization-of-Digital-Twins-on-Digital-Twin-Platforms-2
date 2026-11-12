@@ -118,7 +118,28 @@ def test_repr_hides_the_token(tmp_path):
 
 def test_missing_asset_key_names_key_and_section(tmp_path):
     """Test that a missing repository key names both the key and section."""
-    content = VALID_CONFIG.replace('GIT_REPO_TOKEN = "common-token"\n', "")
+    content = VALID_CONFIG.replace('GIT_REPO_BRANCH = "develop"\n', "")
+
+    with pytest.raises(ConfigError, match=r"GIT_REPO_BRANCH.*\[assets\.common\]"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+@pytest.mark.parametrize("token_line", ["", 'GIT_REPO_TOKEN = ""\n'])
+def test_a_pull_repository_needs_no_token(tmp_path, token_line):
+    """Test a pull-only common, such as a public one, may leave the token out."""
+    content = VALID_CONFIG.replace('GIT_REPO_TOKEN = "common-token"\n', token_line)
+
+    common = load_config(write_config(tmp_path, content), ROOT)[1]
+
+    assert common.mode is SyncMode.PULL
+    assert common.token == ""
+
+
+def test_a_sync_repository_needs_a_token(tmp_path):
+    """Test a repository that pushes cannot leave the token out."""
+    content = VALID_CONFIG.replace(
+        'GIT_REPO_TOKEN = "common-token"\n', 'MODE = "sync"\n'
+    )
 
     with pytest.raises(ConfigError, match=r"GIT_REPO_TOKEN.*\[assets\.common\]"):
         load_config(write_config(tmp_path, content), ROOT)
@@ -569,10 +590,11 @@ def test_known_keys_are_not_warned_about(tmp_path, caplog):
         "https://gitlab.com/user/private/",
         "https://GitLab.com/user/private.git",
         "https://gitlab.com/user/private.git/",
+        "https://gitlab.com:443/user/private.git",
     ],
 )
 def test_two_spellings_of_one_remote_are_rejected(tmp_path, other_spelling):
-    """Test .git, a trailing slash or letter case do not make a second remote."""
+    """Test .git, a trailing slash, letter case or :443 do not make a second remote."""
     content = VALID_CONFIG.replace(
         "https://gitlab.com/user/common.git", other_spelling
     ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
@@ -585,6 +607,15 @@ def test_paths_that_differ_in_case_are_different_remotes(tmp_path):
     """Test the path keeps its case, since some hosts tell paths apart by it."""
     content = VALID_CONFIG.replace(
         "https://gitlab.com/user/common.git", "https://gitlab.com/User/Private.git"
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    assert len(load_config(write_config(tmp_path, content), ROOT)) == 2
+
+
+def test_another_port_is_another_remote(tmp_path):
+    """Test a port other than 443 names another server, so it is allowed."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com:8443/user/private.git"
     ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
 
     assert len(load_config(write_config(tmp_path, content), ROOT)) == 2

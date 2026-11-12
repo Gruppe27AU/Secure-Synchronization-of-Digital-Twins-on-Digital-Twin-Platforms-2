@@ -19,7 +19,8 @@ GIT_REPO_TOKEN = "gitlab-api-token"
 # [assets.common]
 # GIT_REPO_URL = "https://gitlab.com/username/repository.git"
 # GIT_REPO_BRANCH = "main"
-# # HTTP token for authentication
+# # HTTP token for authentication; leave it out for a public repository
+# # in "pull" mode
 # GIT_REPO_TOKEN = "gitlab-api-token"
 # # "pull" (default for common) or "sync" (default for private). Only use
 # # "sync" for common if a single user writes to it.

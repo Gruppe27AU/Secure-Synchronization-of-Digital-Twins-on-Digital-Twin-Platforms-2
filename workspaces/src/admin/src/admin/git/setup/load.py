@@ -28,6 +28,7 @@ from admin.git.setup.validate import (
     reject_placeholders,
     require,
     sync_interval_problem,
+    token,
     validate_branch,
     validate_url,
     warn_shared_permissions,
@@ -63,16 +64,17 @@ def _build_repo(name: str, asset: dict[str, Any], root: Path, source: Path) -> R
     where = f"[assets.{name}]"
     # A misplaced SYNC_INTERVAL_SECONDS has a warning of its own.
     warn_unknown_keys(asset, KNOWN_ASSET_KEYS | {SYNC_INTERVAL_KEY}, where, source)
+    sync_mode = mode(name, asset, where, source)
     repo = RepoConfig(
         name=name,
         repo_url=validate_url(require(asset, "GIT_REPO_URL", where, source), where, source),
         branch=validate_branch(
             require(asset, "GIT_REPO_BRANCH", where, source), where, source
         ),
-        token=require(asset, "GIT_REPO_TOKEN", where, source),
+        token=token(asset, sync_mode, where, source),
         git_dir=root / GIT_DIR_PARENT / name,
         work_tree=root / WORK_TREE_PARENT / name,
-        mode=mode(name, asset, where, source),
+        mode=sync_mode,
     )
     reject_placeholders(asset, where, source)
     return repo

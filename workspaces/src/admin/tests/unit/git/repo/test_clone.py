@@ -96,6 +96,8 @@ def test_clone_asset_skips_when_already_cloned(monkeypatch, repo):
     """Test clone_asset skips cloning and does not invoke git."""
     repo.git_dir.mkdir(parents=True)
     (repo.git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    repo.work_tree.mkdir(parents=True)
+    (repo.work_tree / ".git").write_text(f"gitdir: {repo.git_dir}\n", encoding="utf-8")
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("subprocess.run should not be called when already cloned")
@@ -205,7 +207,7 @@ def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo
 
     assert not any("extraHeader" in part for part in captured["command"])
     assert captured["env"]["GIT_CONFIG_KEY_0"] == (
-        "http.https://example.com/.extraHeader"
+        "http.https://example.com/org/common.git.extraHeader"
     )
     assert captured["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
     # The token must never appear in plain text anywhere.
@@ -278,3 +280,14 @@ def test_restore_git_file_does_nothing_before_the_clone(repo):
     restore_git_file(repo)
 
     assert not (repo.work_tree / ".git").exists()
+
+
+def test_a_work_tree_that_cannot_be_restored_is_logged(monkeypatch, repo, caplog):
+    """Test a failed restore of a deleted work tree does not stop the startup."""
+    repo.git_dir.mkdir(parents=True)
+    (repo.git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_failure())
+
+    assert clone_asset(repo) is False
+
+    assert "could not be restored" in caplog.text

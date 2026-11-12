@@ -11,7 +11,7 @@ the backup silently while the HTTP API kept running.
 import logging
 import threading
 
-from admin.git.repo.clone import CloneError, clone_asset, is_cloned, restore_git_file
+from admin.git.repo.clone import CloneError, clone_asset, is_cloned, restore_work_tree
 from admin.git.setup.config import RepoConfig
 from admin.git.run.errors import SyncError, SyncErrorKind
 from admin.git.service.status import SyncStatus
@@ -54,7 +54,7 @@ def _sync_one(
         False if the service is stopping; nothing is recorded then.
     """
     try:
-        restore_git_file(repo)
+        restore_work_tree(repo)
         sync_once(repo, stop_event)
     except SyncStopped as stopped:
         logger.info("%s", stopped)

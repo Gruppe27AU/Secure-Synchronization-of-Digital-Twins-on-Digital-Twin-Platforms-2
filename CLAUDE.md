@@ -405,7 +405,8 @@ Outside the image no template is set, and the backup stays disabled.
 The file holds an optional top-level `SYNC_INTERVAL_SECONDS` (1 to 86400,
 default 300; `--sync-interval` overrides it) and an `[assets.private]`
 and/or `[assets.common]` table with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and
-`GIT_REPO_TOKEN`, plus an optional `MODE`. Unknown keys are logged as
+`GIT_REPO_TOKEN` (optional with `MODE = "pull"`), plus an optional
+`MODE`. Unknown keys are logged as
 warnings. Every path follows from `$PERSISTENT_DIR` and the section name:
 git directories in `.local/share/workspace-admin/<name>`, work trees in
 `assets/<name>`.

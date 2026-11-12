@@ -4,12 +4,16 @@ Integration tests for keeping the backup in its own repository, with real git.
 The working tree's ``.git`` file is easily lost, and git would then fall
 back on whatever repository encloses the working tree. These tests check
 that the backup still commits and pushes only to its own remote, and that
-a working tree that has lost most of its files is not committed.
+a working tree that has lost most of its files is not committed, and that
+one deleted outright is restored.
 """
+
+import shutil
 
 import pytest
 
 from admin.git.repo import checks
+from admin.git.repo.clone import clone_asset
 from admin.git.service.scheduler import sync_all
 from admin.git.service.status import SyncStatus
 from admin.git.run.errors import SyncError, SyncErrorKind
@@ -64,9 +68,8 @@ def test_a_lost_git_file_is_written_back_for_the_user(world, enclosing):
     assert "notebook.txt" in git(work_tree, "ls-files")
 
 
-def test_an_emptied_working_tree_is_not_committed(world, monkeypatch):
-    """Test losing every file never deletes them on the remote."""
-    monkeypatch.setattr(checks, "MASS_DELETION_MIN_FILES", 2)
+def test_an_emptied_working_tree_is_not_committed(world):
+    """Test losing every file, fewer than the minimum, never deletes them remotely."""
     work_tree = world.workspace.work_tree
     for name in SEED_FILES:
         (work_tree / name).unlink()
@@ -95,3 +98,41 @@ def test_a_deletion_committed_by_hand_is_pushed(world, monkeypatch):
     assert sync_once(world.workspace) is True
     for name in SEED_FILES:
         assert world.remote_file(name) is None
+
+
+def _delete_work_tree(world):
+    shutil.rmtree(world.workspace.work_tree)
+    assert not world.workspace.work_tree.exists()
+
+
+def _assert_restored(world):
+    work_tree = world.workspace.work_tree
+    for name, content in SEED_FILES.items():
+        assert (work_tree / name).read_text() == content
+    assert (work_tree / ".git").is_file()
+    assert sync_once(world.workspace) is False
+    for name, content in SEED_FILES.items():
+        assert world.remote_file(name) == content
+
+
+def test_a_deleted_work_tree_is_restored_on_startup(world):
+    """Test the startup clone puts a deleted work tree back, not deleting remotely."""
+    _delete_work_tree(world)
+
+    assert clone_asset(world.workspace) is False
+
+    _assert_restored(world)
+
+
+def test_a_deleted_work_tree_is_restored_before_a_cycle(world):
+    """Test the scheduler puts a deleted work tree back before it commits."""
+    _delete_work_tree(world)
+    status = SyncStatus()
+    status.enable([world.workspace.name])
+
+    sync_all([world.workspace], status)
+
+    repo_status = status.snapshot()["repositories"][world.workspace.name]
+    assert repo_status["last_error"] is None
+    assert repo_status["last_success"] is not None
+    _assert_restored(world)
