@@ -2,7 +2,7 @@
 A remote, a workspace and a colleague for the integration tests.
 
 A bare repository in ``tmp_path`` stands in for the remote. The workspace
-is cloned with :func:`admin.git.clone.clone_asset`; a second, ordinary
+is cloned with :func:`admin.git.repo.clone.clone_asset`; a second, ordinary
 clone plays a "colleague" who pushes changes of their own.
 """
 
@@ -10,9 +10,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from admin.git import command as command_module
-from admin.git.clone import clone_asset
-from admin.git.config import RepoConfig
+from admin.git.run import command as command_module
+from admin.git.repo.clone import clone_asset
+from admin.git.setup.config import RepoConfig
 from tests.helpers.repo_factory import make_repo
 
 #: Content of the remote's ``notebook.txt``, eight numbered lines.

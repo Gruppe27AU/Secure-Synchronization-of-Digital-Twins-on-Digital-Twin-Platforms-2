@@ -1,0 +1,95 @@
+"""
+Integration tests for remotes that change under the backup, with real git.
+
+Ported from the reproductions of review round 5: a remote whose history was
+rewritten or whose branch was renamed can no longer be pulled, yet the
+workspace's work must still reach the remote; and a remote with no commits
+at all must still be usable.
+"""
+
+import pytest
+
+from admin.git.repo.clone import clone_asset
+from admin.git.run.errors import SyncError, SyncErrorKind
+from admin.git.repo.push import backup_branch
+from admin.git.repo.sync import sync_once
+from tests.helpers.git_world import git, write
+from tests.helpers.repo_factory import make_repo
+
+
+def _backup_file(world, path):
+    """Return a file on the workspace's backup branch of the remote."""
+    branch = backup_branch(world.workspace)
+    return git(world.remote, "show", f"{branch}:{path}")
+
+
+def test_a_rewritten_remote_history_still_gets_the_work(world):
+    """Test unrelated histories push the work to the backup branch, every cycle."""
+    seed = world.colleague
+    git(seed, "checkout", "--quiet", "--orphan", "fresh")
+    git(seed, "rm", "-rqf", ".")
+    write(seed / "n.txt", "new\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "--quiet", "-m", "fresh")
+    git(seed, "push", "--quiet", "-f", "origin", "fresh:main")
+    write(world.workspace.work_tree / "thesis.md", "work\n")
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(world.workspace)
+
+    assert excinfo.value.kind is SyncErrorKind.PULL_FAILED
+    assert _backup_file(world, "thesis.md") == "work\n"
+
+    write(world.workspace.work_tree / "thesis.md", "more work\n")
+    with pytest.raises(SyncError):
+        sync_once(world.workspace)
+
+    assert _backup_file(world, "thesis.md") == "more work\n"
+
+
+def test_a_renamed_remote_branch_still_gets_the_work(world):
+    """Test a branch renamed on the forge pushes the work to the backup branch."""
+    git(world.remote, "branch", "-m", "main", "trunk")
+    git(world.remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+    write(world.workspace.work_tree / "thesis.md", "work\n")
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(world.workspace)
+
+    assert excinfo.value.kind is SyncErrorKind.PULL_FAILED
+    assert _backup_file(world, "thesis.md") == "work\n"
+
+
+@pytest.fixture(name="empty")
+def fixture_empty(world, tmp_path):
+    """A workspace repository whose remote has no commits at all."""
+    # world only sets up git's config and the local-remote options.
+    del world
+    remote = tmp_path / "empty.git"
+    git(tmp_path, "init", "--quiet", "--bare", "-b", "main", str(remote))
+    return make_repo(
+        "private",
+        repo_url=str(remote),
+        git_dir=tmp_path / "empty-git",
+        work_tree=tmp_path / "empty-tree",
+    ), remote
+
+
+def test_an_empty_remote_is_started_and_filled(empty):
+    """Test an empty remote can be cloned, and the first sync creates its branch."""
+    repo, remote = empty
+
+    assert clone_asset(repo) is True
+    write(repo.work_tree / "first.txt", "first\n")
+
+    assert sync_once(repo) is True
+
+    assert git(remote, "show", "main:first.txt") == "first\n"
+
+
+def test_an_empty_remote_with_nothing_to_back_up_is_not_an_error(empty):
+    """Test a fresh, empty repository waits quietly for the first file."""
+    repo, _ = empty
+    clone_asset(repo)
+
+    assert sync_once(repo) is False

@@ -1,12 +1,12 @@
 """
-Shared :class:`admin.git.config.RepoConfig` builder for the git tests.
+Shared :class:`admin.git.setup.config.RepoConfig` builder for the git tests.
 
 Keeps the test modules from each repeating the same six-field
 construction, and lets every test spell out only the fields it actually
 cares about.
 """
 
-from admin.git.config import RepoConfig
+from admin.git.setup.config import RepoConfig
 
 #: Field values used by every test repository unless overridden.
 DEFAULTS = {

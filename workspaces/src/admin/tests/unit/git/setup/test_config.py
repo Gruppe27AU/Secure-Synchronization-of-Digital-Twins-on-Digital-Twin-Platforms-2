@@ -1,0 +1,590 @@
+"""
+Unit tests for git backup configuration parsing.
+
+Covers :mod:`admin.git.setup.config`: reading the TOML config file, placing the
+repositories below the root, validating required keys, keeping the token out of
+the representation, refusing placeholders copied from the bundled template, and
+reading the optional sync interval.
+"""
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from admin.git.setup import validate as validate_module
+from admin.git.setup.config import (
+    ASSET_NAMES,
+    DEFAULT_SYNC_INTERVAL_SECONDS,
+    ConfigError,
+    SyncMode,
+)
+from admin.git.setup.load import load_config, load_sync_interval
+from admin.git.run.runner import GitTimeoutError
+from tests.helpers.templates import EXAMPLE_CONFIG_PATH
+
+#: Root passed to every load_config() call, as $PERSISTENT_DIR in the image.
+ROOT = Path("/workspace")
+
+VALID_CONFIG = """\
+[assets.private]
+GIT_REPO_URL = "https://gitlab.com/user/private.git"
+GIT_REPO_BRANCH = "main"
+GIT_REPO_TOKEN = "private-token"
+
+[assets.common]
+GIT_REPO_URL = "https://gitlab.com/user/common.git"
+GIT_REPO_BRANCH = "develop"
+GIT_REPO_TOKEN = "common-token"
+"""
+
+PRIVATE_ONLY_CONFIG = """\
+[assets.private]
+GIT_REPO_URL = "https://gitlab.com/user/private.git"
+GIT_REPO_BRANCH = "main"
+GIT_REPO_TOKEN = "private-token"
+"""
+
+
+def write_config(tmp_path: Path, content: str) -> Path:
+    """Write ``content`` to a config file and return its path."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(content, encoding="utf-8")
+    return config_path
+
+
+def test_load_config_returns_one_entry_per_section(tmp_path):
+    """Test that both configured sections become repositories."""
+    repos = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
+
+    assert [repo.name for repo in repos] == list(ASSET_NAMES)
+
+
+def test_load_config_copies_plain_fields(tmp_path):
+    """Test that the non-path fields are taken from the file unchanged."""
+    repos = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
+    private, common = repos[0], repos[1]
+
+    assert private.repo_url == "https://gitlab.com/user/private.git"
+    assert private.branch == "main"
+    assert private.token == "private-token"
+    assert common.branch == "develop"
+
+
+def test_load_config_derives_paths_from_the_section_name(tmp_path):
+    """Test that each repository's paths are built from its section name."""
+    repos = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
+    private, common = repos[0], repos[1]
+
+    git_dirs = ROOT / ".local" / "share" / "workspace-admin"
+    assert private.git_dir == git_dirs / "private"
+    assert private.work_tree == ROOT / "assets" / "private"
+    assert common.git_dir == git_dirs / "common"
+    assert common.work_tree == ROOT / "assets" / "common"
+
+
+def test_load_config_places_repositories_below_the_given_root(tmp_path):
+    """Test that the root comes from the caller, not from the file."""
+    private = load_config(write_config(tmp_path, VALID_CONFIG), Path("/srv"))[0]
+
+    assert private.git_dir == Path("/srv/.local/share/workspace-admin/private")
+    assert private.work_tree == Path("/srv/assets/private")
+
+
+def test_old_top_level_paths_are_ignored(tmp_path):
+    """Test that a file still holding the removed path keys keeps the layout."""
+    content = 'WORKSPACE_DIR = "/elsewhere"\n' + VALID_CONFIG
+
+    private = load_config(write_config(tmp_path, content), ROOT)[0]
+
+    assert private.work_tree == ROOT / "assets" / "private"
+
+
+def test_load_config_allows_a_single_section(tmp_path):
+    """Test that configuring only [assets.private] is valid."""
+    repos = load_config(write_config(tmp_path, PRIVATE_ONLY_CONFIG), ROOT)
+
+    assert [repo.name for repo in repos] == ["private"]
+
+
+def test_repr_hides_the_token(tmp_path):
+    """Test that printing a repository cannot leak its token."""
+    private = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)[0]
+
+    assert "private-token" not in repr(private)
+    assert "private" in repr(private)
+
+
+def test_missing_asset_key_names_key_and_section(tmp_path):
+    """Test that a missing repository key names both the key and section."""
+    content = VALID_CONFIG.replace('GIT_REPO_TOKEN = "common-token"\n', "")
+
+    with pytest.raises(ConfigError, match=r"GIT_REPO_TOKEN.*\[assets\.common\]"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_empty_value_is_rejected(tmp_path):
+    """Test that a present but blank value is treated as missing."""
+    content = VALID_CONFIG.replace(
+        'GIT_REPO_URL = "https://gitlab.com/user/private.git"',
+        'GIT_REPO_URL = "   "',
+    )
+
+    with pytest.raises(ConfigError, match="is empty"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_wrong_type_is_rejected(tmp_path):
+    """Test that a non-string value is reported as such."""
+    content = VALID_CONFIG.replace('GIT_REPO_BRANCH = "main"', "GIT_REPO_BRANCH = 5")
+
+    with pytest.raises(ConfigError, match="must be a quoted string"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_malformed_toml_is_reported(tmp_path):
+    """Test that a syntax error names the file instead of raising TOMLDecodeError."""
+    with pytest.raises(ConfigError, match="not valid TOML"):
+        load_config(write_config(tmp_path, '[assets\n'), ROOT)
+
+
+def test_missing_assets_section_is_reported(tmp_path):
+    """Test that a config without any [assets] table is rejected."""
+    content = "# nothing configured yet\n"
+
+    with pytest.raises(ConfigError, match=r"no \[assets\] section"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_empty_assets_section_is_reported(tmp_path):
+    """Test that [assets] without private or common is rejected."""
+    content = """\
+[assets]
+"""
+
+    with pytest.raises(ConfigError, match="no repositories configured"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_unreadable_file_is_reported(tmp_path):
+    """Test that an unreadable path is reported instead of raising OSError."""
+    with pytest.raises(ConfigError, match="could not be read"):
+        load_config(tmp_path, ROOT)
+
+
+def test_asset_that_is_not_a_section_is_reported(tmp_path):
+    """Test that a scalar where a section is expected is rejected."""
+    content = """\
+[assets]
+private = "not-a-section"
+"""
+
+    with pytest.raises(ConfigError, match=r"\[assets\.private\] is not a section"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_missing_file_does_not_fall_back_to_the_template(tmp_path):
+    """Test that a missing config file is an error, never the template."""
+    with pytest.raises(ConfigError, match="could not be read"):
+        load_config(tmp_path / "does-not-exist.toml", ROOT)
+
+
+def test_bundled_template_is_rejected():
+    """Test that an unedited copy of the template can never reach a remote."""
+    with pytest.raises(ConfigError, match="placeholder"):
+        load_config(EXAMPLE_CONFIG_PATH, ROOT)
+
+
+def test_template_with_only_private_filled_in_is_accepted(tmp_path):
+    """Test that the commented-out common section does not block private."""
+    content = (
+        EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
+        .replace(
+            'GIT_REPO_URL = "https://gitlab.com/username/repository.git"',
+            'GIT_REPO_URL = "https://gitlab.com/user/private.git"',
+            1,
+        )
+        .replace('GIT_REPO_TOKEN = "gitlab-api-token"', 'GIT_REPO_TOKEN = "t"', 1)
+    )
+
+    repos = load_config(write_config(tmp_path, content), ROOT)
+
+    assert [repo.name for repo in repos] == ["private"]
+
+
+@pytest.mark.parametrize(
+    ("key", "real_value", "placeholder"),
+    [
+        (
+            "GIT_REPO_URL",
+            "https://gitlab.com/user/private.git",
+            "https://gitlab.com/username/repository.git",
+        ),
+        ("GIT_REPO_TOKEN", "private-token", "gitlab-api-token"),
+    ],
+)
+def test_placeholder_value_is_rejected(tmp_path, key, real_value, placeholder):
+    """Test that each placeholder is refused, naming the key and section."""
+    content = PRIVATE_ONLY_CONFIG.replace(
+        f'{key} = "{real_value}"', f'{key} = "{placeholder}"'
+    )
+
+    with pytest.raises(ConfigError, match=rf"{key}.*\[assets\.private\].*placeholder"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_sections_sharing_a_remote_branch_are_rejected(tmp_path):
+    """Test that private and common cannot back up to the same branch."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com/user/private.git"
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    with pytest.raises(ConfigError, match="both use"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_sections_sharing_a_url_on_different_branches_are_allowed(tmp_path):
+    """Test that one remote may hold both repositories on separate branches."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com/user/private.git"
+    )
+
+    repos = load_config(write_config(tmp_path, content), ROOT)
+
+    assert [repo.branch for repo in repos] == ["main", "develop"]
+
+
+def test_work_tree_containing_the_config_file_is_rejected(tmp_path):
+    """Test that the config file, and with it the token, can never be pushed."""
+    config_dir = tmp_path / "assets" / "common"
+    config_dir.mkdir(parents=True)
+
+    with pytest.raises(
+        ConfigError, match=r"\[assets\.common\].*contains the config file"
+    ):
+        load_config(write_config(config_dir, VALID_CONFIG), tmp_path)
+
+
+# --------------------------------------------------------------------------
+# Values that end up on git's command line
+# --------------------------------------------------------------------------
+
+
+def _with_private(field: str, value: str) -> str:
+    """
+    Return VALID_CONFIG with one [assets.private] value replaced.
+
+    ``json.dumps`` quotes the value as a TOML basic string, so a newline in
+    ``value`` reaches the parser as a real newline.
+    """
+    original = {
+        "GIT_REPO_URL": '"https://gitlab.com/user/private.git"',
+        "GIT_REPO_BRANCH": '"main"',
+    }[field]
+    # The private section comes first, so count=1 leaves [assets.common] alone.
+    return VALID_CONFIG.replace(
+        f"{field} = {original}", f"{field} = {json.dumps(value)}", 1
+    )
+
+
+@pytest.mark.parametrize(
+    "branch", ["main", "develop", "feature/new-model", "release-1.2"]
+)
+def test_valid_branch_is_accepted(tmp_path, branch):
+    """Test that ordinary branch names pass validation unchanged."""
+    content = _with_private("GIT_REPO_BRANCH", branch)
+
+    private = load_config(write_config(tmp_path, content), ROOT)[0]
+
+    assert private.branch == branch
+
+
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "--upload-pack=touch /tmp/pwned;git-upload-pack",
+        "--receive-pack=touch /tmp/pwned;git-receive-pack",
+        "-x",
+        "a..b",
+        "has space",
+        "a:b",
+        "x~1",
+        "HEAD",
+        "@{-1}",
+        "branch.lock",
+    ],
+)
+def test_invalid_branch_is_rejected(tmp_path, branch):
+    """Test that a branch git would not accept, or read as an option, is refused."""
+    content = _with_private("GIT_REPO_BRANCH", branch)
+
+    with pytest.raises(ConfigError, match="GIT_REPO_BRANCH.*not a valid branch"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://gitlab.com/user/private.git",
+        "ssh://git@gitlab.com/user/private.git",
+        "git@gitlab.com:user/private.git",
+        "file:///srv/git/private.git",
+        "/srv/git/private.git",
+        "ext::sh -c touch% /tmp/pwned",
+        "--upload-pack=touch /tmp/pwned",
+        "https://gitlab.com/user/private.git\nx",
+        "https://gitlab.com/user/pri vate.git",
+    ],
+)
+def test_non_https_url_is_rejected(tmp_path, url):
+    """Test that only an https:// URL is accepted."""
+    content = _with_private("GIT_REPO_URL", url)
+
+    with pytest.raises(ConfigError, match="GIT_REPO_URL.*must be an https:// URL"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user@gitlab.com/user/private.git",
+        "https://user:leaked-token@gitlab.com/user/private.git",
+        "https://:leaked-token@gitlab.com/user/private.git",
+    ],
+)
+def test_url_with_credentials_is_rejected(tmp_path, url):
+    """Test that a URL with userinfo is refused, without echoing the token."""
+    content = _with_private("GIT_REPO_URL", url)
+
+    with pytest.raises(ConfigError, match="must not contain a username") as excinfo:
+        load_config(write_config(tmp_path, content), ROOT)
+
+    assert "leaked-token" not in str(excinfo.value)
+
+
+def test_url_without_host_is_rejected(tmp_path):
+    """Test that an https:// URL with no host is refused."""
+    content = _with_private("GIT_REPO_URL", "https:///user/private.git")
+
+    with pytest.raises(ConfigError, match="has no host"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_branch_check_that_hangs_is_reported(tmp_path, monkeypatch):
+    """Test a git that never answers the branch check fails the config load."""
+
+    def fake_run(_command, _timeout):
+        raise GitTimeoutError("git did not finish within 300 seconds and was stopped")
+
+    monkeypatch.setattr(validate_module, "run_git", fake_run)
+
+    with pytest.raises(ConfigError, match="could not run git to check"):
+        load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
+
+
+# --------------------------------------------------------------------------
+# SYNC_INTERVAL_SECONDS
+# --------------------------------------------------------------------------
+
+
+def _with_interval(value: str) -> str:
+    """VALID_CONFIG with a top-level SYNC_INTERVAL_SECONDS line."""
+    return f"SYNC_INTERVAL_SECONDS = {value}\n{VALID_CONFIG}"
+
+
+def test_sync_interval_defaults_when_not_set(tmp_path):
+    """Test a config file without the key keeps the old five minutes."""
+    config_path = write_config(tmp_path, VALID_CONFIG)
+
+    assert load_sync_interval(config_path) == DEFAULT_SYNC_INTERVAL_SECONDS == 300
+
+
+@pytest.mark.parametrize("seconds", [1, 60, 86400])
+def test_sync_interval_is_read_from_the_file(tmp_path, seconds):
+    """Test any whole number of seconds from 1 to a day is used as given."""
+    config_path = write_config(tmp_path, _with_interval(str(seconds)))
+
+    assert load_sync_interval(config_path) == seconds
+
+
+@pytest.mark.parametrize(
+    "value, problem",
+    [
+        ("0", "between 1 and 86400 seconds, got 0"),
+        ("-5", "between 1 and 86400 seconds, got -5"),
+        ("86401", "between 1 and 86400 seconds, got 86401"),
+        ("300.0", "a whole number of seconds, got float"),
+        ('"300"', "a whole number of seconds, got str"),
+        ("true", "a whole number of seconds, got bool"),
+    ],
+)
+def test_unusable_sync_interval_falls_back_with_a_warning(
+    tmp_path, caplog, value, problem
+):
+    """Test a bad value means 300 seconds and a warning, not a stopped backup."""
+    config_path = write_config(tmp_path, _with_interval(value))
+
+    with caplog.at_level("WARNING"):
+        assert load_sync_interval(config_path) == DEFAULT_SYNC_INTERVAL_SECONDS
+
+    assert f"'SYNC_INTERVAL_SECONDS' must be {problem}" in caplog.text
+    assert "using the default of 300 seconds" in caplog.text
+    # The repositories are still usable, so cloning goes ahead.
+    assert len(load_config(config_path, ROOT)) == 2
+
+
+def test_sync_interval_of_an_unreadable_file_is_reported(tmp_path):
+    """Test a missing file is an error here; bootstrap decides what it means."""
+    with pytest.raises(ConfigError, match="could not be read"):
+        load_sync_interval(tmp_path / "missing.toml")
+
+
+def test_sync_interval_inside_a_section_falls_back_with_a_warning(
+    tmp_path, caplog
+):
+    """Test a key appended at the end of the file is not silently ignored."""
+    config_path = write_config(tmp_path, VALID_CONFIG + "SYNC_INTERVAL_SECONDS = 60\n")
+
+    with caplog.at_level("WARNING"):
+        assert load_sync_interval(config_path) == DEFAULT_SYNC_INTERVAL_SECONDS
+
+    assert "is in [assets.common], where it has no effect; move it" in caplog.text
+    assert len(load_config(config_path, ROOT)) == 2
+
+
+def test_a_valid_sync_interval_logs_no_warning(tmp_path, caplog):
+    """Test the warning is only for values that cannot be used."""
+    config_path = write_config(tmp_path, _with_interval("60"))
+
+    with caplog.at_level("WARNING"):
+        load_sync_interval(config_path)
+
+    assert not caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX-only")
+def test_a_config_file_others_can_read_is_warned_about(tmp_path, caplog):
+    """Test a supplied config file holding tokens readable by all is reported."""
+    config_path = write_config(tmp_path, VALID_CONFIG)
+    config_path.chmod(0o644)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path, ROOT)
+
+    assert "chmod 600" in caplog.text
+    assert "private-token" not in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX-only")
+def test_a_private_config_file_is_not_warned_about(tmp_path, caplog):
+    """Test the mode the template is provisioned with passes quietly."""
+    config_path = write_config(tmp_path, VALID_CONFIG)
+    config_path.chmod(0o600)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path, ROOT)
+
+    assert "chmod" not in caplog.text
+
+
+# --------------------------------------------------------------------------
+# MODE: pull-only or full sync
+# --------------------------------------------------------------------------
+
+
+def test_common_is_pull_only_and_private_syncs_by_default(tmp_path):
+    """Test a shared repository never has one user's files pushed over another's."""
+    repos = load_config(write_config(tmp_path, VALID_CONFIG), ROOT)
+    private, common = repos[0], repos[1]
+
+    assert private.mode is SyncMode.SYNC
+    assert common.mode is SyncMode.PULL
+
+
+@pytest.mark.parametrize("mode", ["pull", "sync"])
+def test_mode_can_be_set_per_section(tmp_path, mode):
+    """Test MODE overrides the section's default."""
+    content = VALID_CONFIG.replace(
+        'GIT_REPO_TOKEN = "common-token"',
+        f'GIT_REPO_TOKEN = "common-token"\nMODE = "{mode}"',
+    )
+
+    common = load_config(write_config(tmp_path, content), ROOT)[1]
+
+    assert common.mode is SyncMode(mode)
+
+
+@pytest.mark.parametrize("value", ['"push"', '"Pull"', "1", "true"])
+def test_an_unknown_mode_is_rejected(tmp_path, value):
+    """Test a MODE that is neither pull nor sync is named in the error."""
+    content = PRIVATE_ONLY_CONFIG + f"MODE = {value}\n"
+
+    with pytest.raises(ConfigError, match=r"'MODE' in \[assets.private\] must be"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+# --------------------------------------------------------------------------
+# Keys that have no effect, and two spellings of one remote
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("content", "key", "where"),
+    [
+        ('HOME_DIR = "/home/dtaas-user"\n' + VALID_CONFIG, "HOME_DIR", "top level"),
+        ("SYNC_INTERVAL = 600\n" + VALID_CONFIG, "SYNC_INTERVAL", "top level"),
+        (PRIVATE_ONLY_CONFIG + 'GIT_DIR = "somewhere-else"\n', "GIT_DIR",
+         "[assets.private]"),
+        (VALID_CONFIG + '\n[assets.shared]\nGIT_REPO_URL = "x"\n', "shared",
+         "[assets]"),
+    ],
+)
+def test_a_key_with_no_effect_is_warned_about(tmp_path, caplog, content, key, where):
+    """Test an old or misspelt key is reported, not silently ignored."""
+    with caplog.at_level("WARNING"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+    assert f"'{key}' in" in caplog.text
+    assert where in caplog.text
+    assert "no effect" in caplog.text
+
+
+def test_known_keys_are_not_warned_about(tmp_path, caplog):
+    """Test a complete, current config file loads without a warning."""
+    content = "SYNC_INTERVAL_SECONDS = 60\n" + VALID_CONFIG + 'MODE = "pull"\n'
+    config_path = write_config(tmp_path, content)
+    config_path.chmod(0o600)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path, ROOT)
+
+    assert not caplog.text
+
+
+@pytest.mark.parametrize(
+    "other_spelling",
+    [
+        "https://gitlab.com/user/private",
+        "https://gitlab.com/user/private/",
+        "https://GitLab.com/user/private.git",
+        "https://gitlab.com/user/private.git/",
+    ],
+)
+def test_two_spellings_of_one_remote_are_rejected(tmp_path, other_spelling):
+    """Test .git, a trailing slash or letter case do not make a second remote."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", other_spelling
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    with pytest.raises(ConfigError, match="both use"):
+        load_config(write_config(tmp_path, content), ROOT)
+
+
+def test_paths_that_differ_in_case_are_different_remotes(tmp_path):
+    """Test the path keeps its case, since some hosts tell paths apart by it."""
+    content = VALID_CONFIG.replace(
+        "https://gitlab.com/user/common.git", "https://gitlab.com/User/Private.git"
+    ).replace('GIT_REPO_BRANCH = "develop"', 'GIT_REPO_BRANCH = "main"')
+
+    assert len(load_config(write_config(tmp_path, content), ROOT)) == 2

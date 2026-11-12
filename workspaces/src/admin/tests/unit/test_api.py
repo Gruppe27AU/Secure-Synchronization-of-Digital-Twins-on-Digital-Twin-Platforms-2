@@ -12,8 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
-from admin.git.status import SyncStatus
-from admin.git.errors import SyncErrorKind
+from admin.git.service.status import SyncStatus
+from admin.git.run.errors import SyncErrorKind
 
 
 @pytest.fixture(name='test_client')

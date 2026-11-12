@@ -2,7 +2,7 @@
 Command-line entry point of the workspace admin service.
 
 :func:`cli` either prints the service catalogue (``--list-services``), or
-starts the git backup (:mod:`admin.git.bootstrap`) and serves the HTTP API
+starts the git backup (:mod:`admin.git.service.bootstrap`) and serves the HTTP API
 (:mod:`admin.api`) with uvicorn.
 """
 
@@ -18,10 +18,10 @@ import uvicorn
 from uvicorn.logging import DefaultFormatter
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
-from admin.git.bootstrap import start_git_backup, stop_git_backup
-from admin.git.config import DEFAULT_SYNC_INTERVAL_SECONDS, SYNC_INTERVAL_KEY
-from admin.git.status import SyncStatus
-from admin.git.validate import sync_interval_problem
+from admin.git.service.bootstrap import start_git_backup, stop_git_backup
+from admin.git.setup.config import DEFAULT_SYNC_INTERVAL_SECONDS, SYNC_INTERVAL_KEY
+from admin.git.service.status import SyncStatus
+from admin.git.setup.validate import sync_interval_problem
 from admin.services import load_services
 
 #: Format of the service's log records, as uvicorn's (``INFO:     message``).

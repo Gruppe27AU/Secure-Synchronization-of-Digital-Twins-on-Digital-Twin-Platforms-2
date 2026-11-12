@@ -20,6 +20,10 @@ The main changes made so far are listed here.
   changed is named in the log, with the kind `conflict_markers` or
   `file_too_large`, instead of being reported as `pull_failed`
 * A file name that is not valid UTF-8 no longer stops the backup
+* The `admin.git` package is split into `setup`, `run`, `repo` and
+  `service`, and the tests mirror it. **The loggers are renamed with it**,
+  for example `admin.git.scheduler` is now `admin.git.service.scheduler`;
+  a log filter on the old names must be updated
 * `workspace-admin` chooses its `config.toml` on startup:
   `WORKSPACE_ADMIN_CONFIG` when it is set and not empty, otherwise
   `~/.config/workspace-admin/config.toml`. A relative

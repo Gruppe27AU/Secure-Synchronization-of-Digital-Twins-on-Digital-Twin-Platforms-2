@@ -1,0 +1,331 @@
+"""
+Unit tests for the periodic scheduling of the git backup.
+
+Covers :mod:`admin.git.service.scheduler`: synchronizing every repository, keeping
+going when one of them fails, and running until the stop event is set.
+These tests never touch git - :func:`admin.git.repo.sync.sync_once` and
+:func:`admin.git.repo.clone.restore_git_file` are replaced throughout.
+"""
+
+import threading
+
+import pytest
+
+from admin.git.service import scheduler
+from admin.git.repo.clone import CloneError
+from admin.git.service.status import SyncStatus
+from admin.git.run.errors import SyncError, SyncErrorKind
+from admin.git.repo.sync import SyncStopped
+from tests.helpers.repo_factory import make_repo
+
+
+class StubStopEvent:
+    """
+    A stop event that lets the loop run a fixed number of times.
+
+    Args:
+        allowed_rounds: How many times ``wait`` returns False before it
+            returns True and ends the loop.
+    """
+
+    def __init__(self, allowed_rounds):
+        self.allowed_rounds = allowed_rounds
+        self.waits = []
+
+    def wait(self, timeout=None):
+        """Record the interval and report whether the loop should stop."""
+        self.waits.append(timeout)
+        return len(self.waits) > self.allowed_rounds
+
+    def set(self):
+        """Stop the loop at its next wait, like threading.Event.set."""
+        self.allowed_rounds = 0
+
+
+@pytest.fixture(name="restored", autouse=True)
+def fixture_restored(monkeypatch):
+    """Record the working trees whose .git file would be written back."""
+    restored = []
+    monkeypatch.setattr(
+        scheduler, "restore_git_file", lambda repo: restored.append(repo.name)
+    )
+    return restored
+
+
+@pytest.fixture(name="not_cloned", autouse=True)
+def fixture_not_cloned(monkeypatch):
+    """Names of the repositories to treat as not cloned; all others are."""
+    not_cloned = set()
+    monkeypatch.setattr(
+        scheduler, "is_cloned", lambda git_dir: git_dir not in not_cloned
+    )
+    return not_cloned
+
+
+def _repo(name):
+    """A repository whose git_dir is its name, so not_cloned can name it."""
+    return make_repo(name, git_dir=name)
+
+
+def test_sync_all_clones_a_repository_whose_clone_failed(monkeypatch, not_cloned):
+    """Test a failed clone is retried on the interval, without a restart."""
+    not_cloned.add("private")
+    cloned, synced = [], []
+    monkeypatch.setattr(scheduler, "clone_asset", lambda repo: cloned.append(repo.name))
+    monkeypatch.setattr(
+        scheduler, "sync_once", lambda repo, _stop_event: synced.append(repo.name)
+    )
+    status = SyncStatus()
+
+    scheduler.sync_all([_repo("private"), _repo("common")], status)
+
+    assert cloned == ["private"]
+    assert synced == ["common"]
+    assert status.snapshot()["repositories"]["private"]["state"] == "syncing"
+
+
+def test_sync_all_records_a_clone_that_fails_again(monkeypatch, not_cloned):
+    """Test a clone that still fails is reported with its kind."""
+    not_cloned.add("private")
+
+    def refuse(_repo):
+        raise CloneError("denied", SyncErrorKind.AUTH_FAILED)
+
+    monkeypatch.setattr(scheduler, "clone_asset", refuse)
+    status = SyncStatus()
+
+    scheduler.sync_all([_repo("private")], status)
+
+    private = status.snapshot()["repositories"]["private"]
+    assert private["state"] == "clone_failed"
+    assert private["last_error"]["kind"] == "auth_failed"
+
+
+def test_sync_all_restores_the_git_file_before_each_sync(monkeypatch, restored):
+    """Test a lost .git file is written back before the cycle runs."""
+    order = []
+    monkeypatch.setattr(
+        scheduler,
+        "sync_once",
+        lambda repo, _stop_event: order.append(list(restored)),
+    )
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")], SyncStatus())
+
+    assert order == [["private"], ["private", "common"]]
+
+
+def test_sync_all_syncs_every_repository(monkeypatch):
+    """Test every configured repository is synchronized once per round."""
+    synced = []
+    monkeypatch.setattr(
+        scheduler, "sync_once", lambda repo, _stop_event: synced.append(repo)
+    )
+
+    repos = [make_repo("private"), make_repo("common")]
+    scheduler.sync_all(repos, SyncStatus())
+
+    assert [repo.name for repo in synced] == ["private", "common"]
+
+
+def test_sync_all_continues_after_a_failing_repository(monkeypatch, caplog):
+    """Test one broken repository does not stop the others."""
+    synced = []
+
+    def fake_sync_once(repo, _stop_event):
+        synced.append(repo.name)
+        if repo.name == "private":
+            raise SyncError("Failed to push changes for repository 'private'")
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")], SyncStatus())
+
+    assert synced == ["private", "common"]
+    assert "private" in caplog.text
+
+
+def test_sync_all_survives_an_unexpected_error(monkeypatch, caplog):
+    """Test an error other than SyncError does not escape and kill the thread.
+
+    sync_all runs on a background thread, so an escaping exception would
+    end the backup silently while the service kept serving requests.
+    """
+    synced = []
+
+    def fake_sync_once(repo, _stop_event):
+        synced.append(repo.name)
+        if repo.name == "private":
+            raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")], SyncStatus())
+
+    assert synced == ["private", "common"]
+    assert "Unexpected error" in caplog.text
+
+
+def test_sync_loop_runs_until_the_stop_event_is_set(monkeypatch):
+    """Test the loop synchronizes once per interval and then stops."""
+    rounds = []
+    monkeypatch.setattr(
+        scheduler, "sync_all", lambda repos, _status, _stop_event: rounds.append(repos)
+    )
+
+    repos = [make_repo("common")]
+    stop_event = StubStopEvent(allowed_rounds=3)
+
+    # pylint: disable-next=protected-access
+    scheduler._sync_loop(repos, 300, stop_event, SyncStatus())
+
+    assert len(rounds) == 3
+    assert stop_event.waits == [300, 300, 300, 300]
+
+
+def test_sync_loop_does_not_sync_when_stopped_immediately(monkeypatch):
+    """Test nothing is synchronized when the event is already set."""
+    rounds = []
+    monkeypatch.setattr(
+        scheduler, "sync_all", lambda repos, _status, _stop_event: rounds.append(repos)
+    )
+
+    stop_event = StubStopEvent(allowed_rounds=3)
+    stop_event.set()
+
+    # pylint: disable-next=protected-access
+    scheduler._sync_loop([make_repo("common")], 300, stop_event, SyncStatus())
+
+    assert not rounds
+
+
+def test_start_sync_scheduler_runs_on_a_background_daemon_thread(monkeypatch):
+    """Test the scheduler runs off the main thread and does not block it."""
+    synced = threading.Event()
+    stop_event = threading.Event()
+
+    def fake_sync_all(_repos, _status, _stop_event):
+        synced.set()
+        stop_event.set()
+
+    monkeypatch.setattr(scheduler, "sync_all", fake_sync_all)
+
+    thread = scheduler.start_sync_scheduler(
+        [make_repo("common")], 0, stop_event, SyncStatus()
+    )
+    thread.join(timeout=5)
+
+    assert thread.daemon is True
+    assert synced.is_set()
+    assert thread.is_alive() is False
+
+
+def test_sync_all_records_success_and_failure_kinds(monkeypatch):
+    """Test each repository's outcome reaches the status, kind and all."""
+
+    def fake_sync_once(repo, _stop_event):
+        if repo.name == "private":
+            raise SyncError(
+                "Failed to push changes for repository 'private': secret stderr",
+                SyncErrorKind.AUTH_FAILED,
+            )
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+    status = SyncStatus()
+
+    scheduler.sync_all([make_repo("private"), make_repo("common")], status)
+
+    repos = status.snapshot()["repositories"]
+    assert repos["private"]["last_error"]["kind"] == "auth_failed"
+    assert repos["private"]["last_success"] is None
+    assert repos["common"]["last_success"] is not None
+    assert repos["common"]["last_error"] is None
+    # The message, with git's output in it, never reaches the status.
+    assert "secret stderr" not in str(status.snapshot())
+
+
+def test_sync_all_records_an_unexpected_error(monkeypatch):
+    """Test an error other than SyncError is recorded as unexpected."""
+
+    def fake_sync_once(_repo, _stop_event):
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+    status = SyncStatus()
+
+    scheduler.sync_all([make_repo("private")], status)
+
+    last_error = status.snapshot()["repositories"]["private"]["last_error"]
+    assert last_error["kind"] == "unexpected"
+
+
+def test_start_sync_scheduler_enables_the_status(monkeypatch):
+    """Test the scheduled repositories are listed before their first sync."""
+    monkeypatch.setattr(scheduler, "sync_all", lambda _repos, _status, _stop_event: None)
+    stop_event = threading.Event()
+    stop_event.set()
+    status = SyncStatus()
+
+    thread = scheduler.start_sync_scheduler(
+        [make_repo("private"), make_repo("common")], 300, stop_event, status
+    )
+    thread.join(timeout=5)
+
+    snapshot = status.snapshot()
+    assert snapshot["enabled"] is True
+    assert sorted(snapshot["repositories"]) == ["common", "private"]
+
+
+def test_sync_loop_hands_its_stop_event_to_the_round(monkeypatch):
+    """Test a running round can see the service stopping, not just the wait."""
+    received = []
+    monkeypatch.setattr(
+        scheduler,
+        "sync_all",
+        lambda _repos, _status, stop_event: received.append(stop_event),
+    )
+    stop_event = StubStopEvent(allowed_rounds=1)
+
+    # pylint: disable-next=protected-access
+    scheduler._sync_loop([make_repo("common")], 300, stop_event, SyncStatus())
+
+    assert received == [stop_event]
+
+
+def test_sync_all_starts_no_repository_once_stopped(monkeypatch):
+    """Test a stop between two repositories leaves the second one alone."""
+    stop_event = threading.Event()
+    synced = []
+
+    def fake_sync_once(repo, _stop_event):
+        synced.append(repo.name)
+        stop_event.set()
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+    status = SyncStatus()
+
+    scheduler.sync_all(
+        [make_repo("private"), make_repo("common")], status, stop_event
+    )
+
+    assert synced == ["private"]
+    assert "common" not in status.snapshot()["repositories"]
+
+
+def test_sync_all_records_nothing_for_a_round_cut_short(monkeypatch, caplog):
+    """Test a cycle stopped for shutdown is neither a success nor a failure."""
+
+    def fake_sync_once(repo, _stop_event):
+        raise SyncStopped(f"Stopped synchronizing repository '{repo.name}'")
+
+    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        scheduler.sync_all(
+            [make_repo("private"), make_repo("common")], status, threading.Event()
+        )
+
+    assert status.snapshot()["repositories"] == {}
+    assert "Stopped synchronizing repository 'private'" in caplog.text
+    assert "ERROR" not in caplog.text
