@@ -2,9 +2,8 @@
 Unit tests for what a sync cycle does when part of it cannot go ahead.
 
 Covers :mod:`admin.git.sync` and :mod:`admin.git.checks`: a pull that fails
-for good pushing the work to the backup branch, a remote without the
-branch, files held back for their size, the default excludes, and a file
-git renamed to settle a conflict. Real git is never invoked -
+for good, the backup branch, a remote without the branch, files held back
+for their size, and the default excludes. Real git is never invoked -
 :class:`tests.helpers.fake_git.FakeGit` answers every command.
 """
 
@@ -37,8 +36,8 @@ def fixture_repo(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_a_pull_that_fails_for_good_pushes_to_the_backup_branch(monkeypatch, repo):
-    """Test work is still pushed when the configured branch cannot be pulled."""
+def test_a_pull_that_fails_for_good_names_the_backup_branch(monkeypatch, repo):
+    """Test the failure says which backup branch holds the work."""
     repo.git_dir.mkdir(parents=True)
     fake_git = install_fake_git(
         monkeypatch,
@@ -49,7 +48,7 @@ def test_a_pull_that_fails_for_good_pushes_to_the_backup_branch(monkeypatch, rep
         ),
     )
 
-    with pytest.raises(SyncError, match="pushed to branch backup/") as excinfo:
+    with pytest.raises(SyncError, match="on branch backup/") as excinfo:
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.PULL_FAILED
@@ -84,17 +83,14 @@ def test_the_backup_branch_stays_the_same_across_cycles(monkeypatch, repo):
          SyncErrorKind.NETWORK),
     ],
 )
-def test_a_pull_that_may_recover_is_not_pushed_aside(monkeypatch, repo, message, kind):
-    """Test a rejected token or a network failure is reported as it is."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(failing="fetch", failure_message=message)
-    )
+def test_a_pull_that_may_recover_is_reported_as_it_is(monkeypatch, repo, message, kind):
+    """Test a rejected token or a network failure is not a lasting pull failure."""
+    install_fake_git(monkeypatch, FakeGit(failing="fetch", failure_message=message))
 
     with pytest.raises(SyncError) as excinfo:
         sync_once(repo)
 
     assert excinfo.value.kind is kind
-    assert "backup-push" not in fake_git.keys
 
 
 def test_a_branch_the_remote_never_had_is_created_by_the_push(monkeypatch, repo):
@@ -118,7 +114,7 @@ def test_a_branch_the_remote_never_had_is_created_by_the_push(monkeypatch, repo)
 def test_a_branch_that_disappeared_from_the_remote_is_a_pull_failure(
     monkeypatch, repo
 ):
-    """Test a branch renamed or deleted on the forge pushes the work aside."""
+    """Test a branch renamed or deleted on the forge is a lasting pull failure."""
     repo.git_dir.mkdir(parents=True)
     fake_git = install_fake_git(
         monkeypatch,
@@ -143,7 +139,7 @@ def test_an_unborn_branch_has_nothing_to_push(monkeypatch, repo):
 
 
 # --------------------------------------------------------------------------
-# What is never backed up, and files git renamed
+# What is never backed up
 # --------------------------------------------------------------------------
 
 
@@ -180,16 +176,3 @@ def test_the_default_excludes_are_kept_beside_the_users_own(monkeypatch, repo):
     assert text.startswith("my-own-pattern\n")
     assert ".venv/" in text and ".ipynb_checkpoints/" in text
     assert text.count(checks.EXCLUDE_BLOCK_START) == 1
-
-
-def test_a_file_renamed_in_a_file_directory_conflict_is_reported(monkeypatch, repo):
-    """Test git moving the local file aside is not silent."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, conflicts=["x~HEAD"], outgoing=1)
-    )
-
-    with pytest.raises(SyncError, match=r"x~HEAD") as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.RENAMED_ON_CONFLICT
-    assert "push" in fake_git.keys

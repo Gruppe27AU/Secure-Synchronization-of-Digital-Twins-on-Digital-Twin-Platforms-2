@@ -20,11 +20,8 @@ _PLAIN_KEYS = {
     "fetch": "fetch",
     "symbolic-ref": "head",
     "rev-parse": "ref",
-    "ls-tree": "previous-tree",
     "show": "staged-file",
     "reset": "unstage",
-    "checkout": "take-local",
-    "rm": "remove-local",
     "merge": "merge",
     "diff": "marker-check",
 }
@@ -38,9 +35,7 @@ _ARGUMENT_KEYS = (
     ("ls-files", "--modified", "modified-files"),
     ("ls-files", "--unmerged", "unmerged"),
     ("add", "-A", "add"),
-    ("add", "--", "mark-resolved"),
     ("diff", "--quiet", "staged-check"),
-    ("commit", "--no-edit", "merge-commit"),
     ("merge", "--abort", "merge-abort"),
     ("merge", "--ff-only", "fast-forward"),
 )

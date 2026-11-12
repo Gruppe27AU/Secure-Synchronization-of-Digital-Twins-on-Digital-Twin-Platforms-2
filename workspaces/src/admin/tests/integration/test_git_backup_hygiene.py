@@ -3,9 +3,8 @@ Integration tests for what the backup leaves out, with real git.
 
 Ported from the reproductions of review round 5: one file holding a line
 that looks like a conflict marker no longer blocks every other file, a file
-too large to back up is left out on its own, folders that are rebuilt rather
-than kept are never staged, and a file git renamed to settle a conflict is
-reported.
+too large to back up is left out on its own, and folders that are rebuilt
+rather than kept are never staged.
 """
 
 import os
@@ -73,39 +72,6 @@ def test_virtual_environments_and_caches_are_never_staged(world):
     assert ".ipynb_checkpoints" not in tracked
 
 
-def test_a_file_renamed_in_a_file_directory_conflict_is_reported(world):
-    """Test the local file git moved aside as x~HEAD is reported, not silent."""
-    def add_directory(tree):
-        (tree / "x").mkdir()
-        write(tree / "x" / "y", "remote\n")
-
-    world.colleague_pushes(add_directory)
-    write(world.workspace.work_tree / "x", "localfile\n")
-
-    with pytest.raises(SyncError, match=r"x~HEAD") as excinfo:
-        sync_once(world.workspace)
-
-    assert excinfo.value.kind is SyncErrorKind.RENAMED_ON_CONFLICT
-    # No content is lost: it was pushed under the new name.
-    assert world.remote_file("x~HEAD") == "localfile\n"
-    assert world.remote_file("x/y") == "remote\n"
-
-
-def test_a_users_own_tilde_head_file_is_not_reported(world):
-    """Test a file named like git's rename, but by the user, is left alone."""
-    write(world.workspace.work_tree / "notes~HEAD", "mine v1\n")
-    sync_once(world.workspace)
-    world.colleague_pushes(lambda tree: (
-        git(tree, "pull", "--quiet", "origin", "main"),
-        write(tree / "notes~HEAD", "theirs\n"),
-    ))
-    write(world.workspace.work_tree / "notes~HEAD", "mine v2\n")
-
-    assert sync_once(world.workspace) is True
-
-    assert world.remote_file("notes~HEAD") == "mine v2\n"
-
-
 @pytest.mark.skipif(os.name != "posix", reason="needs a non-UTF-8 file name")
 def test_a_file_name_that_is_not_utf8_is_backed_up(world):
     """Test a Latin-1 name neither stops the cycle nor holds back other work."""
@@ -158,5 +124,5 @@ def test_a_held_back_file_the_remote_changed_is_named(world, monkeypatch, case):
         sync_once(world.workspace)
 
     assert excinfo.value.kind is kind
-    assert git(world.remote, "branch", "--list", "backup/*") == ""
+    assert world.remote_file(path) == "remote\n"
     assert (world.workspace.work_tree / path).read_bytes() == local

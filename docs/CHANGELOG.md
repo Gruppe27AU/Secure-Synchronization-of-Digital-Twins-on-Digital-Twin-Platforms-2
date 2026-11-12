@@ -6,6 +6,20 @@ The main changes made so far are listed here.
 
 ### Changed
 
+* **A merge conflict is no longer resolved automatically.** The merge is
+  aborted, nothing is pushed to the configured branch, and the status
+  reports the new kind `merge_conflict` until the user merges
+  `origin/<branch>` by hand. The workspace's version is no longer pushed
+  over the remote's
+* Every cycle of a `sync` repository pushes the work to
+  `backup/<workspace-id>` before it pulls, not only when the pull fails for
+  good, so the work leaves the container even while a conflict waits
+* The status kind `renamed_on_conflict` is gone: a file/directory clash is
+  a `merge_conflict` like any other
+* A file held back for conflict markers or size that the remote also
+  changed is named in the log, with the kind `conflict_markers` or
+  `file_too_large`, instead of being reported as `pull_failed`
+* A file name that is not valid UTF-8 no longer stops the backup
 * `workspace-admin` chooses its `config.toml` on startup:
   `WORKSPACE_ADMIN_CONFIG` when it is set and not empty, otherwise
   `~/.config/workspace-admin/config.toml`. A relative

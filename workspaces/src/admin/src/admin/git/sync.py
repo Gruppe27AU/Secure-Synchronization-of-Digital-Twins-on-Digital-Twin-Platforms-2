@@ -4,11 +4,10 @@ Committing and pushing workspace changes back to the remote.
 Consumes :class:`admin.git.config.RepoConfig` and keeps one already-cloned
 repository in step with its remote. How depends on the repository's mode:
 
-- ``sync`` commits what the user changed, merges in what the remote
-  changed, and pushes the result. Local work always wins: when both sides
-  changed the same file, the merge keeps the workspace's version, because
-  the user is sitting in front of that file and did not ask for it to be
-  replaced. Remote changes to *other* files are still merged in as normal.
+- ``sync`` commits what the user changed, pushes it to the workspace's own
+  backup branch, merges in what the remote changed, and pushes the result.
+  A conflict aborts the merge and is left to the user; the work is safe on
+  the backup branch meanwhile.
 - ``pull`` only fast-forwards to the remote. Nothing is committed or
   pushed, so a repository shared between users can never have one user's
   files overwrite another's.
@@ -73,8 +72,8 @@ COMMIT_AUTHOR_EMAIL = "workspace-admin@localhost"
 #: Start of every backup commit's message, followed by a UTC timestamp.
 COMMIT_MESSAGE_PREFIX = "workspace backup"
 
-#: Branch below which a workspace pushes its work when the configured branch
-#: cannot be pulled, followed by the workspace's own id.
+#: Branch below which a workspace pushes its work every cycle, followed by
+#: the workspace's own id.
 BACKUP_BRANCH_PREFIX = "backup/"
 
 #: File in the git directory holding the workspace's id, which names its
@@ -422,86 +421,59 @@ def _incoming(repo: RepoConfig) -> int:
     return count_commits(repo, f"HEAD..{_remote_ref(repo)}", "count incoming commits")
 
 
-def _local_side_of_conflicts(repo: RepoConfig) -> tuple[list[str], list[str]]:
+def _merge_failure(repo: RepoConfig, output: str) -> SyncError:
     """
-    Split the conflicted files by whether the workspace still has them.
-
-    Git keeps the workspace's version of a conflicted file as stage 2.
-    Without one, the workspace deleted the file.
+    Describe a merge that stopped, from the files it left conflicted.
 
     Args:
-        repo: Repository in the middle of a conflicted merge.
+        repo: Repository in the middle of the stopped merge.
+        output: What the merge printed.
 
     Returns:
-        The paths to keep, and the paths to delete.
+        :attr:`SyncErrorKind.MERGE_CONFLICT` naming the conflicted files;
+        without any, :attr:`SyncErrorKind.LOCAL_CHANGES` when a local file
+        is in the way, or :attr:`SyncErrorKind.GIT_FAILED`.
 
     Raises:
-        SyncError: If the list cannot be read.
+        SyncError: If the conflicted files cannot be listed.
     """
-    stages = unmerged_stages(repo)
-    kept = [path for path, found in stages.items() if "2" in found]
-    removed = [path for path, found in stages.items() if "2" not in found]
-    return kept, removed
-
-
-def _take_local_side(
-    repo: RepoConfig, kept: list[str], removed: list[str]
-) -> None:
-    """
-    Resolve the conflicted files by taking the whole local version.
-
-    Args:
-        repo: Repository in the middle of a conflicted merge.
-        kept: Paths whose local version is kept.
-        removed: Paths the workspace deleted.
-
-    Raises:
-        SyncError: If a file cannot be resolved.
-    """
-    if kept:
-        run_local(
-            repo,
-            ["checkout", "--ours", "--", *kept],
-            "take the local version of the conflicted files",
+    conflicted = list(unmerged_stages(repo))
+    if conflicted:
+        return SyncError(
+            f"Repository '{repo.name}': the remote changed "
+            f"{', '.join(conflicted)} as well; merge them by hand",
+            SyncErrorKind.MERGE_CONFLICT,
         )
-        run_local(
-            repo, ["add", "--", *kept], "mark the conflicted files resolved"
-        )
-    if removed:
-        run_local(
-            repo,
-            ["rm", "--quiet", "--", *removed],
-            "keep the local deletion of the conflicted files",
-        )
+    in_the_way = any(m in output.lower() for m in LOCAL_CHANGES_MARKERS)
+    return SyncError(
+        f"Failed to merge the remote's changes for repository "
+        f"'{repo.name}': {output}",
+        SyncErrorKind.LOCAL_CHANGES if in_the_way else SyncErrorKind.GIT_FAILED,
+    )
 
 
-def pull_changes(repo: RepoConfig) -> list[str]:
+def pull_changes(repo: RepoConfig) -> bool:
     """
-    Merge the remote's changes in, keeping local files on conflict.
-
-    A conflicted file keeps its whole local version, or stays deleted if
-    the workspace deleted it. Files without a conflict get the remote's
-    changes.
+    Merge the remote's changes in, or nothing at all on a conflict.
 
     Args:
         repo: Repository to pull into.
 
     Returns:
-        The conflicted files. Empty when the merge was clean or there was
-        nothing to merge.
+        True if commits were merged, False if there was nothing to merge.
 
     Raises:
-        SyncError: If fetching or merging fails for any reason other than
-            a conflict, or the configured branch is no longer checked out
-            once the fetch is done.
+        SyncError: If fetching or merging fails, a conflict included, or
+            the configured branch is no longer checked out once the fetch
+            is done. The merge is aborted first.
     """
     if not _fetch(repo):
-        return []
+        return False
 
     incoming = _incoming(repo)
     if not incoming:
         logger.info("Repository '%s' is already up to date", repo.name)
-        return []
+        return False
 
     # The fetch can take minutes, long enough for the user to switch
     # branches, and the merge goes into whatever is checked out.
@@ -514,60 +486,21 @@ def pull_changes(repo: RepoConfig) -> list[str]:
         options=_identity_options(),
         check=False,
     )
-
-    if attempt.returncode == 0:
-        logger.info(
-            "Merged %d incoming commit(s) into repository '%s' without conflicts",
-            incoming,
-            repo.name,
-        )
-        return []
-
-    try:
-        kept, removed = _local_side_of_conflicts(repo)
-        if not kept and not removed:
-            # Stopped without a conflict, e.g. an untracked file in the way.
-            reason = attempt.stderr.strip() or attempt.stdout.strip()
-            in_the_way = any(m in reason.lower() for m in LOCAL_CHANGES_MARKERS)
-            raise SyncError(
-                f"Failed to merge the remote's changes for repository "
-                f"'{repo.name}': {reason}",
-                SyncErrorKind.LOCAL_CHANGES
-                if in_the_way
-                else SyncErrorKind.GIT_FAILED,
+    if attempt.returncode != 0:
+        try:
+            error = _merge_failure(
+                repo, attempt.stderr.strip() or attempt.stdout.strip()
             )
-
-        conflicted = kept + removed
-        logger.warning(
-            "Merge conflict in repository '%s' affecting %d file(s): %s",
-            repo.name,
-            len(conflicted),
-            ", ".join(conflicted),
-        )
-
-        _take_local_side(repo, kept, removed)
-        run_local(
-            repo,
-            ["commit", "--no-edit"],
-            "conclude the merge keeping local files",
-            options=_identity_options(),
-        )
-    except SyncError:
-        run_local(
-            repo,
-            ["merge", "--abort"],
-            "abort the failed merge",
-            check=False)
-        raise
+        finally:
+            run_local(
+                repo, ["merge", "--abort"], "abort the failed merge", check=False
+            )
+        raise error
 
     logger.info(
-        "Resolved the conflict in repository '%s' by keeping the local "
-        "version of: %s",
-        repo.name,
-        ", ".join(conflicted),
+        "Merged %d incoming commit(s) into repository '%s'", incoming, repo.name
     )
-
-    return conflicted
+    return True
 
 
 def push_if_ahead(repo: RepoConfig) -> bool:
@@ -647,7 +580,7 @@ def workspace_id(repo: RepoConfig) -> str:
 
 def backup_branch(repo: RepoConfig) -> str:
     """
-    Return the remote branch this workspace pushes to when it cannot pull.
+    Return the remote branch this workspace backs its work up to.
 
     Args:
         repo: Repository to name the branch for.
@@ -662,16 +595,15 @@ def push_to_backup_branch(repo: RepoConfig) -> str | None:
     """
     Push the local branch to this workspace's own backup branch.
 
-    Only this workspace writes that branch, so the push is forced and
-    cannot be refused for being behind, whatever happened to the
-    configured branch on the remote.
+    Only this workspace writes that branch, so the push is forced and is
+    never refused, whatever happened to the configured branch.
 
     Args:
         repo: Repository to push.
 
     Returns:
-        The backup branch pushed to, or None when there was nothing to push
-        or the push failed, which is logged.
+        The backup branch, or None when there was nothing to push or the
+        push failed, which is logged.
     """
     if not ref_exists(repo, _local_branch(repo)):
         return None
@@ -684,88 +616,47 @@ def push_to_backup_branch(repo: RepoConfig) -> str | None:
         )
     except (SyncError, OSError) as error:
         logger.error(
-            "Could not push repository '%s' to its backup branch either: %s",
+            "Could not push repository '%s' to its backup branch: %s",
             repo.name,
             error,
         )
         return None
 
-    logger.warning(
-        "Pushed repository '%s' to branch %s instead of %s, which could not be "
-        "pulled",
-        repo.name,
-        branch,
-        repo.branch,
-    )
+    logger.info("Backed up repository '%s' to branch %s", repo.name, branch)
     return branch
 
 
-def _pull_or_back_up(repo: RepoConfig) -> list[str]:
+def _pull(repo: RepoConfig, backup: str | None) -> bool:
     """
-    Pull, and when that fails for good, push to the backup branch instead.
-
-    A failure that will not go away by itself - the remote's history
-    rewritten, the branch renamed or deleted - would otherwise stop every
-    push, and the user's work would pile up unpushed. A rejected token, an
-    unreachable remote, a time-out or a branch switch is passed on as it
-    is: pushing would fail too, or the next cycle simply tries again.
+    Pull, saying where the local work is when the pull cannot be done.
 
     Args:
         repo: Repository to pull into.
+        backup: Backup branch pushed to this cycle, or None.
 
     Returns:
-        The conflicted files, as :func:`pull_changes` returns them.
+        As :func:`pull_changes`.
 
     Raises:
-        SyncError: With :attr:`SyncErrorKind.PULL_FAILED` if the pull
-            failed for good, or as raised by :func:`pull_changes`.
+        SyncError: As :func:`pull_changes`; a lasting failure becomes
+            :attr:`SyncErrorKind.PULL_FAILED`.
     """
     try:
         return pull_changes(repo)
     except SyncError as error:
-        if error.kind is not SyncErrorKind.GIT_FAILED:
+        if error.kind not in (SyncErrorKind.GIT_FAILED, SyncErrorKind.MERGE_CONFLICT):
             raise
-        branch = push_to_backup_branch(repo)
         saved = (
-            f"; the local work was pushed to branch {branch}"
-            if branch
+            f"; the local work is on branch {backup}"
+            if backup
             else "; the local work is not pushed anywhere"
         )
-        raise SyncError(f"{error}{saved}", SyncErrorKind.PULL_FAILED) from error
-
-
-def _renamed_on_conflict(repo: RepoConfig, conflicted: list[str]) -> list[str]:
-    """
-    Pick out the files git renamed to settle a file/directory conflict.
-
-    When one side has a file where the other has a directory, git moves the
-    file aside as ``<name>~<side>`` and the user's file changes name.
-
-    Args:
-        repo: Repository just merged into.
-        conflicted: The conflicted files.
-
-    Returns:
-        The renamed paths. A path that already had that name before the
-        merge, such as a file the user named ``notes~HEAD`` themselves, is
-        not one of them.
-
-    Raises:
-        SyncError: If the files before the merge cannot be listed.
-    """
-    suffixes = ("~HEAD", "~" + _remote_ref(repo).replace("/", "_"))
-    candidates = [path for path in conflicted if path.endswith(suffixes)]
-    if not candidates:
-        return []
-
-    # HEAD is the merge commit; its first parent is the workspace before it.
-    result = run_local(
-        repo,
-        ["ls-tree", "-z", "--name-only", "HEAD^1", "--", *candidates],
-        "list the files from before the merge",
-    )
-    existed = set(result.stdout.split("\0"))
-    return [path for path in candidates if path not in existed]
+        kind = (
+            SyncErrorKind.MERGE_CONFLICT
+            if error.kind is SyncErrorKind.MERGE_CONFLICT
+            else SyncErrorKind.PULL_FAILED
+        )
+        raise SyncError(f"{error}{saved}", kind) from error
 
 
 def _stop_if_requested(
@@ -889,11 +780,10 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
     """
     Run one full synchronization of the repository.
 
-    For a ``sync`` repository the order is deliberate: commit the user's
-    work first so the working tree is clean, then merge the remote in, then
-    push the result. A conflict is resolved in favour of the workspace's
-    own files. A ``pull`` repository is only fast-forwarded
-    (:func:`pull_only`).
+    A ``sync`` repository commits the user's work, pushes it to the backup
+    branch, merges the remote in and pushes the result. A conflict stops
+    the cycle before the last push. A ``pull`` repository is only
+    fast-forwarded (:func:`pull_only`).
 
     ``stop_event`` is checked between the steps, so a stopping service
     waits for at most the git command already running. A commit left
@@ -908,12 +798,11 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
             cycle.
 
     Returns:
-        True if anything changed - a commit, a merge or a push - and
-        False when the repository was already in sync.
+        True if a commit, merge or push to the configured branch was made.
 
     Raises:
         SyncError: If any git step fails, or, once the cycle is done, if
-            files were held back or renamed on the way.
+            files were held back.
         SyncStopped: If ``stop_event`` was set before the cycle finished.
     """
     if repo.mode is SyncMode.PULL:
@@ -926,9 +815,11 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
         committed = held_back.committed
         notices.append(held_back)
 
+    _stop_if_requested(repo, stop_event, "back up")
+    backup = push_to_backup_branch(repo)
     _stop_if_requested(repo, stop_event, "pull")
     try:
-        conflicted = _pull_or_back_up(repo)
+        merged = _pull(repo, backup)
     except SyncError as error:
         blocked = _held_back_in_the_way(repo, error, notices)
         if blocked:
@@ -937,15 +828,7 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
     _stop_if_requested(repo, stop_event, "push")
     pushed = push_if_ahead(repo)
 
-    renamed = _renamed_on_conflict(repo, conflicted)
-    if renamed:
-        notices.append(SyncError(
-            f"Repository '{repo.name}': git renamed {', '.join(renamed)} to "
-            "settle a conflict between a file and a directory; rename it back "
-            "or move it",
-            SyncErrorKind.RENAMED_ON_CONFLICT,
-        ))
     if notices:
         raise notices[0]
 
-    return committed or bool(conflicted) or pushed
+    return committed or merged or pushed

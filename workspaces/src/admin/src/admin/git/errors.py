@@ -39,6 +39,7 @@ class SyncErrorKind(StrEnum):
     TIMEOUT = "timeout"
     GIT_FAILED = "git_failed"
     PULL_FAILED = "pull_failed"
+    MERGE_CONFLICT = "merge_conflict"
     LOCAL_CHANGES = "local_changes"
     OPERATION_IN_PROGRESS = "operation_in_progress"
     WRONG_BRANCH = "wrong_branch"
@@ -48,7 +49,6 @@ class SyncErrorKind(StrEnum):
     CONFLICT_MARKERS = "conflict_markers"
     FILE_TOO_LARGE = "file_too_large"
     MASS_DELETION = "mass_deletion"
-    RENAMED_ON_CONFLICT = "renamed_on_conflict"
     UNEXPECTED = "unexpected"
 
 

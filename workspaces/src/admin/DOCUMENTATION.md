@@ -168,18 +168,18 @@ read, with a `state` of its own:
 | `auth_failed` | The remote rejected the credentials. Check `GIT_REPO_TOKEN` |
 | `network` | The remote could not be reached: unknown host, connection refused or timed out |
 | `timeout` | A git command ran out of time and was stopped (see [Time limits and prompts](#time-limits-and-prompts)) |
-| `pull_failed` | The configured branch cannot be pulled, for example after its history was rewritten or it was renamed on the forge. The work was pushed to the backup branch instead (see [The branch cannot be pulled](#the-branch-cannot-be-pulled)) |
-| `local_changes` | In a pull-only repository, a local edit is in the way of the remote's changes (see [Pull-only repositories](#pull-only-repositories)) |
+| `pull_failed` | The configured branch cannot be pulled, for example after its history was rewritten or it was renamed on the forge. The work is on the backup branch (see [The branch cannot be pulled](#the-branch-cannot-be-pulled)) |
+| `merge_conflict` | The workspace and the remote changed the same file. Nothing was merged or pushed to the configured branch; the work is on the backup branch (see [Conflicts](#the-remote-changed-the-same-file)) |
+| `local_changes` | A local file the backup does not commit is in the way of the remote's changes, for example an edit in a pull-only repository (see [Pull-only repositories](#pull-only-repositories)) |
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
 | `conflict_markers` | A file holds conflict markers and was left out of the commit; the rest was backed up (see [Conflicts](#a-file-holds-conflict-markers)) |
 | `file_too_large` | A file over 50 MiB was left out of the commit; the rest was backed up (see [What is never backed up](#what-is-never-backed-up)) |
-| `renamed_on_conflict` | Git renamed a file to settle a conflict between a file and a directory (see [Conflicts](#a-file-and-a-directory-share-a-name)) |
 | `wrong_branch` | Another branch than `GIT_REPO_BRANCH` is checked out (see [Conflicts](#another-branch-is-checked-out)) |
 | `detached_head` | No branch is checked out, for example during `git bisect` (see [Conflicts](#another-branch-is-checked-out)) |
 | `index_locked` | Another git command was running in the repository, or an old `index.lock` could not be removed (see [Conflicts](#another-git-command-is-running)) |
 | `mass_deletion` | More than half of the tracked files are missing from the working tree (see [Conflicts](#most-files-are-missing)) |
-| `git_failed` | Any other failing git command, for example a merge stopped by an untracked file |
+| `git_failed` | Any other failing git command |
 | `unexpected` | An error that is not a git failure, for example `git` missing from the image |
 
 The endpoint never returns an error message, a file name, a URL, a branch
@@ -611,36 +611,44 @@ configured repository. One that is not cloned yet is cloned instead of
 backed up, on every interval until that succeeds. See
 [Git Backup Flow](#git-backup-flow) for what the backup does.
 
+### The backup branch
+
+Every cycle of a `sync` repository pushes the workspace's branch to a branch
+of its own on the remote, `backup/<workspace-id>`, right after the commit and
+before anything is pulled. Whatever happens to the pull afterwards, the
+newest work has left the container:
+
+```text
+INFO admin.git.sync Backed up repository 'private' to branch backup/3f2a9c01d4e5
+```
+
+Only this workspace writes that branch, so the push is forced and is never
+refused. The id is made up once and kept in the git directory
+(`workspace-admin-id`), so it stays the same across restarts and differs
+between workspaces backing up to the same remote. The branch is not deleted
+automatically. A failed backup push is logged and the cycle goes on.
+
 ### The branch cannot be pulled
 
-Each cycle of a `sync` repository commits, pulls and then pushes, so a pull
-that fails would also stop the push. Some failures do not go away by
-themselves:
+Some pull failures do not go away by themselves:
 
 - the remote's history was rewritten, for example after the project was
   deleted and recreated (`refusing to merge unrelated histories`)
 - the configured branch was renamed or deleted on the forge
   (`couldn't find remote ref`)
 
-When the pull fails for such a reason, the workspace's branch is pushed to
-a branch of its own on the remote instead, `backup/<workspace-id>`, and the
-status reports `pull_failed`:
+Then nothing is pushed to the configured branch, and the status reports
+`pull_failed`. The work is on the backup branch, which the log names:
 
 ```text
-ERROR admin.git.scheduler Failed to merge the remote's changes for repository 'private': fatal: refusing to merge unrelated histories; the local work was pushed to branch backup/3f2a9c01d4e5
+ERROR admin.git.scheduler Failed to merge the remote's changes for repository 'private': fatal: refusing to merge unrelated histories; the local work is on branch backup/3f2a9c01d4e5
 ```
 
-Only this workspace writes that branch, so the push is forced and cannot be
-refused, and it happens on every interval until the configured branch can
-be pulled again, so the newest work is always there. The id is made up
-once and kept in the git directory (`workspace-admin-id`), so it stays the
-same across restarts. To recover, fix the branch on the forge (or point
-`GIT_REPO_BRANCH` at the new name) and merge `backup/<id>` into it. The
-backup branch is not deleted automatically.
+To recover, fix the branch on the forge (or point `GIT_REPO_BRANCH` at the
+new name) and merge `backup/<id>` into it.
 
 A rejected token, an unreachable remote, a time-out or a branch switch is
-not treated this way: the push would fail too, or the next cycle simply
-works.
+reported as it is: the next cycle simply tries again.
 
 A branch the workspace has never seen on the remote, as on an empty remote
 the repository was started on, is not a failure: there is nothing to pull,
@@ -658,13 +666,11 @@ doing without reading the log.
 
 | Situation | Handled by | What the backup does | To get sync going again |
 | --- | --- | --- | --- |
-| Both sides changed the same file | Backup | Keeps the workspace's whole file, merges every other file | Nothing to do |
-| One side changed a file the other deleted | Backup | Keeps the workspace's side: a file changed here is kept, a file deleted here stays deleted | Nothing to do |
+| The remote changed the same file, deleted it, or put a directory where it is | You | Aborts the merge; keeps backing up to the backup branch, pushes nothing to the configured branch | Merge `origin/<branch>` by hand |
 | A merge, rebase, cherry-pick or revert you have started is unfinished | You | Waits: no commit, no pull, no push | Finish or abort the changes |
 | Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
 | A file holds conflict markers | You | Leaves that file out, commits and pushes the rest | Remove the markers |
 | A file is over 50 MiB | You | Leaves that file out, commits and pushes the rest | Move or shrink it, or ignore it |
-| A file and a directory share a name | Backup | Keeps both, the file renamed to `<name>~HEAD`, and reports it | Rename the file |
 | Most tracked files are missing | You | Waits: no commit | Restore them, or commit the deletion by hand |
 
 Every command below is run in the repository's working tree, which with the
@@ -676,29 +682,73 @@ If `git commit` asks who you are, add `-c user.name="Your Name" -c
 user.email="you@example.com"` right after `git`. The clone does not store an
 identity, so that nothing is written into the repository on your behalf.
 
-### Both sides changed the same file
+### The remote changed the same file
 
-Handled automatically. The conflicted file keeps the workspace's whole
-version: no line from the remote is mixed into it. The log names the files:
+A collaborator, or another workspace, pushed a change to a file the user
+also changed. The same applies when one side deleted a file the other
+changed, or put a directory where the other has a file. Git cannot combine
+the two, so the backup aborts the merge and leaves everything as it was:
 
 ```text
-WARNING admin.git.sync Merge conflict in repository 'common' affecting 1 file(s): notes.md
-INFO admin.git.sync Resolved the conflict in repository 'common' by keeping the local version of: notes.md
+ERROR admin.git.scheduler Repository 'private': the remote changed notes.md as well; merge them by hand; the local work is on branch backup/3f2a9c01d4e5
 ```
 
-The remote's version of those files is not lost: it is still in the
-history, in the commit that was merged in.
+While the conflict lasts:
 
-### One side changed a file the other deleted
+- the configured branch on the remote keeps the collaborator's version
+- the working tree keeps the user's version, and new work is still
+  committed every interval
+- every interval pushes that work to the [backup branch](#the-backup-branch),
+  so it is never only in the container
+- nothing from the remote is merged in, not even files without a conflict,
+  and nothing is pushed to the configured branch
+- the status reports `merge_conflict`
 
-Handled automatically, in favour of the workspace:
+#### Why the backup does not pick a side
 
-- Changed here, deleted on the remote: the file is kept and pushed back.
-- Deleted here, changed on the remote: the file stays deleted, and the
-  deletion is pushed.
+Keeping either version automatically would throw the other away without
+anyone deciding to. Keeping the workspace's version replaces the
+collaborator's work on the remote, and they are never told: the only trace
+is a line in the log of a container they cannot see. Keeping the remote's
+version does the same to the user. Which edit matters, or how the two
+should be combined, is only known to the people who made them.
 
-The log is the same as above. The other side's version is still in the
-history.
+The backup can leave that decision to them because the user's work never
+depends on the merge to be safe. It reaches the backup branch before the
+pull is even tried. A conflict therefore costs time, not data: the remote
+holds one version, the backup branch the other, and the user merges them
+once.
+
+#### To get sync going again
+
+Merge the remote's branch by hand in the working tree. The backup fetches
+it every interval as `origin/<branch>`, so no credentials are needed:
+
+```bash
+cd /workspace/assets/private
+git merge origin/main         # stops on the conflict
+```
+
+Open each file git names and keep the content you want. Between `<<<<<<<`
+and `=======` is your version, between `=======` and `>>>>>>>` the
+remote's; delete the three marker lines too. To keep one side of a file
+whole instead:
+
+```bash
+git checkout --ours -- notes.md     # your version
+git checkout --theirs -- notes.md   # the remote's version
+```
+
+Then mark the files resolved and conclude the merge:
+
+```bash
+git add notes.md
+git commit --no-edit
+```
+
+The backup waits while the merge is unfinished (see
+[A merge or rebase you started is unfinished](#a-merge-or-rebase-you-started-is-unfinished)),
+and the next interval after the commit pushes the result.
 
 ### A merge or rebase you started is unfinished
 
@@ -762,6 +812,13 @@ cannot hold up the rest of your work. The file is unstaged again, so it is
 as you left it, and the status reports `conflict_markers` until it is
 fixed.
 
+If the remote changed the same file, the merge would overwrite it, so
+nothing is merged until it is fixed, and the log says so:
+
+```text
+WARNING admin.git.sync Repository 'private': notes.md is held back (conflict markers left in notes.md), remove the conflict markers in order to merge.
+```
+
 **To get sync going again**, open each file the log names. Between
 `<<<<<<<` and `=======` is one version, between `=======` and `>>>>>>>` the
 other. Keep the lines you want and delete the rest, the three marker lines
@@ -781,21 +838,6 @@ docs/** conflict-marker-size=32
 
 a seven-character marker line in `docs/` is no longer a marker, and the
 file is backed up as normal.
-
-### A file and a directory share a name
-
-When the workspace has a file where the remote now has a directory of the
-same name, or the other way round, git cannot keep both under one name. It
-moves the file aside as `<name>~HEAD` (or `<name>~origin_<branch>` for the
-remote's file), and that is what is committed and pushed:
-
-```text
-ERROR admin.git.scheduler Repository 'private': git renamed x~HEAD to settle a conflict between a file and a directory; rename it back or move it
-```
-
-No content is lost, but the file's name has changed, so the status reports
-`renamed_on_conflict`. **To clear it**, rename the file to something that
-does not clash and let the next interval push the rename.
 
 ### Another branch is checked out
 
@@ -898,7 +940,8 @@ enough tree would make staging hit its time limit on every cycle. So:
   ```
 
   Move it out of the folder, make it smaller, or add it to a `.gitignore`
-  in the folder, and the warning stops.
+  in the folder, and the warning stops. As with conflict markers, a held
+  back file the remote also changed stops the merge until it is dealt with.
 
 ### What the backup does not check
 
@@ -929,8 +972,8 @@ decision what goes into it.
    otherwise) a repository that is not cloned yet is cloned, a pull-only
    repository is fast-forwarded (see
    [Pull-only repositories](#pull-only-repositories)), and every other
-   working tree goes through the same three steps, in this order:
-   1. **Commit** - the repository is first checked for a running git
+   working tree goes through the same four steps, in this order:
+   1. **Commit**: the repository is first checked for a running git
       command (`index.lock`), an unfinished merge, rebase, cherry-pick or
       revert, another branch or a detached `HEAD`, and unresolved files,
       and the whole cycle stops if it finds one. Then `git status --porcelain`
@@ -940,13 +983,15 @@ decision what goes into it.
       conflict markers, which are held back, and committed with a
       timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
-   2. **Pull** - the remote is fetched and merged in. Local files win any
-      conflict, whole file (see
-      [Conflicts](#conflicts-what-is-automatic-and-what-is-manual)).
-      Before merging, the branch is checked again. A pull that cannot
-      succeed pushes the work to `backup/<workspace-id>` instead (see
+   2. **Back up**: the branch is pushed to `backup/<workspace-id>`, so the
+      work has left the container whatever the pull does (see
+      [The backup branch](#the-backup-branch))
+   3. **Pull**: the remote is fetched and merged in. Before merging, the
+      branch is checked again. A conflict aborts the merge and ends the
+      cycle (see [Conflicts](#the-remote-changed-the-same-file)), and so
+      does a pull that cannot succeed (see
       [The branch cannot be pulled](#the-branch-cannot-be-pulled))
-   3. **Push** - the branch is pushed only when it actually holds commits
+   4. **Push**: the branch is pushed only when it actually holds commits
       the remote does not. Both the count and the push name the branch, not
       `HEAD`
 4. Committing happens *before* merging on purpose: git refuses to merge over
@@ -964,8 +1009,8 @@ decision what goes into it.
    the one already running is waited for, for up to 8 seconds. A commit made
    but not yet pushed is pushed by the first interval after the next start
 
-The user never runs a git command: saving a file in Jupyter or VS Code is
-enough for it to reach the remote within one interval.
+Saving a file in Jupyter or VS Code is enough for it to reach the remote
+within one interval. The user only runs git to settle a conflict.
 
 ### About the Implementation Reports
 
@@ -1341,6 +1386,41 @@ name with a space would have been read as two files. `-z` avoids that.
 with a local bare repository as the remote. Four of its five tests fail on
 the old `-X ours` code.
 
+### Implementation Report: Conflicts Are Left to the User
+
+Keeping the local file whole fixed how a conflict was resolved, but not
+that it was resolved at all. The review kept pointing out that the
+collaborator's change was still replaced on the remote without anyone
+being told, and that the specification asked for something else: an
+ordinary merge, aborted on a conflict with its own error kind, and the
+work pushed to a per-workspace backup branch every interval.
+
+The reason for resolving automatically had been that a conflict must not
+keep the user's work in the container. The backup branch removes that
+reason, so the cycle was reordered:
+
+- `sync_once()` pushes to `backup/<workspace-id>` right after the commit,
+  every cycle, before the pull. Until then the branch was only pushed when
+  a pull failed for good
+- `pull_changes()` runs an ordinary merge. When it stops, `_merge_failure()`
+  lists the conflicted files with `git ls-files --unmerged -z`, the merge is
+  aborted, and the error has the new kind `merge_conflict`. It returns
+  whether anything was merged, not a list of files
+- `_take_local_side()` and `_local_side_of_conflicts()` are gone. So is
+  `renamed_on_conflict`: git only renames a file aside inside a merge that
+  is now always aborted
+- `pull_failed` stays for a branch that cannot be pulled at all, and its
+  message names the backup branch instead of pushing to it
+
+The cost is that one conflicting file holds back every other change from
+the remote until the user merges by hand. The documentation explains how,
+using `origin/<branch>`, which the backup fetches, so the user needs no
+credentials of their own.
+
+`tests/integration/test_git_sync_conflicts.py` was rewritten for the new
+behaviour: all four kinds of conflict leave both sides and the remote
+untouched, and a merge finished by hand is pushed by the next cycle.
+
 ### Package Layout
 
 The package is split by layer, so that transport concerns stay separate from
@@ -1428,10 +1508,10 @@ module imports the layer above it, so each can be tested on its own.
     an empty remote, and raising `CloneError` with a kind on failure.
     `restore_git_file()` writes back a lost `.git` file
   - `sync.py`: `sync_once()` runs one cycle. For a `sync` repository:
-    `commit_local_changes()`, then `pull_changes()`, then
-    `push_if_ahead()`, pushing to `backup/<workspace-id>` when the pull
-    fails for good. For a `pull` repository: `pull_only()`. Held-back and
-    renamed files are reported once the rest of the cycle is done. The
+    `commit_local_changes()`, `push_to_backup_branch()`, `pull_changes()`
+    (which aborts a conflicted merge), then `push_if_ahead()`. For a `pull`
+    repository: `pull_only()`. Held-back files are reported once the rest of
+    the cycle is done. The
     commit identity is passed per command with `git -c`, because
     `clone.py` deliberately leaves it out of the repository's own
     `.git/config`
@@ -1509,13 +1589,13 @@ obvious test file:
 | `tests/unit/test_git_status.py` | `admin/git/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/test_git_runner.py` | `admin/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/test_git_bootstrap.py` | `admin/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
-| `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflict resolution against real git: both directions of modify/delete, no remote lines in a conflicted file, other files still merged, the next sync clean |
+| `tests/integration/test_git_sync_conflicts.py` | `admin/git/sync.py` | Conflicts against real git: every kind aborts the merge and keeps both sides, the backup branch is pushed every cycle, a merge finished by hand is pushed |
 | `tests/unit/test_git_errors.py` | `admin/git/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
 | `tests/integration/test_git_sync_repository.py` | `admin/git/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed |
 | `tests/integration/test_git_pull_only.py` | `admin/git/sync.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
-| `tests/integration/test_git_remote_changes.py` | `admin/git/sync.py`, `clone.py` | A rewritten history or renamed branch pushes the work to the backup branch; an empty remote is started and filled |
+| `tests/integration/test_git_remote_changes.py` | `admin/git/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work on the backup branch; an empty remote is started and filled |
 | `tests/integration/test_git_auth_failure.py` | `admin/git/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed` |
-| `tests/integration/test_git_backup_hygiene.py` | `admin/git/sync.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed; default excludes; a file renamed in a file/directory conflict |
+| `tests/integration/test_git_backup_hygiene.py` | `admin/git/sync.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
 it builds the `RepoConfig` objects the git tests need, so no test module has

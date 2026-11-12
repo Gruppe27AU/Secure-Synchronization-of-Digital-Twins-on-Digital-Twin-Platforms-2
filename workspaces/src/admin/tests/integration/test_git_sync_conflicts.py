@@ -1,76 +1,107 @@
 """
-Integration tests for resolving merge conflicts with real git.
+Integration tests for merge conflicts with real git.
 
-A bare repository in ``tmp_path`` stands in for the remote. The workspace
-is cloned with :func:`admin.git.clone.clone_asset` and synchronized with
-:func:`admin.git.sync.sync_once`; a second clone plays a "colleague".
+A conflict aborts the merge and stops the cycle: the remote keeps the
+colleague's work, the workspace keeps the user's, and the user's work is
+on the backup branch. A second clone plays the "colleague".
 """
 
-from admin.git.sync import sync_once
-from tests.helpers.git_world import NOTEBOOK, write
+import subprocess
+
+import pytest
+
+from admin.git.sync import SyncError, SyncErrorKind, backup_branch, sync_once
+from tests.helpers.git_world import NOTEBOOK, git, write
 
 
-def test_local_change_beats_a_remote_deletion(world):
-    """Test a file deleted remotely but changed locally is pushed back."""
+def _both_edit(world):
+    world.colleague_pushes(lambda tree: write(
+        tree / "notebook.txt", NOTEBOOK.replace("line1\n", "COLLEAGUE1\n")
+    ))
+    write(world.workspace.work_tree / "notebook.txt",
+          NOTEBOOK.replace("line1\n", "LOCAL1\n"))
+    return "notebook.txt"
+
+
+def _remote_deletes(world):
     world.colleague_pushes(lambda tree: (tree / "model.txt").unlink())
     write(world.workspace.work_tree / "model.txt", "local work\n")
-
-    assert sync_once(world.workspace) is True
-
-    assert world.remote_file("model.txt") == "local work\n"
+    return "model.txt"
 
 
-def test_local_deletion_beats_a_remote_change(world):
-    """Test a file deleted locally but changed remotely stays deleted."""
+def _local_deletes(world):
     world.colleague_pushes(lambda tree: write(tree / "old.txt", "old v2\n"))
     (world.workspace.work_tree / "old.txt").unlink()
+    return "old.txt"
+
+
+def _file_meets_directory(world):
+    def add_directory(tree):
+        (tree / "clash").mkdir()
+        write(tree / "clash" / "y", "remote\n")
+
+    world.colleague_pushes(add_directory)
+    write(world.workspace.work_tree / "clash", "local file\n")
+    return "clash"
+
+
+def _read(path):
+    return path.read_bytes() if path.is_file() else None
+
+
+def _show(world, ref, path):
+    try:
+        return git(world.remote, "show", f"{ref}:{path}")
+    except subprocess.CalledProcessError:
+        return None
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [_both_edit, _remote_deletes, _local_deletes, _file_meets_directory],
+    ids=["both-edit", "remote-deletes", "local-deletes", "file-meets-directory"],
+)
+def test_a_conflict_aborts_the_merge_and_keeps_both_sides(world, conflict):
+    """Test neither side is overwritten and the local work is backed up."""
+    path = conflict(world)
+    remote_main = git(world.remote, "rev-parse", "main")
+    local = _read(world.workspace.work_tree / path)
+
+    with pytest.raises(SyncError, match=rf"{path}.*backup/") as excinfo:
+        sync_once(world.workspace)
+
+    assert excinfo.value.kind is SyncErrorKind.MERGE_CONFLICT
+    assert git(world.remote, "rev-parse", "main") == remote_main
+    assert _read(world.workspace.work_tree / path) == local
+    assert not (world.workspace.git_dir / "MERGE_HEAD").exists()
+    backed_up = _show(world, backup_branch(world.workspace), path)
+    assert backed_up == (local.decode() if local else None)
+
+
+def test_the_backup_branch_is_pushed_every_cycle(world):
+    """Test the work reaches the backup branch without anything going wrong."""
+    write(world.workspace.work_tree / "thesis.md", "work\n")
 
     assert sync_once(world.workspace) is True
 
-    assert world.remote_file("old.txt") is None
-    assert not (world.workspace.work_tree / "old.txt").exists()
+    branch = backup_branch(world.workspace)
+    assert _show(world, branch, "thesis.md") == "work\n"
+    assert world.remote_file("thesis.md") == "work\n"
 
 
-def test_conflicted_file_keeps_no_remote_lines(world):
-    """Test the whole local file wins, not only its conflicting lines."""
-    world.colleague_pushes(lambda tree: write(
-        tree / "notebook.txt",
-        NOTEBOOK.replace("line1\n", "COLLEAGUE1\n").replace(
-            "line8\n", "COLLEAGUE8\n"),
-    ))
-    local = NOTEBOOK.replace("line1\n", "LOCAL1\n")
-    write(world.workspace.work_tree / "notebook.txt", local)
+def test_a_conflict_merged_by_hand_is_pushed(world):
+    """Test the next cycle pushes a merge the user finished themselves."""
+    _both_edit(world)
+    with pytest.raises(SyncError):
+        sync_once(world.workspace)
 
-    sync_once(world.workspace)
+    tree = world.workspace.work_tree
+    with pytest.raises(subprocess.CalledProcessError):
+        git(tree, "merge", "origin/main")
+    write(tree / "notebook.txt", "merged\n")
+    git(tree, "add", "notebook.txt")
+    git(tree, "commit", "--quiet", "--no-edit")
 
-    assert world.remote_file("notebook.txt") == local
-    assert (world.workspace.work_tree / "notebook.txt").read_bytes() == (
-        local.encode()
-    )
+    assert sync_once(world.workspace) is True
 
-
-def test_files_without_a_conflict_get_the_remote_changes(world):
-    """Test the colleague's work in other files survives a conflict."""
-    def change(tree):
-        write(tree / "notebook.txt", NOTEBOOK.replace("line1\n", "COLLEAGUE1\n"))
-        write(tree / "other.txt", "other v2\n")
-
-    world.colleague_pushes(change)
-    write(
-        world.workspace.work_tree / "notebook.txt",
-        NOTEBOOK.replace("line1\n", "LOCAL1\n"),
-    )
-
-    sync_once(world.workspace)
-
-    assert (world.workspace.work_tree / "other.txt").read_bytes() == b"other v2\n"
-    assert world.remote_file("other.txt") == "other v2\n"
-
-
-def test_the_next_sync_after_a_conflict_is_clean(world):
-    """Test a resolved conflict leaves nothing behind to block later syncs."""
-    world.colleague_pushes(lambda tree: (tree / "model.txt").unlink())
-    write(world.workspace.work_tree / "model.txt", "local work\n")
-    sync_once(world.workspace)
-
-    assert sync_once(world.workspace) is False
+    assert world.remote_file("notebook.txt") == "merged\n"

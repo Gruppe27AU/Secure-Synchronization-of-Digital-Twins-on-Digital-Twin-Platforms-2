@@ -1,9 +1,9 @@
 """
 Unit tests for synchronizing a workspace repository with its remote.
 
-Covers :mod:`admin.git.sync`: committing what the user changed, merging
-the remote's work in, keeping local files when the two sides collide, and
-pushing the result. Real git is never invoked -
+Covers :mod:`admin.git.sync`: committing what the user changed, backing it
+up, merging the remote's work in or aborting on a conflict, and pushing the
+result. Real git is never invoked -
 :func:`admin.git.runner.run_git` is replaced by
 :class:`tests.helpers.fake_git.FakeGit`, which records the commands and
 answers them with canned results.
@@ -246,95 +246,35 @@ def test_pull_changes_does_nothing_when_already_up_to_date(monkeypatch, repo):
     """Test no merge is attempted when the remote has nothing new."""
     fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
 
-    assert pull_changes(repo) == []
+    assert pull_changes(repo) is False
     assert fake_git.keys == ["fetch", "ref", "incoming"]
 
 
 def test_pull_changes_merges_cleanly_when_there_is_no_conflict(
     monkeypatch, repo, caplog
 ):
-    """Test a clean merge reports no kept files and needs only one merge."""
+    """Test a clean merge needs only one merge command."""
     fake_git = install_fake_git(monkeypatch, FakeGit(incoming=2))
 
     with caplog.at_level("INFO"):
-        assert pull_changes(repo) == []
+        assert pull_changes(repo) is True
 
     assert fake_git.keys == ["fetch", "ref", "incoming", "head", "merge"]
-    assert "without conflicts" in caplog.text
+    assert "Merged 2 incoming" in caplog.text
 
 
-def test_pull_changes_keeps_whole_local_files_on_conflict(monkeypatch, repo):
-    """Test conflicted files take the local version and the merge is concluded."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, conflicts=["shared.txt", "notes.md"])
-    )
-
-    assert pull_changes(repo) == ["shared.txt", "notes.md"]
-    assert fake_git.keys == [
-        "fetch",
-        "ref",
-        "incoming",
-        "head",
-        "merge",
-        "unmerged",
-        "take-local",
-        "mark-resolved",
-        "merge-commit",
-    ]
-    assert fake_git.command_for("take-local")[-4:] == [
-        "--ours", "--", "shared.txt", "notes.md"
-    ]
-    # No hunk-level resolution, which mixes the remote into local files.
-    assert not any("ours" in command for command in fake_git.commands
-                   if command_key(command) == "merge")
-
-
-def test_pull_changes_keeps_a_local_deletion_on_conflict(monkeypatch, repo):
-    """Test a file deleted locally but changed remotely stays deleted."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, deleted_locally=["old.txt"])
-    )
-
-    assert pull_changes(repo) == ["old.txt"]
-    assert "take-local" not in fake_git.keys
-    assert fake_git.command_for("remove-local")[-2:] == ["--", "old.txt"]
-    assert fake_git.keys[-1] == "merge-commit"
-
-
-def test_pull_changes_resolves_both_kinds_of_conflict_at_once(monkeypatch, repo):
-    """Test kept and deleted files are each resolved their own way."""
+def test_pull_changes_aborts_a_conflict_and_names_the_files(monkeypatch, repo):
+    """Test a conflict is aborted, not resolved, and every file is named."""
     fake_git = install_fake_git(
         monkeypatch,
-        FakeGit(incoming=1, conflicts=["model.txt"], deleted_locally=["old.txt"]),
+        FakeGit(incoming=1, conflicts=["my notes.ipynb"], deleted_locally=["old.txt"]),
     )
 
-    assert pull_changes(repo) == ["model.txt", "old.txt"]
-    assert fake_git.command_for("take-local")[-1] == "model.txt"
-    assert fake_git.command_for("remove-local")[-1] == "old.txt"
-
-
-def test_pull_changes_keeps_a_file_name_with_spaces_intact(monkeypatch, repo):
-    """Test a conflicted path with spaces is passed to git as one path."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, conflicts=["my notes.ipynb"])
-    )
-
-    assert pull_changes(repo) == ["my notes.ipynb"]
-    assert fake_git.command_for("take-local")[-1] == "my notes.ipynb"
-
-
-def test_pull_changes_logs_the_conflict_and_its_resolution(
-    monkeypatch, repo, caplog
-):
-    """Test both the detection and the resolution are logged, by filename."""
-    install_fake_git(monkeypatch, FakeGit(incoming=1, conflicts=["shared.txt"]))
-
-    with caplog.at_level("INFO"):
+    with pytest.raises(SyncError, match=r"my notes\.ipynb, old\.txt") as excinfo:
         pull_changes(repo)
 
-    assert "Merge conflict" in caplog.text
-    assert "keeping the local version" in caplog.text
-    assert caplog.text.count("shared.txt") >= 2
+    assert excinfo.value.kind is SyncErrorKind.MERGE_CONFLICT
+    assert fake_git.keys[-3:] == ["merge", "unmerged", "merge-abort"]
 
 
 def test_pull_changes_fetches_the_branch_with_an_explicit_refspec(
@@ -402,42 +342,19 @@ def test_pull_changes_raises_when_the_fetch_fails(monkeypatch, repo):
     assert excinfo.value.kind is SyncErrorKind.GIT_FAILED
 
 
-@pytest.mark.parametrize(
-    ("failing", "message"),
-    [
-        ("take-local", "take the local version"),
-        ("mark-resolved", "mark the conflicted files resolved"),
-        ("merge-commit", "conclude the merge"),
-    ],
-)
-def test_pull_changes_aborts_the_merge_when_resolving_fails(
-    monkeypatch, repo, failing, message
-):
-    """Test a failed resolution is aborted so no half merge is left behind."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(incoming=1, conflicts=["shared.txt"], failing=failing),
-    )
-
-    with pytest.raises(SyncError, match=message):
-        pull_changes(repo)
-
-    assert fake_git.keys[-2:] == [failing, "merge-abort"]
-
-
-def test_pull_changes_aborts_when_a_local_deletion_cannot_be_kept(
+def test_pull_changes_aborts_even_when_the_conflicts_cannot_be_listed(
     monkeypatch, repo
 ):
-    """Test a failed removal is aborted like any other failed resolution."""
+    """Test no half merge is left behind when listing the conflicts fails."""
     fake_git = install_fake_git(
         monkeypatch,
-        FakeGit(incoming=1, deleted_locally=["old.txt"], failing="remove-local"),
+        FakeGit(incoming=1, conflicts=["shared.txt"], failing="unmerged"),
     )
 
-    with pytest.raises(SyncError, match="keep the local deletion"):
+    with pytest.raises(SyncError):
         pull_changes(repo)
 
-    assert fake_git.keys[-2:] == ["remove-local", "merge-abort"]
+    assert fake_git.keys[-2:] == ["unmerged", "merge-abort"]
 
 
 def test_pull_changes_aborts_a_merge_that_stops_without_a_conflict(
@@ -452,6 +369,7 @@ def test_pull_changes_aborts_a_merge_that_stops_without_a_conflict(
     assert fake_git.keys == [
         "fetch", "ref", "incoming", "head", "merge", "unmerged", "merge-abort"
     ]
+
 
 def test_fetch_sends_auth_header_without_exposing_the_token(
     monkeypatch, repo_with_credentials
@@ -589,17 +507,16 @@ def test_push_has_no_auth_header_without_credentials(monkeypatch, repo):
 
 
 def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):
-    """Test fetch and push may take longer than the local commands."""
+    """Test fetch and both pushes may take longer than the local commands."""
     fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M file.txt", incoming=1, outgoing=1)
     )
 
     sync_once(repo)
 
+    remote = ("fetch", "push", "backup-push")
     for key, timeout in zip(fake_git.keys, fake_git.timeouts):
-        expected = (
-            REMOTE_TIMEOUT_SECONDS if key in ("fetch", "push") else LOCAL_TIMEOUT_SECONDS
-        )
+        expected = REMOTE_TIMEOUT_SECONDS if key in remote else LOCAL_TIMEOUT_SECONDS
         assert timeout == expected, key
 
 
@@ -632,8 +549,8 @@ def test_a_command_that_times_out_raises_sync_error(
 
 
 def test_an_unreachable_remote_is_reported_as_a_network_failure(monkeypatch, repo):
-    """Test a remote that cannot be reached gets its own kind and no backup push."""
-    fake_git = install_fake_git(
+    """Test a remote that cannot be reached gets its own kind."""
+    install_fake_git(
         monkeypatch,
         FakeGit(
             failing="fetch",
@@ -648,7 +565,6 @@ def test_an_unreachable_remote_is_reported_as_a_network_failure(monkeypatch, rep
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.NETWORK
-    assert "backup-push" not in fake_git.keys
 
 
 # --------------------------------------------------------------------------
@@ -685,11 +601,44 @@ def test_sync_once_reports_a_change_when_only_the_remote_moved(
     monkeypatch, repo
 ):
     """Test merging someone else's work counts as a change worth reporting."""
-    install_fake_git(
-        monkeypatch, FakeGit(status_output="", incoming=1, conflicts=["a.txt"])
+    install_fake_git(monkeypatch, FakeGit(status_output="", incoming=1))
+
+    assert sync_once(repo) is True
+
+
+def test_sync_once_backs_up_every_cycle_before_it_pulls(monkeypatch, repo):
+    """Test the backup push runs even with nothing to commit or merge."""
+    repo.git_dir.mkdir(parents=True)
+    fake_git = install_fake_git(monkeypatch, FakeGit())
+
+    assert sync_once(repo) is False
+    assert fake_git.keys.index("backup-push") < fake_git.keys.index("fetch")
+
+
+def test_sync_once_goes_on_when_the_backup_push_fails(monkeypatch, repo, caplog):
+    """Test a failed backup push is logged and the cycle still pulls."""
+    repo.git_dir.mkdir(parents=True)
+    fake_git = install_fake_git(
+        monkeypatch, FakeGit(incoming=1, failing="backup-push")
     )
 
     assert sync_once(repo) is True
+    assert "merge" in fake_git.keys
+    assert "Could not push repository" in caplog.text
+
+
+def test_a_conflict_stops_the_cycle_before_the_push(monkeypatch, repo):
+    """Test a conflict is reported with the backup branch and nothing is pushed."""
+    repo.git_dir.mkdir(parents=True)
+    fake_git = install_fake_git(
+        monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], outgoing=1)
+    )
+
+    with pytest.raises(SyncError, match=r"a\.txt.*on branch backup/") as excinfo:
+        sync_once(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.MERGE_CONFLICT
+    assert "push" not in fake_git.keys
 
 
 def test_sync_once_raises_when_a_step_fails(monkeypatch, repo):
@@ -920,18 +869,19 @@ def test_push_if_ahead_counts_the_configured_branch_not_head(monkeypatch, repo):
     assert fake_git.command_for("outgoing")[-1] == "origin/main..refs/heads/main"
 
 
-def test_sync_once_stops_before_the_pull_when_asked_to(monkeypatch, repo):
-    """Test a stopping service does not start a fetch after the commit."""
+def test_sync_once_stops_after_the_commit_when_asked_to(monkeypatch, repo):
+    """Test a stopping service starts no remote command after the commit."""
     fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M f.txt", incoming=1, outgoing=1)
     )
     stop_event = threading.Event()
     stop_event.set()
 
-    with pytest.raises(SyncStopped, match="before it could pull"):
+    with pytest.raises(SyncStopped, match="before it could back up"):
         sync_once(repo, stop_event)
 
     assert "commit" in fake_git.keys
+    assert "backup-push" not in fake_git.keys
     assert "fetch" not in fake_git.keys
 
 
