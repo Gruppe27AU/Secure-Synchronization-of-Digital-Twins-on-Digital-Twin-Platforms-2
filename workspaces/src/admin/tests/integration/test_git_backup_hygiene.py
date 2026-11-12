@@ -124,3 +124,39 @@ def test_a_file_name_that_is_not_utf8_is_backed_up(world):
     ).stdout.split(b"\0")
     assert b"\xe6ble.txt" in tracked
     assert world.remote_file("other.txt") == "unrelated work\n"
+
+
+def _write_marker(tree, path):
+    write(tree / path, "x\n<<<<<<< HEAD\n")
+
+
+def _write_large(tree, path):
+    write(tree / path, "x" * 101)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("model.txt", _write_marker, SyncErrorKind.CONFLICT_MARKERS,
+         "remove the conflict markers"),
+        ("doc.md", _write_marker, SyncErrorKind.CONFLICT_MARKERS,
+         "remove the conflict markers"),
+        ("big.bin", _write_large, SyncErrorKind.FILE_TOO_LARGE,
+         "remove or shrink it"),
+    ],
+    ids=["tracked-marker", "untracked-marker", "untracked-large"],
+)
+def test_a_held_back_file_the_remote_changed_is_named(world, monkeypatch, case):
+    """Test the held-back file is reported, not taken for a lasting failure."""
+    path, hold_back, kind, hint = case
+    monkeypatch.setattr(checks, "MAX_FILE_BYTES", 100)
+    world.colleague_pushes(lambda tree: write(tree / path, "remote\n"))
+    hold_back(world.workspace.work_tree, path)
+    local = (world.workspace.work_tree / path).read_bytes()
+
+    with pytest.raises(SyncError, match=rf"{path} is held back.*{hint}") as excinfo:
+        sync_once(world.workspace)
+
+    assert excinfo.value.kind is kind
+    assert git(world.remote, "branch", "--list", "backup/*") == ""
+    assert (world.workspace.work_tree / path).read_bytes() == local

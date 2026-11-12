@@ -109,11 +109,20 @@ class HeldBack(SyncError):
     Attributes:
         committed: Whether the files that were not held back were
             committed.
+        marked: Files held back for their conflict markers.
+        too_large: Files held back for their size.
     """
 
-    def __init__(self, message: str, kind: SyncErrorKind, committed: bool):
+    def __init__(
+        self,
+        message: str,
+        kind: SyncErrorKind,
+        committed: bool,
+        held: tuple[list[str], list[str]] = ([], []),
+    ):
         super().__init__(message, kind)
         self.committed = committed
+        self.marked, self.too_large = held
 
 
 def _identity_options() -> list[str]:
@@ -283,6 +292,7 @@ def _held_back_error(
         + "; ".join(parts),
         kind,
         committed,
+        (marked, too_large),
     )
 
 
@@ -518,9 +528,13 @@ def pull_changes(repo: RepoConfig) -> list[str]:
         if not kept and not removed:
             # Stopped without a conflict, e.g. an untracked file in the way.
             reason = attempt.stderr.strip() or attempt.stdout.strip()
+            in_the_way = any(m in reason.lower() for m in LOCAL_CHANGES_MARKERS)
             raise SyncError(
                 f"Failed to merge the remote's changes for repository "
-                f"'{repo.name}': {reason}"
+                f"'{repo.name}': {reason}",
+                SyncErrorKind.LOCAL_CHANGES
+                if in_the_way
+                else SyncErrorKind.GIT_FAILED,
             )
 
         conflicted = kept + removed
@@ -829,6 +843,48 @@ def pull_only(repo: RepoConfig) -> bool:
     return True
 
 
+def _held_back_in_the_way(
+    repo: RepoConfig, error: SyncError, notices: list[SyncError]
+) -> SyncError | None:
+    """
+    Name the held-back files that stopped the merge, if any did.
+
+    Args:
+        repo: Repository pulled into.
+        error: Why the pull failed.
+        notices: Notices collected so far; a :class:`HeldBack` among them
+            lists the held-back files.
+
+    Returns:
+        An error naming the files and how to fix them, or None if the pull
+        failed for another reason.
+    """
+    held = next((n for n in notices if isinstance(n, HeldBack)), None)
+    if held is None or error.kind is not SyncErrorKind.LOCAL_CHANGES:
+        return None
+    # git lists the files in the way on lines of their own, indented by a tab.
+    listed = {line.strip() for line in str(error).splitlines() if line.startswith("\t")}
+    marked = [path for path in held.marked if path in listed]
+    too_large = [path for path in held.too_large if path in listed]
+    if not marked and not too_large:
+        return None
+    parts = [
+        f"Repository '{repo.name}': {path} is held back (conflict markers "
+        f"left in {path}), remove the conflict markers in order to merge."
+        for path in marked
+    ] + [
+        f"Repository '{repo.name}': {path} is held back (larger than "
+        f"{MAX_FILE_BYTES // 2**20} MiB), remove or shrink it in order to merge."
+        for path in too_large
+    ]
+    blocked = SyncError(
+        " ".join(parts),
+        SyncErrorKind.CONFLICT_MARKERS if marked else SyncErrorKind.FILE_TOO_LARGE,
+    )
+    logger.warning("%s", blocked)
+    return blocked
+
+
 def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bool:
     """
     Run one full synchronization of the repository.
@@ -871,7 +927,13 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
         notices.append(held_back)
 
     _stop_if_requested(repo, stop_event, "pull")
-    conflicted = _pull_or_back_up(repo)
+    try:
+        conflicted = _pull_or_back_up(repo)
+    except SyncError as error:
+        blocked = _held_back_in_the_way(repo, error, notices)
+        if blocked:
+            raise blocked from error
+        raise
     _stop_if_requested(repo, stop_event, "push")
     pushed = push_if_ahead(repo)
 
