@@ -381,7 +381,7 @@ def test_start_git_backup_logs_the_config_path(config_file, monkeypatch, caplog,
     with caplog.at_level("INFO"):
         bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
 
-    assert f"Git backup config file: {config_file}" in caplog.text
+    assert f"Using config {config_file} (from {CONFIG_ENV_VAR})" in caplog.text
 
 
 def test_start_git_backup_logs_a_relative_config_as_absolute(
@@ -396,7 +396,26 @@ def test_start_git_backup_logs_a_relative_config_as_absolute(
         bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
 
     expected = tmp_path / "relative" / "config.toml"
-    assert f"Git backup config file: {expected}" in caplog.text
+    assert f"Using config {expected} (from {CONFIG_ENV_VAR})" in caplog.text
+
+
+def test_start_git_backup_logs_the_default_config_with_its_rule(
+    monkeypatch, caplog, tmp_path
+):
+    """Test the default config is logged as the default, naming the unset variable."""
+    monkeypatch.delenv(CONFIG_ENV_VAR)
+    home = tmp_path / "home"
+    _point_home_at(home, monkeypatch)
+    monkeypatch.setattr(bootstrap, "_clone_then_sync", lambda *_args: None)
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    expected = home / ".config" / "workspace-admin" / "config.toml"
+    assert (
+        f"Using config {expected} (default location; {CONFIG_ENV_VAR} is not set)"
+        in caplog.text
+    )
 
 
 def test_start_git_backup_discovers_the_config_once(config_file, monkeypatch, tmp_path):
@@ -508,6 +527,10 @@ def test_start_git_backup_reports_a_missing_default_config_once(
     assert caplog.text.count("git backup is disabled") == 1
     assert "ERROR" not in caplog.text
     assert status.snapshot()["state"] == "disabled"
+    missing = [r.getMessage() for r in caplog.records if "disabled" in r.getMessage()]
+    default_config = tmp_path / "home" / ".config" / "workspace-admin" / "config.toml"
+    assert f"{CONFIG_ENV_VAR} is not set" in missing[0]
+    assert str(default_config) in missing[0]
 
 
 def test_start_git_backup_survives_an_unknown_home_directory(monkeypatch, caplog):
@@ -532,8 +555,23 @@ def test_start_git_backup_survives_an_unknown_home_directory(monkeypatch, caplog
     assert len(errors) == 1
     assert "Could not determine home directory" in errors[0].getMessage()
     assert "git backup is disabled" in errors[0].getMessage()
+    assert f"{CONFIG_ENV_VAR} is not set" in errors[0].getMessage()
+    assert str(Path("~", ".config", "workspace-admin", "config.toml")) in errors[0].getMessage()
     assert "Unexpected error" not in caplog.text
     assert status.snapshot()["state"] == "config_error"
+
+
+def test_start_git_backup_never_logs_the_config_contents(config_file, monkeypatch, caplog):
+    """Test nothing read from the config file reaches the log, only its path (NFR-3)."""
+    sentinel = "sentinel-token-3f9a1c"
+    config_file.write_text(f'GIT_REPO_TOKEN = "{sentinel}"\n', encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
+
+    with caplog.at_level("DEBUG"):
+        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert str(config_file) in caplog.text
+    assert sentinel not in caplog.text
 
 
 def _start_without_a_config_file(status, monkeypatch, caplog):
