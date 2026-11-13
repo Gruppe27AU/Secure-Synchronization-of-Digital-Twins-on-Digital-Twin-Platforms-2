@@ -226,7 +226,11 @@ chooses it once, on startup, checking in order:
 1. `$WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
    is resolved against the directory the service is started in, at that
    moment.
-2. `~/.config/workspace-admin/config.toml`.
+2. `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml`:
+   `$XDG_CONFIG_HOME` when it is set to an absolute path, otherwise
+   `~/.config`. An empty or relative `$XDG_CONFIG_HOME` is ignored, as the
+   XDG Base Directory Specification asks; with it set, the home directory
+   is not needed.
 
 A file named by `$WORKSPACE_ADMIN_CONFIG` is used even when it is missing;
 the default directory is then not looked at. The chosen path is passed to
@@ -1412,7 +1416,7 @@ module imports the layer above it, so each can be tested on its own.
     [Time limits and prompts](#time-limits-and-prompts)
   - `locate.py`: `discover_config()` chooses the config file,
     `$WORKSPACE_ADMIN_CONFIG` before
-    `~/.config/workspace-admin/config.toml`, and returns a
+    `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml`, and returns a
     `ConfigLocation` holding the absolute path and the `ConfigRule` that
     chose it. See [Configuration](#configuration)
   - `config.py`: `load_config()` reads the chosen file and returns a
@@ -1488,12 +1492,16 @@ module imports the layer above it, so each can be tested on its own.
   below it, wherever `config.toml` is (default: the home directory;
   `/workspace` in the workspace image)
 - `WORKSPACE_ADMIN_CONFIG`: The config file of the git backup. When unset
-  or empty, `~/.config/workspace-admin/config.toml` is used. A relative
-  path is resolved against the directory the service is started in. The
-  workspace image sets it to
+  or empty, `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml` is
+  used. A relative path is resolved against the directory the service is
+  started in. The workspace image sets it to
   `$PERSISTENT_DIR/.config/workspace-admin/config.toml` when it starts
   `workspace-admin`, and only for that process: Jupyter and VS Code do
   not see it
+- `XDG_CONFIG_HOME`: Base directory of the default config directory when
+  it is an absolute path (`$XDG_CONFIG_HOME/workspace-admin/config.toml`);
+  otherwise `~/.config` is used. Has no effect when
+  `WORKSPACE_ADMIN_CONFIG` is set, as it always is in the image
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when the
   file is missing. Set by the Dockerfile; unset outside the image, where a
   missing file leaves the backup disabled
