@@ -21,6 +21,11 @@ The main changes made so far are listed here.
   `/workspace/.config/workspace-admin/config.toml`: an existing workspace
   needs no change. Only `workspace-admin` gets the variable; Jupyter and
   VS Code do not
+* A `WORKSPACE_ADMIN_CONFIG` that names a missing file or a directory is
+  now logged as an error naming the path, and `/storage/status` reports
+  `config_error`. The backup stays off and no other location is tried. A
+  missing file at the default location is still only logged as disabled,
+  and the image's first start, which creates the file, is not an error
 
 ## Week of 2-Nov-2026
 

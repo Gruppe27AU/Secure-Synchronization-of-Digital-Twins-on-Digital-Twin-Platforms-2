@@ -433,20 +433,117 @@ def test_start_git_backup_creates_a_missing_config_and_clones_nothing(
     assert config_file.read_bytes() == EXAMPLE_CONFIG_PATH.read_bytes()
 
 
-def test_start_git_backup_reports_a_missing_config_once(
-    config_file, monkeypatch, caplog
+def _point_home_at(home, monkeypatch):
+    """Make ``home`` the home directory, on every platform."""
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+
+def test_start_git_backup_reports_a_missing_default_config_once(
+    monkeypatch, caplog, tmp_path
 ):
-    """Test a missing config without a template is logged once and nothing runs."""
-    config_file.unlink()
+    """Test a missing default config is logged once, not as an error, and nothing runs."""
+    monkeypatch.delenv(CONFIG_ENV_VAR)
+    _point_home_at(tmp_path / "home", monkeypatch)
+    monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(status, 60).join(timeout=30)
+
+    assert caplog.text.count("git backup is disabled") == 1
+    assert "ERROR" not in caplog.text
+    assert status.snapshot()["state"] == "disabled"
+
+
+def _start_without_a_config_file(status, monkeypatch, caplog):
+    """Run the backup to its end with no template, failing on any clone or sync."""
     monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
     monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
     monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
 
     with caplog.at_level("INFO"):
-        bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+        thread = bootstrap.start_git_backup(status, 60)
+        thread.join(timeout=30)
 
-    assert caplog.text.count("git backup is disabled") == 1
+    assert not thread.is_alive()
     assert "Unexpected error" not in caplog.text
+
+
+def _assert_reported_missing(path, status, caplog):
+    """Assert the missing file at $WORKSPACE_ADMIN_CONFIG was logged as an error."""
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert CONFIG_ENV_VAR in errors[0].getMessage()
+    assert str(path) in errors[0].getMessage()
+    assert status.snapshot()["state"] == "config_error"
+    assert status.snapshot()["enabled"] is False
+
+
+def test_start_git_backup_reports_a_missing_variable_config_as_an_error(
+    config_file, monkeypatch, caplog
+):
+    """Test a missing file at $WORKSPACE_ADMIN_CONFIG is an error naming the path."""
+    config_file.unlink()
+    status = SyncStatus()
+
+    _start_without_a_config_file(status, monkeypatch, caplog)
+
+    _assert_reported_missing(config_file, status, caplog)
+
+
+def test_start_git_backup_does_not_fall_back_to_the_default_config(
+    config_file, monkeypatch, caplog, tmp_path
+):
+    """Test a config in the default directory is ignored when the variable's file is missing."""
+    config_file.unlink()
+    home = tmp_path / "home"
+    _point_home_at(home, monkeypatch)
+    default_config = home / ".config" / "workspace-admin" / "config.toml"
+    default_config.parent.mkdir(parents=True)
+    default_config.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
+    monkeypatch.setattr(bootstrap, "load_config", _fail_if_called)
+    status = SyncStatus()
+
+    _start_without_a_config_file(status, monkeypatch, caplog)
+
+    _assert_reported_missing(config_file, status, caplog)
+    assert str(default_config) not in caplog.text
+
+
+def test_start_git_backup_reports_a_directory_at_the_variable_as_an_error(
+    config_file, monkeypatch, caplog
+):
+    """Test a directory at $WORKSPACE_ADMIN_CONFIG gives the same error as a missing file."""
+    config_file.unlink()
+    config_file.mkdir()
+    status = SyncStatus()
+
+    _start_without_a_config_file(status, monkeypatch, caplog)
+
+    _assert_reported_missing(config_file, status, caplog)
+
+
+def test_start_git_backup_creates_the_variable_config_without_an_error(
+    config_file, monkeypatch, caplog, tmp_path
+):
+    """Test the image's first start, which creates the config, logs no error."""
+    config_file.unlink()
+    template = tmp_path / "template.toml"
+    template.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
+    monkeypatch.setenv("WORKSPACE_CONFIG_TEMPLATE", str(template))
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(status, 60).join(timeout=30)
+
+    assert config_file.is_file()
+    assert "ERROR" not in caplog.text
+    assert status.snapshot()["state"] == "needs_setup"
 
 
 def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch):
@@ -619,9 +716,10 @@ def test_start_git_sync_is_not_started_when_the_interval_cannot_be_read(
 # --------------------------------------------------------------------------
 
 
-def test_status_is_disabled_without_a_config_or_template(config_file, monkeypatch):
+def test_status_is_disabled_without_a_config_or_template(monkeypatch, tmp_path):
     """Test a workspace nobody has set up reports disabled."""
-    config_file.unlink()
+    monkeypatch.delenv(CONFIG_ENV_VAR)
+    _point_home_at(tmp_path / "home", monkeypatch)
     monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
     status = SyncStatus()
 

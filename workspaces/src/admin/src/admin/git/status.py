@@ -31,7 +31,8 @@ class BackupState(StrEnum):
     DISABLED = "disabled"
     #: The config file still holds the template's placeholders.
     NEEDS_SETUP = "needs_setup"
-    #: The config file cannot be used; the log says why.
+    #: The config file cannot be used, or is missing at the path set in
+    #: ``$WORKSPACE_ADMIN_CONFIG``; the log says why.
     CONFIG_ERROR = "config_error"
     #: The config file is fine and the repositories are being cloned.
     STARTING = "starting"
