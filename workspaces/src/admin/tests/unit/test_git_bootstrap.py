@@ -7,6 +7,8 @@ actually cloned, both on a background thread so the caller is never held
 up, without crashing the service when config loading or cloning fails.
 """
 
+import os
+import stat
 import threading
 from pathlib import Path
 
@@ -570,6 +572,87 @@ def test_start_git_backup_creates_the_variable_config_without_an_error(
     assert config_file.is_file()
     assert "ERROR" not in caplog.text
     assert status.snapshot()["state"] == "needs_setup"
+
+
+def _use_the_example_template(tmp_path, monkeypatch):
+    """Install the example config as the template, as the image does."""
+    template = tmp_path / "template.toml"
+    template.write_bytes(EXAMPLE_CONFIG_PATH.read_bytes())
+    monkeypatch.setenv("WORKSPACE_CONFIG_TEMPLATE", str(template))
+
+
+def _use_the_default_config(tmp_path, monkeypatch):
+    """Unset $WORKSPACE_ADMIN_CONFIG and return the default config path in a fresh home."""
+    home = tmp_path / "home"
+    _point_home_at(home, monkeypatch)
+    monkeypatch.delenv(CONFIG_ENV_VAR)
+    return home / ".config" / "workspace-admin" / "config.toml"
+
+
+def test_start_git_backup_creates_the_default_config_without_the_variable(
+    monkeypatch, caplog, tmp_path
+):
+    """Test that without the variable the template lands in ~/.config/workspace-admin."""
+    default_config = _use_the_default_config(tmp_path, monkeypatch)
+    _use_the_example_template(tmp_path, monkeypatch)
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(status, 60).join(timeout=30)
+
+    assert default_config.read_bytes() == EXAMPLE_CONFIG_PATH.read_bytes()
+    assert (default_config.parent / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    if os.name == "posix":  # file modes are POSIX-only
+        assert stat.S_IMODE(default_config.stat().st_mode) == 0o600
+    assert "ERROR" not in caplog.text
+    assert status.snapshot()["state"] == "needs_setup"
+
+
+@pytest.mark.parametrize("use_variable", [True, False])
+def test_start_git_backup_never_creates_the_config_in_the_current_directory(
+    config_file, monkeypatch, tmp_path, use_variable
+):
+    """Test the template goes where the lookup points, never into the current directory."""
+    if use_variable:
+        config_file.unlink()
+        expected = config_file
+    else:
+        expected = _use_the_default_config(tmp_path, monkeypatch)
+    _use_the_example_template(tmp_path, monkeypatch)
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert expected.is_file()
+    assert not any(cwd.iterdir())
+
+
+def test_start_git_backup_never_overwrites_an_existing_config(
+    config_file, monkeypatch, caplog, tmp_path
+):
+    """Test an existing config is used as it is, even with a template installed."""
+    config_file.write_text("# my own settings\n", encoding="utf-8")
+    _use_the_example_template(tmp_path, monkeypatch)
+    cloned_from = []
+    monkeypatch.setattr(
+        bootstrap,
+        "clone_configured_repos",
+        lambda _status, config_path: cloned_from.append(config_path),
+    )
+    monkeypatch.setattr(bootstrap, "start_git_sync", lambda *_args: None)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        bootstrap.start_git_backup(status, 60).join(timeout=30)
+
+    assert config_file.read_text(encoding="utf-8") == "# my own settings\n"
+    assert cloned_from == [config_file]
+    assert "Created" not in caplog.text
+    assert status.snapshot()["state"] != "needs_setup"
 
 
 def test_start_git_backup_clones_when_the_config_exists(config_file, monkeypatch):
