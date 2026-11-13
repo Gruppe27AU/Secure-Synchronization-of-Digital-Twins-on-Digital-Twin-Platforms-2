@@ -273,7 +273,9 @@ def start_git_backup(
     backup as starting.
 
     The config file is chosen here, once, by
-    :func:`admin.git.locate.discover_config`.
+    :func:`admin.git.locate.discover_config`. When no home directory can be
+    determined there is no default config: that is logged, the backup stays
+    disabled, and the returned thread ends at once.
 
     Args:
         status: Where the outcome of every synchronization is recorded.
@@ -288,10 +290,20 @@ def start_git_backup(
         The started thread. It ends once the backup has stopped, or right
         after cloning when there is nothing to synchronize.
     """
-    location = discover_config()
-    logger.info("Git backup config file: %s", location.path)
     if stop_event is None:
         stop_event = threading.Event()
+    try:
+        location = discover_config()
+    except RuntimeError as exc:
+        # Path.home() raises this when no home directory can be determined,
+        # so there is no default config; the HTTP API must start anyway.
+        logger.error("Cannot find the config file (%s); git backup is disabled", exc)
+        status.set_state(BackupState.CONFIG_ERROR)
+        thread = threading.Thread(target=lambda: None, name=BOOTSTRAP_THREAD_NAME, daemon=True)
+        thread.start()
+        return thread
+
+    logger.info("Git backup config file: %s", location.path)
     thread = threading.Thread(
         target=_clone_then_sync,
         args=(status, location, interval_seconds, stop_event),

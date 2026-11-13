@@ -9,8 +9,11 @@ import json
 import sys
 
 import pytest
+from fastapi.testclient import TestClient
 
 from admin import main
+from admin.api import create_app
+from admin.git.locate import CONFIG_ENV_VAR
 from admin.main import build_parser, cli
 
 
@@ -165,3 +168,37 @@ def test_cli_leaves_the_interval_to_the_config_file_by_default(monkeypatch):
     cli()
 
     assert passed == [None]
+
+
+def test_cli_starts_without_any_config(monkeypatch, caplog, tmp_path):
+    """Test a workspace with no config anywhere serves the API, its backup disabled."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+    monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
+    monkeypatch.delenv("PATH_PREFIX", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("PERSISTENT_DIR", str(tmp_path / "persistent"))
+    monkeypatch.setattr(sys, "argv", ["workspace-admin"])
+    monkeypatch.setattr(main, "_configure_logging", lambda: None)
+    served = {}
+
+    def serve_once(args, status, on_shutdown):
+        client = TestClient(create_app(args.path_prefix, status, on_shutdown))
+        served["stopped"] = on_shutdown()
+        served["health"] = client.get("/dtaas-user/health").status_code
+        served["status"] = client.get("/dtaas-user/storage/status").json()
+
+    monkeypatch.setattr(main, "_serve", serve_once)
+
+    with caplog.at_level("INFO"):
+        cli()
+
+    assert served["stopped"] is True
+    assert served["health"] == 200
+    assert served["status"]["state"] == "disabled"
+    assert "git backup is disabled" in caplog.text
+    assert "ERROR" not in caplog.text
+    # Without a template nothing is created, not even the config directory.
+    assert not any(home.iterdir())

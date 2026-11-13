@@ -26,6 +26,10 @@ The main changes made so far are listed here.
   `config_error`. The backup stays off and no other location is tried. A
   missing file at the default location is still only logged as disabled,
   and the image's first start, which creates the file, is not an error
+* `workspace-admin` no longer fails to start when `WORKSPACE_ADMIN_CONFIG`
+  is unset and no home directory can be determined: the error is logged,
+  the backup stays off with `/storage/status` reporting `config_error`, and
+  the HTTP API is served as usual
 
 ## Week of 2-Nov-2026
 
