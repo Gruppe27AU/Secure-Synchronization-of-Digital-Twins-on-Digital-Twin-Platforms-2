@@ -557,8 +557,8 @@ def load_sync_interval(config_path: Path) -> int:
     Load the seconds between two backups from the config file.
 
     Args:
-        config_path: The user's config file, normally
-            ``<root>/.config/workspace-admin/config.toml``.
+        config_path: The config file chosen by
+            :func:`admin.git.locate.discover_config`.
 
     Returns:
         ``SYNC_INTERVAL_SECONDS``, or :data:`DEFAULT_SYNC_INTERVAL_SECONDS`
@@ -580,8 +580,9 @@ def load_config(config_path: Path, root: Path) -> list[RepoConfig]:
     :mod:`admin.git.bootstrap`).
 
     Args:
-        config_path: The user's config file, normally
-            ``<root>/.config/workspace-admin/config.toml``.
+        config_path: The config file chosen by
+            :func:`admin.git.locate.discover_config`; it need not be below
+            ``root``.
         root: Directory every repository is placed below, normally
             ``$PERSISTENT_DIR``.
 
