@@ -3,29 +3,27 @@ Unit tests for cloning git-backed workspace assets.
 
 Covers :mod:`admin.git.repo.clone`: skipping an already-cloned repository,
 performing a successful clone, and surfacing a failed clone as
-:class:`admin.git.repo.clone.CloneError`. Real git is never invoked -
+:class:`admin.git.run.errors.SyncError`. Real git is never invoked -
 :func:`admin.git.run.runner.run_git` is replaced for every test.
 """
 
 import subprocess
+from dataclasses import replace
 
 import pytest
 
+from admin.git.repo.clone import clone_asset, is_cloned, restore_git_file
 from admin.git.run import command as command_module
-from admin.git.repo.clone import CloneError, clone_asset, is_cloned, restore_git_file
-from admin.git.setup.config import RepoConfig
-from admin.git.run.errors import SyncErrorKind
-from admin.git.run.runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError
+from admin.git.run.errors import SyncError, SyncErrorKind
+from admin.git.run.runner import GitTimeoutError, REMOTE_TIMEOUT_SECONDS
+from tests.helpers.repo_factory import make_repo
 
 
 @pytest.fixture(name="repo")
 def fixture_repo(tmp_path):
-    """A RepoConfig pointing at not-yet-existing git_dir/work_tree paths."""
-    return RepoConfig(
-        name="common",
+    """A repository not cloned yet: neither path exists."""
+    return make_repo(
         repo_url="https://example.com/org/common.git",
-        branch="main",
-        token="",
         git_dir=tmp_path / "workspace" / "common",
         work_tree=tmp_path / "app" / "assets" / "common",
     )
@@ -98,6 +96,7 @@ def test_clone_asset_skips_when_already_cloned(monkeypatch, repo):
     (repo.git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     repo.work_tree.mkdir(parents=True)
     (repo.work_tree / ".git").write_text(f"gitdir: {repo.git_dir}\n", encoding="utf-8")
+    (repo.work_tree / "notes.md").write_text("work\n", encoding="utf-8")
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("subprocess.run should not be called when already cloned")
@@ -108,10 +107,10 @@ def test_clone_asset_skips_when_already_cloned(monkeypatch, repo):
 
 
 def test_clone_asset_raises_on_failure(monkeypatch, repo):
-    """Test clone_asset raises CloneError when git clone fails."""
+    """Test clone_asset raises SyncError when git clone fails."""
     monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_failure())
 
-    with pytest.raises(CloneError, match="repository not found"):
+    with pytest.raises(SyncError, match="repository not found"):
         clone_asset(repo)
 
 
@@ -129,71 +128,25 @@ def _fake_run_auth_failure(*_args, **_kwargs):
     )
 
 
-def test_clone_asset_raises_clear_error_on_invalid_token(monkeypatch, repo):
-    """Test an invalid token surfaces a CloneError with a clear hint, no token."""
-    repo = RepoConfig(
-        name=repo.name,
-        repo_url=repo.repo_url,
-        branch=repo.branch,
-        token="invalid-token",
-        git_dir=repo.git_dir,
-        work_tree=repo.work_tree,
-    )
+@pytest.mark.parametrize(
+    ("token", "hinted"),
+    [("invalid-token", True), ("expired-token", True), ("", False)],
+)
+def test_a_rejected_clone_gets_the_hint_only_with_a_token(monkeypatch, repo, token, hinted):
+    """Test a rejected token is auth_failed, with a hint but never the token."""
     monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_auth_failure())
 
-    with pytest.raises(CloneError) as excinfo:
-        clone_asset(repo)
+    with pytest.raises(SyncError) as excinfo:
+        clone_asset(replace(repo, token=token))
 
-    message = str(excinfo.value)
-    assert "invalid or expired" in message
-    assert "invalid-token" not in message
     assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
-
-
-def test_clone_asset_raises_clear_error_on_expired_token(monkeypatch, repo):
-    """Test an expired token gets the same clear hint as an invalid one."""
-    repo = RepoConfig(
-        name=repo.name,
-        repo_url=repo.repo_url,
-        branch=repo.branch,
-        token="expired-token",
-        git_dir=repo.git_dir,
-        work_tree=repo.work_tree,
-    )
-    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_auth_failure())
-
-    with pytest.raises(CloneError) as excinfo:
-        clone_asset(repo)
-
-    message = str(excinfo.value)
-    assert "invalid or expired" in message
-    assert "expired-token" not in message
-
-
-def test_clone_asset_raises_plain_error_without_credentials(monkeypatch, repo):
-    """Test an auth-shaped failure without configured credentials gets no hint."""
-    monkeypatch.setattr(command_module, "run_git", lambda *a, **k: _fake_run_auth_failure())
-
-    with pytest.raises(CloneError) as excinfo:
-        clone_asset(repo)
-
-    assert "invalid or expired" not in str(excinfo.value)
+    assert ("invalid or expired" in str(excinfo.value)) is hinted
+    assert not token or token not in str(excinfo.value)
 
 
 def test_clone_asset_adds_auth_header_when_credentials_present(monkeypatch, repo):
-    """Test the header goes in the environment, scoped to the host, not on argv.
-
-    A process's arguments can be read by any user of the machine; its
-    environment only by its own user.
-    """
-    repo = RepoConfig(
-        name=repo.name,
-        repo_url=repo.repo_url,
-        branch=repo.branch,
-        token="secret-token",
-        git_dir=repo.git_dir,
-        work_tree=repo.work_tree,
-    )
+    """Test the header goes in the environment, scoped to the repository, not on argv."""
+    repo = replace(repo, token="secret-token")
     captured = {}
 
     def fake_run(command, _timeout, env=None):
@@ -238,7 +191,7 @@ def test_clone_asset_raises_clone_error_on_timeout(monkeypatch, repo):
 
     monkeypatch.setattr(command_module, "run_git", fake_run)
 
-    with pytest.raises(CloneError, match="did not finish within 900 seconds") as excinfo:
+    with pytest.raises(SyncError, match="did not finish within 900 seconds") as excinfo:
         clone_asset(repo)
 
     assert excinfo.value.kind is SyncErrorKind.TIMEOUT

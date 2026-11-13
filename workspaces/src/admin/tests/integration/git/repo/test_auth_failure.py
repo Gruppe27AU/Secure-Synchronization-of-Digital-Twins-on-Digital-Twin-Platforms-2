@@ -15,8 +15,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from admin.git.run import auth
-from admin.git.repo.clone import CloneError, clone_asset
-from admin.git.run.errors import SyncErrorKind
+from admin.git.repo.clone import clone_asset
+from admin.git.run.errors import SyncError, SyncErrorKind
 from tests.helpers.repo_factory import make_repo
 
 
@@ -63,7 +63,7 @@ def test_an_expired_token_is_reported_as_an_auth_failure(
         work_tree=tmp_path / "tree",
     )
 
-    with pytest.raises(CloneError) as excinfo:
+    with pytest.raises(SyncError) as excinfo:
         clone_asset(repo)
 
     assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED

@@ -20,12 +20,21 @@ The main changes made so far are listed here.
   changed is named in the log, with the kind `conflict_markers` or
   `file_too_large`, instead of being reported as `pull_failed`
 * A file name that is not valid UTF-8 no longer stops the backup
+* **On a new, empty remote the configured branch is pushed first**, before
+  `backup/<workspace-id>`, so the forge makes it the project's default
+  branch. The backup push waits until the configured branch is on the
+  remote
+* A refused backup push is reported in `/storage/status` as the new kind
+  `backup_failed`, before any other failure of the same cycle; before, the
+  cycle reported success while the work was only in the container
+* A missing or empty working tree is restored on startup only. A folder
+  deleted while the service runs stays deleted and is reported as
+  `mass_deletion` until the next start
+* `CloneError` is gone; a failed clone raises `SyncError`
 * **The token is only sent to the repository's own URL**, not to every
   repository on the same host
 * `GIT_REPO_TOKEN` may be left out or empty for a `MODE = "pull"`
   repository, such as a public `common`; `sync` still needs it
-* A working tree whose folder was deleted is restored from the git
-  directory on startup and before each cycle
 * A working tree whose every tracked file is missing is not committed,
   whatever the number of files; before, fewer than ten were committed as
   deletions. Deleting a repository's last file now takes one commit by hand

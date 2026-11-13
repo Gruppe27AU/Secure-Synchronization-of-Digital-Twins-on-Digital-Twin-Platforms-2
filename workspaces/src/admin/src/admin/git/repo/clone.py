@@ -22,46 +22,55 @@ GIT_FILE_PREFIX = "gitdir: "
 MISSING_BRANCH = "not found in upstream"
 
 
-class CloneError(SyncError):
-    """Raised when cloning a repository fails."""
-
-
 def is_cloned(git_dir: Path) -> bool:
     """Check whether ``git_dir`` holds a git directory."""
     return (git_dir / "HEAD").is_file()
 
 
-def _restore_work_tree(repo: RepoConfig) -> None:
-    """
-    Recreate a deleted work tree from the index, as of the last cycle.
+def _is_missing_or_empty(work_tree: Path) -> bool:
+    """Check whether ``work_tree`` is gone or holds nothing but a ``.git`` file."""
+    if not work_tree.exists():
+        return True
+    return all(entry.name == GIT_FILE for entry in work_tree.iterdir())
 
-    Only a missing folder is restored; deleted files inside one are left to
+
+def _restore_files(repo: RepoConfig) -> None:
+    """
+    Recreate a missing or empty work tree from the index, as of the last cycle.
+
+    Files deleted from a tree that still holds others are left to
     :func:`admin.git.repo.checks.ensure_no_mass_deletion`. A failure is
     logged, not raised.
     """
-    if repo.work_tree.exists() or not is_cloned(repo.git_dir):
+    if not is_cloned(repo.git_dir) or not _is_missing_or_empty(repo.work_tree):
         return
     try:
-        repo.work_tree.mkdir(parents=True)
+        repo.work_tree.mkdir(parents=True, exist_ok=True)
         run_local(repo, ["checkout-index", "--all"], "restore the work tree")
     except (OSError, SyncError) as error:
         logger.warning(
-            "Repository '%s' has lost %s, and it could not be restored: %s",
+            "Repository '%s' has lost the files in %s, and they could not be "
+            "restored: %s",
             repo.name,
             repo.work_tree,
             error,
         )
         return
     logger.warning(
-        "Repository '%s' had lost %s; restored from its git directory",
+        "Repository '%s' had lost the files in %s; restored from its git directory",
         repo.name,
         repo.work_tree,
     )
 
 
 def restore_work_tree(repo: RepoConfig) -> None:
-    """Restore a deleted work tree and a lost ``.git`` file; failures are logged."""
-    _restore_work_tree(repo)
+    """
+    Restore a missing or empty work tree: its files, then its ``.git`` file.
+
+    Called on startup only, so a folder deleted while the service runs stays
+    deleted. Failures are logged.
+    """
+    _restore_files(repo)
     restore_git_file(repo)
 
 
@@ -87,19 +96,6 @@ def restore_git_file(repo: RepoConfig) -> None:
     logger.warning("Repository '%s' had lost %s; written back", repo.name, git_file)
 
 
-def _run(repo: RepoConfig, args: list[str], action: str, remote: bool = False) -> str:
-    """
-    Run ``git <args>`` and return its output.
-
-    Raises:
-        CloneError: If git fails or times out.
-    """
-    try:
-        return run(repo, args, action, remote=remote).stdout
-    except SyncError as error:
-        raise CloneError(str(error), error.kind, error.git_output) from error
-
-
 def _clone_args(repo: RepoConfig) -> list[str]:
     """Return the ``clone`` arguments; ``--`` keeps the URL from being an option."""
     return [
@@ -116,24 +112,24 @@ def _clone_args(repo: RepoConfig) -> list[str]:
 
 def _remote_is_empty(repo: RepoConfig) -> bool:
     """Check whether the remote has no branches."""
-    heads = _run(
+    heads = run(
         repo,
         ["ls-remote", "--heads", "--", repo.repo_url],
         "list the remote branches",
         remote=True,
-    )
+    ).stdout
     return not heads.strip()
 
 
 def _start_on_empty_remote(repo: RepoConfig) -> None:
     """Start the repository locally as a clone of an empty remote would be."""
-    _run(
+    run(
         repo,
         ["init", "--quiet", f"--initial-branch={repo.branch}",
          f"--separate-git-dir={repo.git_dir}", "--", str(repo.work_tree)],
         "start the repository",
     )
-    _run(
+    run(
         repo,
         [f"--git-dir={repo.git_dir}", f"--work-tree={repo.work_tree}",
          "remote", "add", "-t", repo.branch, "--", "origin", repo.repo_url],
@@ -153,11 +149,11 @@ def _clone_or_start(repo: RepoConfig) -> None:
     Clone the repository, or start it if the remote is empty.
 
     Raises:
-        CloneError: If neither works.
+        SyncError: If neither works.
     """
     try:
-        _run(repo, _clone_args(repo), "clone", remote=True)
-    except CloneError as error:
+        run(repo, _clone_args(repo), "clone", remote=True)
+    except SyncError as error:
         if MISSING_BRANCH not in error.git_output.lower() or not _remote_is_empty(repo):
             raise
         _start_on_empty_remote(repo)
@@ -172,13 +168,13 @@ def _clone_or_start(repo: RepoConfig) -> None:
 
 def clone_asset(repo: RepoConfig) -> bool:
     """
-    Clone ``repo`` unless it is cloned already.
+    Clone ``repo``, or restore its work tree if it is cloned already.
 
     Returns:
         False if it was already cloned.
 
     Raises:
-        CloneError: If the clone fails or times out.
+        SyncError: If the clone fails or times out.
     """
     if is_cloned(repo.git_dir):
         logger.info(

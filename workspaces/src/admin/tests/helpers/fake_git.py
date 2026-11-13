@@ -130,40 +130,32 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
     envs: list = field(default_factory=list)
     _merge_failed: bool = False
 
-    def run(self, command, timeout, env=None):  # pylint: disable=too-many-return-statements
+    def run(self, command, timeout, env=None):
         """Record the command, its time limit and environment, and answer it."""
         self.commands.append(command)
         self.timeouts.append(timeout)
         self.envs.append(env or {})
-        key = command_key(command)
+        code, stdout, stderr = self._answer(command_key(command), command)
+        return subprocess.CompletedProcess(command, code, stdout, stderr)
 
+    def _answer(self, key, command):  # pylint: disable=too-many-return-statements
+        """Return git's exit status, standard output and standard error."""
         if key is not None and key == self.failing:
-            return subprocess.CompletedProcess(
-                command, 1, "", self.failure_message or f"fatal: {key} was rejected"
-            )
-
+            return 1, "", self.failure_message or f"fatal: {key} was rejected"
         if key == "fetch" and self.head_after_fetch:
             self.head = self.head_after_fetch
-
         if key == "head" and self.head is None:
-            return subprocess.CompletedProcess(command, 1, "", "")
-
+            return 1, "", ""
         if key == "ref" and command[-1].removesuffix("^{commit}") in self.missing_refs:
-            return subprocess.CompletedProcess(command, 1, "", "")
-
+            return 1, "", ""
         if key == "merge" and (self.conflicts or self.deleted_locally):
             self._merge_failed = True
-            return subprocess.CompletedProcess(
-                command, 1, "", "CONFLICT (content): Merge conflict"
-            )
-
+            return 1, "", "CONFLICT (content): Merge conflict"
         if key == "marker-check" and self.marker_output:
-            return subprocess.CompletedProcess(command, 2, self.marker_output, "")
-
+            return 2, self.marker_output, ""
         if key == "staged-check":
-            return subprocess.CompletedProcess(command, 1 if self.staged else 0, "", "")
-
-        return subprocess.CompletedProcess(command, 0, self._stdout(command), "")
+            return (1 if self.staged else 0), "", ""
+        return 0, self._stdout(command), ""
 
     def _stdout(self, command):
         """The output git would print for a command."""
@@ -171,7 +163,6 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
         if key == "staged-file":
             # The last argument is ":<path>".
             return self.staged_files.get(command[-1][1:], "")
-
         if key == "unmerged":
             if not self._merge_failed:
                 return self.unmerged_output
@@ -179,11 +170,9 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
                 [unmerged_entries(path, "123") for path in self.conflicts]
                 + [unmerged_entries(path, "13") for path in self.deleted_locally]
             )
-
         if key in ("deleted-files", "tracked-files"):
             count = self.deleted_files if key == "deleted-files" else self.tracked_files
             return _listing(f"file{number}" for number in range(count))
-
         return {
             "status": self.status_output,
             "incoming": str(self.incoming),

@@ -1,573 +1,19 @@
 """
-Unit tests for synchronizing a workspace repository with its remote.
+Unit tests for :mod:`admin.git.repo.sync`: the order of a cycle.
 
-Covers :mod:`admin.git.repo.sync`: committing what the user changed, backing it
-up, merging the remote's work in or aborting on a conflict, and pushing the
-result. Real git is never invoked -
-:func:`admin.git.run.runner.run_git` is replaced by
-:class:`tests.helpers.fake_git.FakeGit`, which records the commands and
-answers them with canned results.
+Real git is never invoked: :class:`tests.helpers.fake_git.FakeGit` answers
+every command.
 """
 
-import os
-import re
 import subprocess
 import threading
-import time
-from dataclasses import replace
 
 import pytest
 
-from admin.git.repo import busy
+from admin.git.repo.sync import sync_once, SyncStopped
 from admin.git.run import command as command_module
-from admin.git.run.runner import (
-    LOCAL_TIMEOUT_SECONDS,
-    REMOTE_TIMEOUT_SECONDS,
-    GitTimeoutError,
-)
-from admin.git.repo.commit import (
-    HeldBack,
-    build_commit_message,
-    commit_local_changes,
-    has_changes,
-)
 from admin.git.run.errors import SyncError, SyncErrorKind
-from admin.git.repo.pull import pull_changes
-from admin.git.repo.push import push_if_ahead
-from admin.git.repo.sync import SyncStopped, sync_once
-from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
-from tests.helpers.repo_factory import make_repo
-
-
-@pytest.fixture(name="repo")
-def fixture_repo(tmp_path):
-    """A RepoConfig for an already-cloned repository, without credentials."""
-    return make_repo(
-        git_dir=tmp_path / "workspace" / "common",
-        work_tree=tmp_path / "app" / "assets" / "common",
-    )
-
-
-@pytest.fixture(name="repo_with_credentials")
-def fixture_repo_with_credentials(repo):
-    """The same repository, but with a token configured."""
-    return replace(repo, token="secret-token")
-
-
-# --------------------------------------------------------------------------
-# Committing the user's own work
-# --------------------------------------------------------------------------
-
-
-def test_commit_local_changes_commits_a_dirty_working_tree(monkeypatch, repo):
-    """Test a modified working tree is staged and committed."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M notebook.ipynb"))
-
-    assert commit_local_changes(repo) is True
-    # Gate, check for deletions and large files, stage, check for markers,
-    # then commit what is left staged.
-    assert fake_git.keys == [
-        "head",
-        "unmerged",
-        "status",
-        "deleted-files",
-        "untracked-files",
-        "modified-files",
-        "add",
-        "marker-check",
-        "staged-check",
-        "commit",
-    ]
-
-
-def test_commit_local_changes_skips_a_clean_working_tree(monkeypatch, repo):
-    """Test a clean working tree is left alone entirely."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=""))
-
-    assert commit_local_changes(repo) is False
-    assert fake_git.keys == ["head", "unmerged", "status"]
-
-
-@pytest.mark.parametrize(
-    "marker",
-    [
-        "MERGE_HEAD",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "REBASE_HEAD",
-        "rebase-merge",
-        "rebase-apply",
-    ],
-)
-def test_commit_refuses_while_an_operation_is_in_progress(
-    monkeypatch, repo, marker
-):
-    """Test a half finished merge, rebase or cherry-pick is never concluded."""
-    repo.git_dir.mkdir(parents=True)
-    (repo.git_dir / marker).touch()
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output="UD f.txt"))
-
-    with pytest.raises(SyncError, match=marker) as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.OPERATION_IN_PROGRESS
-
-    assert "add" not in fake_git.keys
-    assert "commit" not in fake_git.keys
-
-
-def test_commit_refuses_unmerged_files(monkeypatch, repo):
-    """Test a file git still lists as conflicted is never committed."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(
-            status_output="UD f.txt",
-            unmerged_output=(
-                "100644 1111111 1\tf.txt\x00100644 2222222 2\tf.txt\x00"
-            ),
-        ),
-    )
-
-    with pytest.raises(
-        SyncError, match=r"unresolved conflicts in f\.txt$"
-    ) as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.UNRESOLVED_CONFLICTS
-
-    assert "add" not in fake_git.keys
-
-
-MARKED_NOTES = {
-    "status_output": "M  notes.md",
-    "marker_output": (
-        "notes.md:2: leftover conflict marker\n"
-        "notes.md:4: leftover conflict marker\n"
-        "notes.md:6: leftover conflict marker\n"
-    ),
-    "staged_files": {
-        "notes.md": "a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> origin\n"
-    },
-}
-
-
-def test_commit_holds_back_a_file_with_conflict_markers(monkeypatch, repo):
-    """Test a file still holding markers is left out and reported."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(**MARKED_NOTES, staged=False))
-
-    with pytest.raises(
-        HeldBack, match=r"conflict markers left in notes\.md$"
-    ) as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.CONFLICT_MARKERS
-    assert excinfo.value.committed is False
-    # Only that file is unstaged, so the working tree is left as the user had it.
-    assert fake_git.command_for("unstage")[-2:] == ["--", "notes.md"]
-    assert "commit" not in fake_git.keys
-
-
-def test_one_marked_file_does_not_block_the_rest(monkeypatch, repo):
-    """Test the other changes are still committed, pulled and pushed."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(**MARKED_NOTES, outgoing=1))
-
-    with pytest.raises(SyncError) as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.CONFLICT_MARKERS
-    assert fake_git.keys.index("unstage") < fake_git.keys.index("commit")
-    assert "push" in fake_git.keys
-
-
-def test_commit_ignores_whitespace_warnings(monkeypatch, repo):
-    """Test trailing whitespace, which the same check reports, is committed."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(
-            status_output=" M notes.md",
-            marker_output="notes.md:1: trailing whitespace.\n+text   \n",
-        ),
-    )
-
-    assert commit_local_changes(repo) is True
-    assert "commit" in fake_git.keys
-
-
-def test_commit_ignores_a_markdown_heading_underline(monkeypatch, repo):
-    """Test a bare '=======', which git also reports, is committed."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(
-            status_output=" M notes.md",
-            marker_output="notes.md:2: leftover conflict marker\n",
-            staged_files={"notes.md": "Results\n=======\n"},
-        ),
-    )
-
-    assert commit_local_changes(repo) is True
-    assert "commit" in fake_git.keys
-
-
-def test_commit_message_contains_a_timestamp():
-    """Test the commit message ends in a UTC timestamp."""
-    assert re.fullmatch(
-        r"workspace backup \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
-        build_commit_message(),
-    )
-
-
-def test_commit_sets_an_author_identity(monkeypatch, repo):
-    """Test the commit carries an identity, which cloning does not set."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M file.txt"))
-
-    commit_local_changes(repo)
-
-    commit_command = fake_git.command_for("commit")
-    assert "user.name=workspace-admin" in commit_command
-    assert "user.email=workspace-admin@localhost" in commit_command
-
-
-def test_has_changes_raises_when_status_fails(monkeypatch, repo):
-    """Test an unreadable working tree is surfaced as SyncError."""
-    install_fake_git(monkeypatch, FakeGit(failing="status"))
-
-    with pytest.raises(SyncError, match="read the status"):
-        has_changes(repo)
-
-
-# --------------------------------------------------------------------------
-# Pulling the remote's work in
-# --------------------------------------------------------------------------
-
-
-def test_pull_changes_does_nothing_when_already_up_to_date(monkeypatch, repo):
-    """Test no merge is attempted when the remote has nothing new."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
-
-    assert pull_changes(repo) is False
-    assert fake_git.keys == ["fetch", "ref", "incoming"]
-
-
-def test_pull_changes_merges_cleanly_when_there_is_no_conflict(
-    monkeypatch, repo, caplog
-):
-    """Test a clean merge needs only one merge command."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=2))
-
-    with caplog.at_level("INFO"):
-        assert pull_changes(repo) is True
-
-    assert fake_git.keys == ["fetch", "ref", "incoming", "head", "merge"]
-    assert "Merged 2 incoming" in caplog.text
-
-
-def test_pull_changes_aborts_a_conflict_and_names_the_files(monkeypatch, repo):
-    """Test a conflict is aborted, not resolved, and every file is named."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(incoming=1, conflicts=["my notes.ipynb"], deleted_locally=["old.txt"]),
-    )
-
-    with pytest.raises(SyncError, match=r"my notes\.ipynb, old\.txt") as excinfo:
-        pull_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.MERGE_CONFLICT
-    assert fake_git.keys[-3:] == ["merge", "unmerged", "merge-abort"]
-
-
-def test_pull_changes_fetches_the_branch_with_an_explicit_refspec(
-    monkeypatch, repo
-):
-    """Test the fetch names the branch only as a refspec, after ``--``."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
-
-    pull_changes(repo)
-
-    assert fake_git.command_for("fetch")[-3:] == [
-        "--",
-        "origin",
-        "+refs/heads/main:refs/remotes/origin/main",
-    ]
-
-
-@pytest.mark.parametrize("step", ["fetch", "push"])
-def test_remote_commands_allow_only_https(monkeypatch, repo, step):
-    """Test fetch and push refuse every transport except https."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0, outgoing=1))
-
-    pull_changes(repo)
-    push_if_ahead(repo)
-
-    command = fake_git.command_for(step)
-    options = command[: command.index(step)]
-    assert "protocol.allow=never" in options
-    assert "protocol.https.allow=always" in options
-
-
-@pytest.mark.parametrize(
-    "branch",
-    [
-        "--upload-pack=touch /tmp/pwned;git-upload-pack",
-        "--receive-pack=touch /tmp/pwned;git-receive-pack",
-    ],
-)
-def test_a_dash_led_branch_is_never_passed_as_an_option(monkeypatch, repo, branch):
-    """Test an option-shaped branch only ever appears after ``--``.
-
-    ``load_config`` refuses such a branch, but sync must not depend on
-    that: a value git reads as ``--upload-pack`` would run a command.
-    """
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0, outgoing=1))
-    repo = replace(repo, branch=branch)
-
-    pull_changes(repo)
-    push_if_ahead(repo)
-
-    for step in ("fetch", "push"):
-        command = fake_git.command_for(step)
-        separator = command.index("--")
-        assert not any(part.startswith("-") for part in command[separator + 1 :])
-        assert not any(branch in part for part in command[:separator])
-
-
-def test_pull_changes_raises_when_the_fetch_fails(monkeypatch, repo):
-    """Test an unreachable remote is surfaced as SyncError."""
-    install_fake_git(monkeypatch, FakeGit(failing="fetch"))
-
-    with pytest.raises(SyncError, match="fetch from the remote") as excinfo:
-        pull_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.GIT_FAILED
-
-
-def test_pull_changes_aborts_even_when_the_conflicts_cannot_be_listed(
-    monkeypatch, repo
-):
-    """Test no half merge is left behind when listing the conflicts fails."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(incoming=1, conflicts=["shared.txt"], failing="unmerged"),
-    )
-
-    with pytest.raises(SyncError):
-        pull_changes(repo)
-
-    assert fake_git.keys[-2:] == ["unmerged", "merge-abort"]
-
-
-def test_pull_changes_aborts_a_merge_that_stops_without_a_conflict(
-    monkeypatch, repo
-):
-    """Test a merge git refuses for another reason is aborted and raised."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=1, failing="merge"))
-
-    with pytest.raises(SyncError, match="merge was rejected"):
-        pull_changes(repo)
-
-    assert fake_git.keys == [
-        "fetch", "ref", "incoming", "head", "merge", "unmerged", "merge-abort"
-    ]
-
-
-def test_fetch_sends_auth_header_without_exposing_the_token(
-    monkeypatch, repo_with_credentials
-):
-    """Test the fetch authenticates the same way the clone and push do."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=0))
-
-    pull_changes(repo_with_credentials)
-
-    assert fake_git.env_for("fetch")["GIT_CONFIG_VALUE_0"].startswith(
-        "Authorization: Basic "
-    )
-    assert not any("extraHeader" in part for part in fake_git.command_for("fetch"))
-    assert "secret-token" not in str(fake_git.env_for("fetch"))
-
-
-# --------------------------------------------------------------------------
-# Pushing the result
-# --------------------------------------------------------------------------
-
-
-def test_push_if_ahead_pushes_when_the_remote_is_behind(monkeypatch, repo):
-    """Test the branch is pushed when it holds commits the remote lacks."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=2))
-
-    assert push_if_ahead(repo) is True
-    assert fake_git.command_for("push")[-3:] == [
-        "--",
-        "origin",
-        "refs/heads/main:refs/heads/main",
-    ]
-
-
-def test_push_if_ahead_skips_when_the_remote_is_level(monkeypatch, repo):
-    """Test nothing is pushed when the remote already has everything."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=0))
-
-    assert push_if_ahead(repo) is False
-    assert fake_git.command_for("push") is None
-
-
-def test_push_if_ahead_raises_when_the_push_fails(monkeypatch, repo):
-    """Test a rejected push is surfaced as SyncError."""
-    install_fake_git(monkeypatch, FakeGit(outgoing=1, failing="push"))
-
-    with pytest.raises(SyncError, match="push changes"):
-        push_if_ahead(repo)
-
-
-def _fake_run_push_auth_failure(auth_failure_stderr):
-    """Build a fake subprocess.run: one outgoing commit, then a failed push."""
-
-    def fake_run(command, _timeout, **_kwargs):
-        key = command_key(command)
-        if key == "push":
-            return subprocess.CompletedProcess(command, 1, "", auth_failure_stderr)
-        if key == "outgoing":
-            return subprocess.CompletedProcess(command, 0, "1", "")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    return fake_run
-
-
-def test_push_if_ahead_raises_clear_error_on_invalid_token(
-    monkeypatch, repo_with_credentials
-):
-    """Test a rejected push with an invalid token gets a clear hint, no token."""
-    auth_failure_stderr = (
-        "remote: HTTP Basic: Access denied. The provided password or "
-        "token is incorrect or your account has 2FA enabled\n"
-        "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
-    )
-    monkeypatch.setattr(
-        command_module, "run_git", _fake_run_push_auth_failure(auth_failure_stderr)
-    )
-
-    with pytest.raises(SyncError) as excinfo:
-        push_if_ahead(repo_with_credentials)
-
-    message = str(excinfo.value)
-    assert "invalid or expired" in message
-    assert "secret-token" not in message
-    assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
-
-
-def test_push_if_ahead_raises_plain_error_without_credentials_on_auth_shaped_failure(
-    monkeypatch, repo
-):
-    """Test an auth-shaped push failure without credentials gets no hint."""
-    auth_failure_stderr = (
-        "fatal: Authentication failed for 'https://example.com/org/repo.git/'"
-    )
-    monkeypatch.setattr(
-        command_module, "run_git", _fake_run_push_auth_failure(auth_failure_stderr)
-    )
-
-    with pytest.raises(SyncError) as excinfo:
-        push_if_ahead(repo)
-
-    assert "invalid or expired" not in str(excinfo.value)
-    # Still an auth failure, even with no hint to give.
-    assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
-
-
-def test_push_sends_auth_header_without_exposing_the_token(
-    monkeypatch, repo_with_credentials
-):
-    """Test the push authenticates with a header, not a token in the URL."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=1))
-
-    push_if_ahead(repo_with_credentials)
-
-    assert fake_git.env_for("push")["GIT_CONFIG_VALUE_0"].startswith(
-        "Authorization: Basic "
-    )
-    assert not any("extraHeader" in part for part in fake_git.command_for("push"))
-    assert "secret-token" not in str(fake_git.env_for("push"))
-
-
-def test_push_has_no_auth_header_without_credentials(monkeypatch, repo):
-    """Test an unauthenticated repository is pushed without a header."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=1))
-
-    push_if_ahead(repo)
-
-    assert not fake_git.env_for("push")
-    assert not any(
-        "http.extraHeader" in part for part in fake_git.command_for("push")
-    )
-
-
-# --------------------------------------------------------------------------
-# Time limits
-# --------------------------------------------------------------------------
-
-
-def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):
-    """Test fetch and both pushes may take longer than the local commands."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(status_output=" M file.txt", incoming=1, outgoing=1)
-    )
-
-    sync_once(repo)
-
-    remote = ("fetch", "push", "backup-push")
-    for key, timeout in zip(fake_git.keys, fake_git.timeouts):
-        expected = REMOTE_TIMEOUT_SECONDS if key in remote else LOCAL_TIMEOUT_SECONDS
-        assert timeout == expected, key
-
-
-@pytest.mark.parametrize(
-    ("stuck", "fake_git", "action"),
-    [
-        ("fetch", FakeGit(), "fetch from the remote"),
-        ("push", FakeGit(outgoing=1), "push changes"),
-        # The detecting merge is allowed to fail, but not to hang.
-        ("merge", FakeGit(incoming=1), "merge the remote's changes"),
-    ],
-)
-def test_a_command_that_times_out_raises_sync_error(
-    monkeypatch, repo, stuck, fake_git, action
-):
-    """Test a hung git command ends the cycle with SyncError."""
-
-    def run(command, timeout, env=None):
-        if command_key(command) == stuck:
-            raise GitTimeoutError("git did not finish within 1 seconds and was stopped")
-        return fake_git.run(command, timeout, env)
-
-    monkeypatch.setattr(command_module, "run_git", run)
-
-    with pytest.raises(SyncError, match=f"{action}.*did not finish") as excinfo:
-        sync_once(repo)
-
-    # Its own kind, so a hung remote is not mistaken for a broken repository.
-    assert excinfo.value.kind is SyncErrorKind.TIMEOUT
-
-
-def test_an_unreachable_remote_is_reported_as_a_network_failure(monkeypatch, repo):
-    """Test a remote that cannot be reached gets its own kind."""
-    install_fake_git(
-        monkeypatch,
-        FakeGit(
-            failing="fetch",
-            failure_message=(
-                "fatal: unable to access 'https://example.com/org/repo.git/': "
-                "Could not resolve host: example.com"
-            ),
-        ),
-    )
-
-    with pytest.raises(SyncError) as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.NETWORK
-
-
-# --------------------------------------------------------------------------
-# The whole cycle
-# --------------------------------------------------------------------------
+from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
 
 
 def test_sync_once_commits_before_it_merges(monkeypatch, repo):
@@ -613,244 +59,47 @@ def test_sync_once_backs_up_every_cycle_before_it_pulls(monkeypatch, repo):
     assert fake_git.keys.index("backup-push") < fake_git.keys.index("fetch")
 
 
-def test_sync_once_goes_on_when_the_backup_push_fails(monkeypatch, repo, caplog):
-    """Test a failed backup push is logged and the cycle still pulls."""
+def test_a_failed_backup_push_is_reported_after_the_cycle(monkeypatch, repo):
+    """Test the cycle still pulls and pushes, then reports backup_failed."""
     repo.git_dir.mkdir(parents=True)
     fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, failing="backup-push")
+        monkeypatch, FakeGit(incoming=1, outgoing=1, failing="backup-push")
     )
 
-    assert sync_once(repo) is True
-    assert "merge" in fake_git.keys
-    assert "Could not push repository" in caplog.text
+    with pytest.raises(SyncError, match="backup branch") as excinfo:
+        sync_once(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
+    assert "merge" in fake_git.keys and "push" in fake_git.keys
 
 
-def test_a_conflict_stops_the_cycle_before_the_push(monkeypatch, repo):
-    """Test a conflict is reported with the backup branch and nothing is pushed."""
+def test_a_failed_backup_push_outranks_a_conflict(monkeypatch, repo):
+    """Test the status shows the work is not safe, not only the conflict."""
     repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], outgoing=1)
+    install_fake_git(
+        monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], failing="backup-push")
     )
 
-    with pytest.raises(SyncError, match=r"a\.txt.*on branch backup/") as excinfo:
+    with pytest.raises(SyncError, match=r"backup branch.*a\.txt") as excinfo:
         sync_once(repo)
 
-    assert excinfo.value.kind is SyncErrorKind.MERGE_CONFLICT
-    assert "push" not in fake_git.keys
+    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
 
 
-def test_sync_once_raises_when_a_step_fails(monkeypatch, repo):
-    """Test a failing step stops the cycle instead of continuing blindly."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(status_output=" M file.txt", failing="commit")
-    )
-
-    with pytest.raises(SyncError, match="commit was rejected"):
-        sync_once(repo)
-
-    assert "fetch" not in fake_git.keys
-
-
-def test_sync_once_leaves_an_unfinished_merge_alone(monkeypatch, repo):
-    """Test a merge the user has not finished is neither merged into nor pushed.
-
-    Even with nothing to commit, merging would trip over the user's merge
-    and the cleanup after a failed merge would abort it, throwing away
-    whatever they had resolved so far.
-    """
+def test_the_backup_branch_stays_the_same_across_cycles(monkeypatch, repo):
+    """Test one workspace always pushes to the same backup branch."""
     repo.git_dir.mkdir(parents=True)
-    (repo.git_dir / "MERGE_HEAD").touch()
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=1, outgoing=1))
+    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=1, failing="merge"))
 
-    with pytest.raises(SyncError, match="MERGE_HEAD"):
-        sync_once(repo)
+    for _ in range(2):
+        with pytest.raises(SyncError):
+            sync_once(repo)
 
-    assert fake_git.keys == []
-
-
-# --------------------------------------------------------------------------
-# Not racing the user
-# --------------------------------------------------------------------------
-
-
-def _lock_index(git_dir, age_seconds):
-    """Create the git directory holding an index.lock of the given age."""
-    git_dir.mkdir(parents=True)
-    lock = git_dir / "index.lock"
-    lock.touch()
-    modified = time.time() - age_seconds
-    os.utime(lock, (modified, modified))
-    return lock
-
-
-def test_commit_refuses_a_detached_head(monkeypatch, repo):
-    """Test nothing is committed on a detached HEAD, e.g. during git bisect."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M f.txt", head=None))
-
-    with pytest.raises(SyncError, match="HEAD is detached") as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.DETACHED_HEAD
-    assert fake_git.keys == ["head"]
-
-
-def test_commit_refuses_another_branch(monkeypatch, repo):
-    """Test the user's own branch never gets a backup commit."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(status_output=" M f.txt", head="refs/heads/experiment"),
-    )
-
-    with pytest.raises(
-        SyncError, match="'experiment' is checked out, not 'main'"
-    ) as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.WRONG_BRANCH
-    assert fake_git.keys == ["head"]
-
-
-def test_commit_refuses_a_branch_that_only_starts_like_the_configured_one(
-    monkeypatch, repo
-):
-    """Test the comparison is on the whole ref, not a prefix of it."""
-    install_fake_git(monkeypatch, FakeGit(head="refs/heads/main-old"))
-
-    with pytest.raises(SyncError) as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.WRONG_BRANCH
-
-
-def test_a_failure_to_read_the_branch_is_a_git_failure(monkeypatch, repo):
-    """Test a broken symbolic-ref is not mistaken for a detached HEAD."""
-    install_fake_git(monkeypatch, FakeGit(failing="head"))
-
-    with pytest.raises(SyncError, match="read the checked-out branch") as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.GIT_FAILED
-
-
-def test_commit_refuses_while_another_git_process_holds_the_index(
-    monkeypatch, repo
-):
-    """Test a recent index.lock skips the cycle and is left alone."""
-    lock = _lock_index(repo.git_dir, age_seconds=5)
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M f.txt"))
-
-    with pytest.raises(SyncError, match="another git process") as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.INDEX_LOCKED
-    assert lock.exists()
-    assert fake_git.keys == []
-
-
-def test_a_stale_index_lock_is_removed_and_the_cycle_goes_ahead(
-    monkeypatch, repo, caplog
-):
-    """Test a lock left by a killed git process no longer wedges the backup."""
-    lock = _lock_index(repo.git_dir, age_seconds=busy.STALE_LOCK_SECONDS + 60)
-    fake_git = install_fake_git(monkeypatch, FakeGit(status_output=" M f.txt"))
-
-    with caplog.at_level("WARNING"):
-        assert commit_local_changes(repo) is True
-
-    assert not lock.exists()
-    assert "commit" in fake_git.keys
-    assert "Removed" in caplog.text
-
-
-def test_a_stale_index_lock_that_cannot_be_removed_skips_the_cycle(
-    monkeypatch, repo
-):
-    """Test a lock that cannot be deleted is reported rather than ignored."""
-    _lock_index(repo.git_dir, age_seconds=busy.STALE_LOCK_SECONDS + 60)
-    fake_git = install_fake_git(monkeypatch, FakeGit())
-
-    def refuse(_path, missing_ok=False):
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(busy.Path, "unlink", refuse)
-
-    with pytest.raises(SyncError, match="cannot remove the stale") as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.INDEX_LOCKED
-    assert fake_git.keys == []
-
-
-# --------------------------------------------------------------------------
-# Never acting on another repository
-# --------------------------------------------------------------------------
-
-
-def test_every_command_names_the_git_dir_and_working_tree(monkeypatch, repo):
-    """Test git is never left to find the repository through the .git file.
-
-    Without the .git file git walks up and would commit into, and push
-    from, whatever repository encloses the working tree.
-    """
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(status_output=" M f.txt", incoming=1, outgoing=1)
-    )
-
-    sync_once(repo)
-
-    for command in fake_git.commands:
-        assert f"--git-dir={repo.git_dir}" in command, command_key(command)
-        assert f"--work-tree={repo.work_tree}" in command, command_key(command)
-        # Options after the subcommand would be read as its arguments.
-        assert command.index(f"--git-dir={repo.git_dir}") < _subcommand_index(command)
-
-
-def _subcommand_index(command):
-    """Index of the git subcommand: the first word that is not an option."""
-    index = 1
-    while command[index].startswith("-"):
-        index += 2 if command[index] in ("-c", "-C") else 1
-    return index
-
-
-def test_commit_refuses_when_most_tracked_files_are_missing(monkeypatch, repo):
-    """Test an emptied working tree is not committed as a mass deletion."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(status_output=" D f.txt", deleted_files=11, tracked_files=20),
-    )
-
-    with pytest.raises(SyncError, match="11 of 20 tracked files") as excinfo:
-        commit_local_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.MASS_DELETION
-    assert "add" not in fake_git.keys
-    assert "commit" not in fake_git.keys
-
-
-def test_pull_changes_does_not_merge_after_a_branch_switch_during_the_fetch(
-    monkeypatch, repo
-):
-    """Test a merge never lands on a branch the user switched to meanwhile."""
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(incoming=1, head_after_fetch="refs/heads/experiment"),
-    )
-
-    with pytest.raises(SyncError) as excinfo:
-        pull_changes(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.WRONG_BRANCH
-    assert fake_git.keys == ["fetch", "ref", "incoming", "head"]
-
-
-def test_push_if_ahead_counts_the_configured_branch_not_head(monkeypatch, repo):
-    """Test what is counted is what the push sends, whatever is checked out."""
-    fake_git = install_fake_git(monkeypatch, FakeGit(outgoing=1))
-
-    push_if_ahead(repo)
-
-    assert fake_git.command_for("outgoing")[-1] == "origin/main..refs/heads/main"
+    pushes = [
+        command[-1] for command in fake_git.commands
+        if command_key(command) == "backup-push"
+    ]
+    assert len(pushes) == 2 and pushes[0] == pushes[1]
 
 
 def test_sync_once_stops_after_the_commit_when_asked_to(monkeypatch, repo):
@@ -897,3 +146,48 @@ def test_sync_once_runs_to_the_end_while_not_stopped(monkeypatch, repo):
 
     assert sync_once(repo, threading.Event()) is True
     assert "push" in fake_git.keys
+
+
+def test_every_command_names_the_git_dir_and_working_tree(monkeypatch, repo):
+    """Test git is never left to find the repository through the .git file.
+
+    Without the .git file git walks up and would commit into, and push
+    from, whatever repository encloses the working tree.
+    """
+    fake_git = install_fake_git(
+        monkeypatch, FakeGit(status_output=" M f.txt", incoming=1, outgoing=1)
+    )
+
+    sync_once(repo)
+
+    for command in fake_git.commands:
+        assert f"--git-dir={repo.git_dir}" in command, command_key(command)
+        assert f"--work-tree={repo.work_tree}" in command, command_key(command)
+        # Options after the subcommand would be read as its arguments.
+        assert command.index(f"--git-dir={repo.git_dir}") < _subcommand_index(command)
+
+
+def _subcommand_index(command):
+    """Index of the git subcommand: the first word that is not an option."""
+    index = 1
+    while command[index].startswith("-"):
+        index += 2 if command[index] in ("-c", "-C") else 1
+    return index
+
+
+def test_a_failed_backup_push_outranks_a_failed_push(monkeypatch, repo):
+    """Test a push that fails after a failed backup still reports backup_failed."""
+    repo.git_dir.mkdir(parents=True)
+    fake_git = FakeGit(outgoing=1, failing="backup-push")
+
+    def run(command, timeout, env=None):
+        if command_key(command) == "push":
+            return subprocess.CompletedProcess(command, 1, "", "fatal: push refused")
+        return fake_git.run(command, timeout, env)
+
+    monkeypatch.setattr(command_module, "run_git", run)
+
+    with pytest.raises(SyncError, match="backup branch.*push refused") as excinfo:
+        sync_once(repo)
+
+    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED

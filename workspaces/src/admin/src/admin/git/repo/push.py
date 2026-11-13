@@ -7,7 +7,7 @@ import secrets
 
 from admin.git.run.command import count_commits, ref_exists, run_remote
 from admin.git.setup.config import RepoConfig
-from admin.git.run.errors import SyncError
+from admin.git.run.errors import SyncError, SyncErrorKind
 from admin.git.repo.refs import local_branch, push_refspec, remote_ref
 
 logger = logging.getLogger(__name__)
@@ -82,26 +82,33 @@ def push_to_backup_branch(repo: RepoConfig) -> str | None:
     """
     Force-push the branch to the workspace's backup branch.
 
-    Only this workspace writes that branch, so forcing it is safe.
+    Skipped until the configured branch is on the remote, so on an empty
+    remote that branch is pushed first and the forge makes it the default.
+    Only this workspace writes the backup branch, so forcing it is safe.
 
     Returns:
-        The backup branch, or None if there was nothing to push or the push
-        failed, which is logged.
+        The backup branch, or None if skipped.
+
+    Raises:
+        SyncError: ``backup_failed`` if the push fails.
     """
-    if not ref_exists(repo, local_branch(repo)):
+    local = local_branch(repo)
+    if not ref_exists(repo, local) or not ref_exists(
+        repo, f"refs/remotes/{remote_ref(repo)}"
+    ):
         return None
     try:
         branch = backup_branch(repo)
         run_remote(
             repo,
-            ["push", "--", "origin", f"+{local_branch(repo)}:refs/heads/{branch}"],
+            ["push", "--", "origin", f"+{local}:refs/heads/{branch}"],
             "push to the backup branch",
         )
     except (SyncError, OSError) as error:
-        logger.error(
-            "Could not push repository '%s' to its backup branch: %s", repo.name, error
-        )
-        return None
+        raise SyncError(
+            f"Could not push repository '{repo.name}' to its backup branch: {error}",
+            SyncErrorKind.BACKUP_FAILED,
+        ) from error
 
     logger.info("Backed up repository '%s' to branch %s", repo.name, branch)
     return branch

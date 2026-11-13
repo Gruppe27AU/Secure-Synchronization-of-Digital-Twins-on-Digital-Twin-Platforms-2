@@ -99,23 +99,11 @@ def test_cli_starts_the_git_backup_in_the_background_then_serves(monkeypatch):
     """Test startup hands the git backup off before serving, not after a clone."""
     calls = []
     monkeypatch.setattr(sys, "argv", ["workspace-admin", "--sync-interval", "42"])
-    monkeypatch.setattr(
-        main, "_print_startup_banner", lambda *_args: calls.append(("banner",))
-    )
-    monkeypatch.setattr(
-        main,
-        "start_git_backup",
-        lambda status, interval, stop_event: calls.append(
-            ("backup", status, interval, stop_event)
-        ),
-    )
-    monkeypatch.setattr(
-        main,
-        "_serve",
-        lambda _args, status, on_shutdown: calls.append(
-            ("serve", status, on_shutdown)
-        ),
-    )
+    monkeypatch.setattr(main, "_print_startup_banner", lambda *_a: calls.append(("banner",)))
+    monkeypatch.setattr(main, "start_git_backup", lambda status, interval, stop: calls.append(
+        ("backup", status, interval, stop)))
+    monkeypatch.setattr(main, "_serve", lambda _args, status, on_shutdown: calls.append(
+        ("serve", status, on_shutdown)))
 
     cli()
 

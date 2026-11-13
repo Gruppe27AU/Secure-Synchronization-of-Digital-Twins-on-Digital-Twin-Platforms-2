@@ -1,5 +1,6 @@
 """
-Whether the user is busy with a repository, so a cycle must not start.
+Whether a cycle must not start: the user is busy with the repository, or its
+folder is gone.
 
 A cycle starts only on the configured branch, with no merge, rebase,
 cherry-pick or revert unfinished, no unresolved file, and no other git
@@ -163,12 +164,18 @@ def unmerged_stages(repo: RepoConfig) -> dict[str, set[str]]:
 
 def ensure_safe_to_sync(repo: RepoConfig) -> None:
     """
-    Refuse while the user is busy with the repository.
+    Refuse while the user is busy with the repository, or its folder is gone.
 
     Raises:
-        SyncError: ``index_locked``, ``operation_in_progress``,
+        SyncError: ``mass_deletion``, ``index_locked``, ``operation_in_progress``,
             ``detached_head``, ``wrong_branch`` or ``unresolved_conflicts``.
     """
+    if not repo.work_tree.is_dir():
+        raise _not_syncing(
+            repo,
+            f"{repo.work_tree} is missing; it is restored on the next start",
+            SyncErrorKind.MASS_DELETION,
+        )
     _ensure_index_unlocked(repo)
     marker = _operation_in_progress(repo.git_dir)
     if marker:
