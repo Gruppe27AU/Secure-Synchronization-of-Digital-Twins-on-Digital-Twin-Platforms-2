@@ -10,13 +10,16 @@ recognised as a rejected token too.
 import os
 import subprocess
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
 from admin.git.run import auth
 from admin.git.repo.clone import clone_asset
+from admin.git.repo.sync import sync_once
 from admin.git.run.errors import SyncError, SyncErrorKind
+from tests.helpers.git_world import git, write
 from tests.helpers.repo_factory import make_repo
 
 
@@ -69,6 +72,24 @@ def test_an_expired_token_is_reported_as_an_auth_failure(
     assert excinfo.value.kind is SyncErrorKind.AUTH_FAILED
     assert "invalid or expired" in str(excinfo.value)
     assert "expired-token" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("server", "kind"),
+    [("rejecting", SyncErrorKind.AUTH_FAILED), ("unreachable", SyncErrorKind.NETWORK)],
+)
+def test_a_cycle_reports_why_the_remote_failed(world, server_url, monkeypatch, server, kind):
+    """Test a rejected token or an unreachable remote is not reported as backup_failed."""
+    monkeypatch.setattr(auth, "PROTOCOL_OPTIONS", [])
+    base = server_url if server == "rejecting" else "http://127.0.0.1:1"
+    repo = replace(world.workspace, repo_url=f"{base}/me/priv.git", token="expired-token")
+    git(repo.git_dir, "remote", "set-url", "origin", repo.repo_url)
+    write(repo.work_tree / "new.txt", "new\n")
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(repo)
+
+    assert excinfo.value.kind is kind
 
 
 class _Recording(_Unauthorized):

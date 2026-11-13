@@ -14,6 +14,7 @@ from admin.git.repo.sync import sync_once, SyncStopped
 from admin.git.run import command as command_module
 from admin.git.run.errors import SyncError, SyncErrorKind
 from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
+from tests.unit.git.repo.test_commit import MARKED_NOTES
 
 
 def test_sync_once_commits_before_it_merges(monkeypatch, repo):
@@ -70,7 +71,19 @@ def test_a_failed_backup_push_is_reported_after_the_cycle(monkeypatch, repo):
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
+    assert excinfo.value.synced is True
     assert "merge" in fake_git.keys and "push" in fake_git.keys
+
+
+def test_a_failed_backup_push_with_a_held_back_file_is_not_synced(monkeypatch, repo):
+    """Test the cycle is no success while a file is still only in the container."""
+    repo.git_dir.mkdir(parents=True)
+    install_fake_git(monkeypatch, FakeGit(**MARKED_NOTES, failing="backup-push"))
+
+    with pytest.raises(SyncError, match="backup branch") as excinfo:
+        sync_once(repo)
+
+    assert excinfo.value.synced is False
 
 
 def test_a_failed_backup_push_outranks_a_conflict(monkeypatch, repo):
@@ -84,6 +97,7 @@ def test_a_failed_backup_push_outranks_a_conflict(monkeypatch, repo):
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
+    assert excinfo.value.synced is False
 
 
 def test_the_backup_branch_stays_the_same_across_cycles(monkeypatch, repo):

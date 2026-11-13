@@ -154,12 +154,22 @@ def test_no_backup_before_the_branch_is_on_the_remote(monkeypatch, repo):
     assert "backup-push" not in fake_git.keys
 
 
-def test_a_failed_backup_push_is_raised_as_backup_failed(monkeypatch, repo):
-    """Test a refused backup push is not mistaken for nothing to push."""
+@pytest.mark.parametrize(
+    ("message", "kind"),
+    [
+        ("! [remote rejected] (pre-receive hook declined)", SyncErrorKind.BACKUP_FAILED),
+        ("fatal: Authentication failed for 'https://x/'", SyncErrorKind.AUTH_FAILED),
+        ("fatal: unable to access 'https://x/': Connection refused", SyncErrorKind.NETWORK),
+    ],
+)
+def test_a_failed_backup_push_keeps_a_kind_the_user_can_act_on(
+    monkeypatch, repo, message, kind
+):
+    """Test only a refused push is backup_failed; a token or network failure stays itself."""
     repo.git_dir.mkdir(parents=True)
-    install_fake_git(monkeypatch, FakeGit(failing="backup-push"))
+    install_fake_git(monkeypatch, FakeGit(failing="backup-push", failure_message=message))
 
     with pytest.raises(SyncError, match="backup branch") as excinfo:
         push_to_backup_branch(repo)
 
-    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
+    assert excinfo.value.kind is kind

@@ -156,7 +156,9 @@ read, with a `state` of its own:
 | `syncing` | Cloned, and backed up on every interval |
 
 - `last_error` is kept after a later success. If `last_success` is newer
-  than `last_error.at`, the error has since cleared
+  than `last_error.at`, the error has since cleared. If the two are equal,
+  the configured branch is up to date but the backup push failed
+  (`backup_failed`)
 - Every timestamp is `null` until the first attempt. The first backup runs
   one interval after startup
 - Timestamps are UTC, in ISO 8601
@@ -170,7 +172,7 @@ read, with a `state` of its own:
 | `timeout` | A git command ran out of time and was stopped (see [Time limits and prompts](#time-limits-and-prompts)) |
 | `pull_failed` | The configured branch cannot be pulled, for example after its history was rewritten or it was renamed on the forge. The work is on the backup branch (see [The branch cannot be pulled](#the-branch-cannot-be-pulled)) |
 | `merge_conflict` | The workspace and the remote changed the same file. Nothing was merged or pushed to the configured branch; the work is on the backup branch (see [Conflicts](#the-remote-changed-the-same-file)) |
-| `backup_failed` | The push to the backup branch was refused, so the newest work is only in the container. Reported before any other failure of the same cycle (see [The backup branch](#the-backup-branch)) |
+| `backup_failed` | The forge refused the push to the backup branch, for example by a rule on which branches may be created. If the rest of the cycle succeeded, the work is on the configured branch and `last_success` moves too; otherwise the newest work is only in the container. Reported before any other failure of the same cycle (see [The backup branch](#the-backup-branch)) |
 | `local_changes` | A local file the backup does not commit is in the way of the remote's changes, for example an edit in a pull-only repository (see [Pull-only repositories](#pull-only-repositories)) |
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
@@ -636,15 +638,22 @@ project's default, and that must be the configured branch, not
 `backup/<workspace-id>`.
 
 The forge can still refuse the push, for example with a rule that limits
-which branches may be created. The cycle then goes on, but the status
-reports `backup_failed`, because the work is now only in the container:
+which branches may be created. The cycle then goes on, and the status
+reports `backup_failed`:
 
 ```text
 ERROR admin.git.service.scheduler Could not push repository 'private' to its backup branch: Failed to push to the backup branch for repository 'private': <git's message>
 ```
 
-A `backup_failed` is reported before any other failure in the same cycle,
-such as a conflict, whose message is added to it.
+If the rest of the cycle succeeds, the work is on the configured branch, so
+`last_success` moves as well and equals `last_error.at`. If the cycle also
+fails, for example on a conflict, the newest work is only in the container.
+`backup_failed` is then reported before the other failure, whose message is
+added to it.
+
+A rejected token, an unreachable remote or a time-out is not
+`backup_failed`: the backup push is usually the first command to reach the
+remote, and it reports `auth_failed`, `network` or `timeout` like any other.
 
 ### The branch cannot be pulled
 
@@ -717,8 +726,8 @@ While the conflict lasts:
 - the working tree keeps the user's version, and new work is still
   committed every interval
 - every interval pushes that work to the [backup branch](#the-backup-branch),
-  so it is not only in the container; if that push fails, the status
-  reports `backup_failed` instead
+  so it is not only in the container; if the forge refuses that push, the
+  status reports `backup_failed` instead
 - nothing from the remote is merged in, not even files without a conflict,
   and nothing is pushed to the configured branch
 - the status reports `merge_conflict`
@@ -931,7 +940,8 @@ That is also how the last file of a repository is deleted.
 
 When the folder `/workspace/assets/<name>` is gone, or holds nothing but
 its `.git` file, it is restored from the git directory on startup, as of the
-last backup, with a warning in the log:
+last backup, with a warning in the log. A repository with no files yet, as
+on a new, empty remote, has nothing to restore and logs nothing:
 
 ```text
 WARNING admin.git.repo.clone Repository 'private' had lost the files in /workspace/assets/private; restored from its git directory
@@ -1027,8 +1037,9 @@ decision what goes into it.
       timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Back up**: the branch is pushed to `backup/<workspace-id>`, so the
-      work has left the container whatever the pull does; a refused push is
-      reported as `backup_failed` (see [The backup branch](#the-backup-branch))
+      work has left the container whatever the pull does; a push the forge
+      refuses is reported as `backup_failed` (see
+      [The backup branch](#the-backup-branch))
    3. **Pull**: the remote is fetched and merged in. Before merging, the
       branch is checked again. A conflict aborts the merge and ends the
       cycle (see [Conflicts](#the-remote-changed-the-same-file)), and so
@@ -1659,7 +1670,7 @@ obvious test file:
 | `tests/unit/git/repo/test_busy.py` | `admin/git/repo/busy.py` | An unfinished operation, unmerged files, another branch or detached `HEAD`, a fresh or stale `index.lock`, a missing work tree |
 | `tests/unit/git/repo/test_pull.py` | `admin/git/repo/pull.py` | Clean merge, an aborted conflict naming its files, failed fetch or merge, no merge after a branch switch |
 | `tests/unit/git/repo/test_refs.py` | `admin/git/repo/refs.py` | The refs and refspecs, https only, an option-shaped branch never reaching git as an option |
-| `tests/unit/git/repo/test_push.py` | `admin/git/repo/push.py` | Push only when ahead, counted by branch, the token hint, no backup push before the branch is on the remote, a refused backup push as `backup_failed` |
+| `tests/unit/git/repo/test_push.py` | `admin/git/repo/push.py` | Push only when ahead, counted by branch, the token hint, no backup push before the branch is on the remote, a refused backup push as `backup_failed` while a token or network failure keeps its own kind |
 | `tests/unit/git/repo/test_sync.py` | `admin/git/repo/sync.py` | The order of a cycle, what counts as a change, the backup push and its failure, stopping between steps, every command naming its repository |
 | `tests/unit/git/repo/test_sync_failures.py` | `admin/git/repo/sync.py` | Time limits, an unreachable remote, a conflict ending the cycle, a pull that fails for good or may recover |
 | `tests/unit/git/service/test_scheduler.py` | `admin/git/service/scheduler.py` | Every repository cloned or synchronized once, failures and unexpected errors recorded, nothing started or recorded once stopped |

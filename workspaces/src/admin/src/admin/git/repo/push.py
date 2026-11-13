@@ -90,7 +90,8 @@ def push_to_backup_branch(repo: RepoConfig) -> str | None:
         The backup branch, or None if skipped.
 
     Raises:
-        SyncError: ``backup_failed`` if the push fails.
+        SyncError: ``auth_failed``, ``network`` or ``timeout`` as git's
+            failure is sorted, otherwise ``backup_failed``.
     """
     local = local_branch(repo)
     if not ref_exists(repo, local) or not ref_exists(
@@ -105,9 +106,10 @@ def push_to_backup_branch(repo: RepoConfig) -> str | None:
             "push to the backup branch",
         )
     except (SyncError, OSError) as error:
+        kind = getattr(error, "kind", SyncErrorKind.GIT_FAILED)
         raise SyncError(
             f"Could not push repository '{repo.name}' to its backup branch: {error}",
-            SyncErrorKind.BACKUP_FAILED,
+            SyncErrorKind.BACKUP_FAILED if kind is SyncErrorKind.GIT_FAILED else kind,
         ) from error
 
     logger.info("Backed up repository '%s' to branch %s", repo.name, branch)
