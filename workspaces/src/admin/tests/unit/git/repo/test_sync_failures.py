@@ -63,12 +63,12 @@ def test_a_command_that_times_out_raises_sync_error(
 
 
 def test_an_unreachable_remote_is_reported_as_a_network_failure(monkeypatch, repo):
-    """Test a remote that cannot be reached gets its own kind."""
+    """Test a remote that cannot be reached gets its own kind, not backup_failed."""
+    repo.git_dir.mkdir(parents=True)
     install_fake_git(
         monkeypatch,
         FakeGit(
-            failing="fetch",
-            failure_message=(
+            remote_failure=(
                 "fatal: unable to access 'https://example.com/org/repo.git/': "
                 "Could not resolve host: example.com"
             ),
@@ -156,8 +156,9 @@ def test_a_pull_that_fails_for_good_names_the_backup_branch(monkeypatch, repo):
     ],
 )
 def test_a_pull_that_may_recover_is_reported_as_it_is(monkeypatch, repo, message, kind):
-    """Test a rejected token or a network failure is not a lasting pull failure."""
-    install_fake_git(monkeypatch, FakeGit(failing="fetch", failure_message=message))
+    """Test a rejected token or a network failure is not a pull or backup failure."""
+    repo.git_dir.mkdir(parents=True)
+    install_fake_git(monkeypatch, FakeGit(remote_failure=message))
 
     with pytest.raises(SyncError) as excinfo:
         sync_once(repo)

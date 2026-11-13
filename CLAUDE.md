@@ -353,8 +353,8 @@ subpackages, and the tests mirror them under `tests/unit/git/` and
 `busy`/`checks`
 
 - `clone.py`: clones one repository, git directory and working tree kept
-  apart; starts one locally on an empty remote; writes back a lost `.git`
-  file
+  apart; starts one locally on an empty remote; on startup restores a
+  missing or empty working tree; writes back a lost `.git` file
 - `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
   `private`): commit, back up, pull, push; a conflict ends the cycle.
   `MODE = "pull"` (default for `common`): fast-forward only, never commit
@@ -367,8 +367,8 @@ subpackages, and the tests mirror them under `tests/unit/git/` and
   `backup/<workspace-id>`
 - `refs.py`: ref names and refspecs of the configured branch
 - `busy.py`: whether the user is busy with the repository, so no cycle
-  starts: an unfinished merge, another branch or detached HEAD, unresolved
-  files, a fresh `index.lock`
+  starts: a missing working tree, an unfinished merge, another branch or
+  detached HEAD, unresolved files, a fresh `index.lock`
 - `checks.py`: what is checked in the files about to be committed: mass
   deletion, files over 50 MiB, conflict markers, default excludes
 

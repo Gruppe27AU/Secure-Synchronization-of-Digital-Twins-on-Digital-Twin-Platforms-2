@@ -67,6 +67,8 @@ class RepoStatus:
 
     The last error is kept after a later success, so comparing
     ``last_success`` with ``last_error_at`` tells whether it still applies.
+    The two are equal when the configured branch was synced but the backup
+    push failed.
     """
 
     state: RepoState = RepoState.SYNCING
@@ -193,18 +195,22 @@ class SyncStatus:
                 last_success=now,
             )
 
-    def record_failure(self, repo_name: str, kind: SyncErrorKind) -> None:
+    def record_failure(
+        self, repo_name: str, kind: SyncErrorKind, synced: bool = False
+    ) -> None:
         """
         Record that synchronizing a repository failed.
 
         Args:
             repo_name: Name of the repository.
             kind: Why it failed.
+            synced: The configured branch is up to date anyway, so
+                ``last_success`` moves too.
         """
-        self._record_failure(repo_name, kind, RepoState.SYNCING)
+        self._record_failure(repo_name, kind, RepoState.SYNCING, synced)
 
     def _record_failure(
-        self, repo_name: str, kind: SyncErrorKind, state: RepoState
+        self, repo_name: str, kind: SyncErrorKind, state: RepoState, synced: bool = False
     ) -> None:
         """Record a failed attempt of either kind."""
         with self._lock:
@@ -212,6 +218,7 @@ class SyncStatus:
             current = self._repos.get(repo_name, RepoStatus())
             self._repos[repo_name] = replace(
                 current,
+                last_success=now if synced else current.last_success,
                 state=state,
                 last_attempt=now,
                 last_error_kind=kind,

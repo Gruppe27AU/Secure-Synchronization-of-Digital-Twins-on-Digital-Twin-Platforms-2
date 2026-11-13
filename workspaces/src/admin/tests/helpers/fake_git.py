@@ -26,6 +26,9 @@ _PLAIN_KEYS = {
     "diff": "marker-check",
 }
 
+#: Keys of the commands that talk to the remote.
+_REMOTE_KEYS = {"fetch", "push", "backup-push"}
+
 #: Subcommands run more than one way, told apart by one of their arguments.
 #: Checked before ``_PLAIN_KEYS``.
 _ARGUMENT_KEYS = (
@@ -86,6 +89,8 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
         failing: Command key that should fail, for example ``"push"``.
         failure_message: What a failing command prints. By default it names
             the command.
+        remote_failure: What every command talking to the remote prints as
+            it fails, as with a rejected token. None lets them succeed.
         head: What ``git symbolic-ref --quiet HEAD`` prints. None makes it
             exit with status 1 and print nothing, as for a detached HEAD.
         head_after_fetch: When set, ``head`` becomes this once the fetch
@@ -114,6 +119,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
     deleted_locally: list = field(default_factory=list)
     failing: str | None = None
     failure_message: str | None = None
+    remote_failure: str | None = None
     head: str | None = "refs/heads/main"
     head_after_fetch: str | None = None
     unmerged_output: str = ""
@@ -142,6 +148,8 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
         """Return git's exit status, standard output and standard error."""
         if key is not None and key == self.failing:
             return 1, "", self.failure_message or f"fatal: {key} was rejected"
+        if self.remote_failure and key in _REMOTE_KEYS:
+            return 128, "", self.remote_failure
         if key == "fetch" and self.head_after_fetch:
             self.head = self.head_after_fetch
         if key == "head" and self.head is None:
