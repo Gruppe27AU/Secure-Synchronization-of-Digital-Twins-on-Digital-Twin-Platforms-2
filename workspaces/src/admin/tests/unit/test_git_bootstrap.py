@@ -7,6 +7,7 @@ actually cloned, both on a background thread so the caller is never held
 up, without crashing the service when config loading or cloning fails.
 """
 
+import os
 import threading
 from pathlib import Path
 
@@ -681,3 +682,96 @@ def test_status_lists_a_repository_whose_clone_failed(config_file, monkeypatch):
     assert snapshot["state"] == "starting"
     assert snapshot["repositories"]["private"]["state"] == "clone_failed"
     assert snapshot["repositories"]["private"]["last_error"]["kind"] == "auth_failed"
+
+
+# --------------------------------------------------------------------------
+# A discovered config inside a work tree is refused
+# --------------------------------------------------------------------------
+
+#: A config the work-tree check, not the placeholder check, has to refuse.
+WORK_TREE_CONFIG = """\
+[assets.private]
+GIT_REPO_URL = "https://gitlab.example.org/team/private.git"
+GIT_REPO_BRANCH = "main"
+GIT_REPO_TOKEN = "a-real-looking-token"
+"""
+
+
+def _config_in_the_private_work_tree(persistent_dir):
+    """Write a valid config into ``<root>/assets/private`` and return its path."""
+    config_path = persistent_dir / "assets" / "private" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(WORK_TREE_CONFIG, encoding="utf-8")
+    return config_path
+
+
+def _symlink_or_skip(link, target):
+    """Link ``link`` to the directory ``target``, or skip where that is not allowed."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"cannot create a symlink here: {exc}")
+
+
+def _assert_refused(monkeypatch, caplog):
+    """Run the backup and assert the config was refused before anything ran."""
+    monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
+    monkeypatch.setattr(bootstrap, "clone_asset", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_sync_scheduler", _fail_if_called)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        thread = bootstrap.start_git_backup(status, 60)
+        thread.join(timeout=30)
+
+    assert not thread.is_alive()
+    errors = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+    assert any("[assets.private]" in error and "contains the config file" in error
+               for error in errors)
+    assert "Unexpected error" not in caplog.text
+    assert "a-real-looking-token" not in caplog.text
+    assert status.snapshot()["state"] == "config_error"
+
+
+def test_variable_config_inside_a_work_tree_is_refused(persistent_dir, monkeypatch, caplog):
+    """Test a config named by $WORKSPACE_ADMIN_CONFIG inside assets/<name> is refused."""
+    config_path = _config_in_the_private_work_tree(persistent_dir)
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(config_path))
+
+    _assert_refused(monkeypatch, caplog)
+
+
+def test_relative_variable_config_inside_a_work_tree_is_refused(
+    persistent_dir, monkeypatch, caplog
+):
+    """Test a relative $WORKSPACE_ADMIN_CONFIG inside assets/<name> is refused."""
+    _config_in_the_private_work_tree(persistent_dir)
+    monkeypatch.chdir(persistent_dir)
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(Path("assets", "private", "config.toml")))
+
+    _assert_refused(monkeypatch, caplog)
+
+
+def test_config_reached_through_a_symlink_inside_a_work_tree_is_refused(
+    persistent_dir, monkeypatch, caplog, tmp_path
+):
+    """Test a config path through a symlink into assets/<name> is refused."""
+    config_path = _config_in_the_private_work_tree(persistent_dir)
+    link = tmp_path / "link"
+    _symlink_or_skip(link, config_path.parent)
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(link / "config.toml"))
+
+    _assert_refused(monkeypatch, caplog)
+
+
+def test_config_inside_a_work_tree_under_a_symlinked_root_is_refused(
+    persistent_dir, monkeypatch, caplog, tmp_path
+):
+    """Test the check holds when $PERSISTENT_DIR itself is reached through a symlink."""
+    config_path = _config_in_the_private_work_tree(persistent_dir)
+    link_root = tmp_path / "link-root"
+    _symlink_or_skip(link_root, persistent_dir)
+    monkeypatch.setenv("PERSISTENT_DIR", str(link_root))
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(config_path))
+
+    _assert_refused(monkeypatch, caplog)
