@@ -320,6 +320,7 @@ If nothing happens, the log says why:
 | --- | --- |
 | `... config.toml not found; git backup is disabled` | No file at the logged path. Check the path in the first log line. |
 | `WORKSPACE_ADMIN_CONFIG names ..., but there is no config file there` | The variable points at a missing file or a directory. Fix the path, or create the file. |
+| `Cannot find the config file (Could not determine home directory...)` | Neither `WORKSPACE_ADMIN_CONFIG` nor a home directory is set. Set one of them. The API still runs. |
 | `... placeholder ...` | The file still holds a value from the template. |
 | `Cannot clone git assets: ...` | The file is not valid; the rest of the line names the problem. |
 | `... GIT_REPO_TOKEN was rejected ...` | The remote refused the token. |

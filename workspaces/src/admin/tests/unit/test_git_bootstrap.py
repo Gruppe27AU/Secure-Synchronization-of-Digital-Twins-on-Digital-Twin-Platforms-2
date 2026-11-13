@@ -459,6 +459,32 @@ def test_start_git_backup_reports_a_missing_default_config_once(
     assert status.snapshot()["state"] == "disabled"
 
 
+def test_start_git_backup_survives_an_unknown_home_directory(monkeypatch, caplog):
+    """Test no home directory leaves the backup off instead of stopping the service."""
+
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv(CONFIG_ENV_VAR)
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    monkeypatch.setattr(bootstrap, "provision_config", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    monkeypatch.setattr(bootstrap, "start_git_sync", _fail_if_called)
+    status = SyncStatus()
+
+    with caplog.at_level("INFO"):
+        thread = bootstrap.start_git_backup(status, 60)
+        thread.join(timeout=30)
+
+    assert not thread.is_alive()
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "Could not determine home directory" in errors[0].getMessage()
+    assert "git backup is disabled" in errors[0].getMessage()
+    assert "Unexpected error" not in caplog.text
+    assert status.snapshot()["state"] == "config_error"
+
+
 def _start_without_a_config_file(status, monkeypatch, caplog):
     """Run the backup to its end with no template, failing on any clone or sync."""
     monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)

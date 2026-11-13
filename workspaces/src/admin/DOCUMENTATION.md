@@ -259,6 +259,11 @@ rules. The template is `workspaces/src/templates/config.toml.example`.
   The default directory is not used instead, even when it holds a config.
   Because the check comes after the template is copied, the image's first
   start is not an error.
+- **No home directory** (`$WORKSPACE_ADMIN_CONFIG` unset, and Python cannot
+  determine one, as for a container user with no `HOME` and no account):
+  there is no default location to look in. The error is logged, the backup
+  stays disabled, the status reports `config_error`, and the HTTP API
+  starts as usual.
 
 ### Top-level keys
 
