@@ -9,8 +9,9 @@ FastAPI service for workspace service discovery and management.
 - Command-line interface for standalone operation
 - Periodic git backup - commits, pulls and pushes the workspace's git assets
   every five minutes by default, so users never run a git command themselves
-- Conflict resolution that keeps the workspace's own version of a file when
-  it and the remote have both changed
+- The work is pushed to the workspace's own backup branch every cycle, so a
+  conflict is never resolved by overwriting anyone: the merge is aborted
+  and left to the user
 - `common`, shared between users, is pull-only by default: other users'
   changes arrive, and nobody's files are overwritten
 - Never commits an unfinished merge; a file with conflict markers, or over
@@ -31,19 +32,30 @@ src/admin/
 ├── config/
 │   └── services_template.json    # Service catalogue
 └── git/                          # Git backup of workspace directories
-    ├── locate.py                 # Choose which config.toml to read
-    ├── config.py                 # config.toml -> RepoConfig
-    ├── auth.py                   # HTTP auth header (in the environment), https only
-    ├── errors.py                 # Status kinds, and sorting failures by kind
-    ├── command.py                # Run one git command for one repository
-    ├── checks.py                 # What is checked before a commit
-    ├── clone.py                  # Clone a single RepoConfig
-    ├── sync.py                   # Commit, pull and push one working tree
-    ├── scheduler.py              # Run the sync on a timer, in the background
-    ├── status.py                 # Where the backup stands, for /storage/status
-    ├── provision.py              # Create a missing config.toml from the template
-    ├── runner.py                 # Run one git command with a time limit
-    └── bootstrap.py              # Wire the above together on startup
+    ├── setup/                    # What to back up
+    │   ├── locate.py             # Choose which config.toml to read
+    │   ├── provision.py          # Create a missing config.toml from the template
+    │   ├── config.py             # RepoConfig and the settings
+    │   ├── validate.py           # Check the values of config.toml
+    │   └── load.py               # config.toml -> RepoConfig
+    ├── run/                      # Running git
+    │   ├── runner.py             # Run git with a time limit
+    │   ├── command.py            # The one runner for every git command
+    │   ├── auth.py               # HTTP auth header (in the environment), https only
+    │   └── errors.py             # Status kinds, and sorting failures by kind
+    ├── repo/                     # Working on one repository
+    │   ├── clone.py              # Clone a single RepoConfig
+    │   ├── sync.py               # One cycle: commit, back up, pull, push
+    │   ├── commit.py             # Commit the user's changes
+    │   ├── pull.py               # Fetch and merge, or fast-forward
+    │   ├── push.py               # Push, and back up to backup/<id>
+    │   ├── refs.py               # Ref names and refspecs of the branch
+    │   ├── busy.py               # Whether the user is busy with the repository
+    │   └── checks.py             # What is checked in the files to commit
+    └── service/                  # Running the backup in the service
+        ├── bootstrap.py          # Start and stop the backup
+        ├── scheduler.py          # Run the sync on a timer, in the background
+        └── status.py             # Where the backup stands, for /storage/status
 ```
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the full architecture and

@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
-from admin.git.status import SyncStatus
+from admin.git.service.status import SyncStatus
 from admin.services import load_services
 
 try:

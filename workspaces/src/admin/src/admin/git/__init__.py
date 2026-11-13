@@ -1,20 +1,12 @@
 """
 Git backup of the workspace directories.
 
-This package is the home for the git logic of the workspace admin service:
-reading the git configuration, cloning the configured repositories,
-authenticating against the remotes and keeping the working trees in sync.
+- :mod:`admin.git.setup`: finding, creating and reading ``config.toml``
+- :mod:`admin.git.run`: running git, credentials and error kinds
+- :mod:`admin.git.repo`: cloning a repository and the backup cycle
+- :mod:`admin.git.service`: starting, scheduling and reporting the backup
 
-- :mod:`admin.git.config` reads ``config.toml`` into :class:`RepoConfig`
-  objects, one per ``[assets.<name>]`` table.
-- :mod:`admin.git.clone` clones a single :class:`RepoConfig`, with the git
-  directory and working tree kept separate (``git clone
-  --separate-git-dir``).
-- :mod:`admin.git.sync` runs one synchronization of a cloned working
-  tree: commit what the user changed, merge the remote in keeping local
-  files on conflict, and push the result.
-- :mod:`admin.git.scheduler` decides when :mod:`admin.git.sync` runs, on a
-  background thread.
-- :mod:`admin.git.bootstrap` wires the others together and is called once
-  on service startup (:func:`admin.main.cli`).
+``service`` uses ``repo``, which uses ``run`` and ``setup``. Those two only
+share their bottom modules: ``setup.config`` and ``run.runner`` import
+nothing from the package.
 """

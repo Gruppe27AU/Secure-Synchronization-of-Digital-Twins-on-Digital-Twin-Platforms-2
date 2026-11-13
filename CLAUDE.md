@@ -314,46 +314,76 @@ The package is layered, and the test files mirror it:
 
 Dependencies point one way only: `main` → `api` → `services`.
 
-The `git/` package backs the workspace up to its remotes and is layered the
-same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `command`
-→ `errors` → `auth` → `config` → `runner`; `locate` depends on nothing:
+The `git/` package backs the workspace up to its remotes. It has four
+subpackages, and the tests mirror them under `tests/unit/git/` and
+`tests/integration/git/`. Dependencies point one way, `service` → `repo` →
+`run`/`setup`; `setup` and `run` only share their bottom modules,
+`setup/config.py` and `run/runner.py`, which import nothing from the package.
+
+`setup/`: what to back up
 
 - `locate.py`: `discover_config()` chooses the config file,
   `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
   and returns the path with the rule that chose it
-- `config.py`: reads `config.toml` and returns one `RepoConfig` per
-  repository, raising `ConfigError` on anything unusable
+- `provision.py`: copies the template into place when `config.toml` is
+  missing (mode `0600`, never overwriting) and adds a `.gitignore` holding
+  `*` to its directory
+- `config.py`: the types (`RepoConfig`, `SyncMode`, `ConfigError`) and the
+  settings' names and limits
+- `validate.py`: checks each value (https URL, branch, `MODE`, interval,
+  placeholders), raising `ConfigError`, and warns about unknown keys
+- `load.py`: reads `config.toml` and returns one `RepoConfig` per
+  repository
+
+`run/`: running git
+
+- `runner.py`: runs every git command with prompts off, empty stdin and a
+  time limit, stopping an overrunning command and its child processes
+- `command.py`: the one runner for every git command, clone included,
+  raising `SyncError` for the caller to log; commands in a cloned
+  repository always get `--git-dir` and `--work-tree`, so a lost `.git`
+  file cannot redirect them
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
   (`GIT_CONFIG_COUNT`) and scoped to the remote's host, never on argv; and
   recognises a rejected token in git's stderr
 - `errors.py`: `SyncErrorKind`, `SyncError`, and `failure_kind()` sorting a
   failure into `auth_failed`, `network` or `git_failed`
-- `command.py`: runs one git command for one repository, always with
-  `--git-dir` and `--work-tree`, so a lost `.git` file cannot redirect it
-- `checks.py`: what is checked before a commit: the user being busy (an
-  unfinished merge, another branch or detached HEAD, a fresh `index.lock`),
-  mass deletion, files over 50 MiB, conflict markers, default excludes
+
+`repo/`: working on one repository, `sync` → `pull`/`push` → `commit` →
+`busy`/`checks`
+
 - `clone.py`: clones one repository, git directory and working tree kept
   apart; starts one locally on an empty remote; writes back a lost `.git`
   file
 - `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
-  `private`): commit, pull, push; local files win a conflict; a pull that
-  fails for good pushes to `backup/<workspace-id>`. `MODE = "pull"`
-  (default for `common`): fast-forward only, never commit or push
-- `scheduler.py`: runs the cycle on a background daemon thread, clones a
-  repository whose clone failed, and records each outcome in a `SyncStatus`
-- `status.py`: thread-safe record of the backup's `state` and, per
-  repository, its state, last attempt, success and error kind, served by
-  `/storage/status`
+  `private`): commit, back up, pull, push; a conflict ends the cycle.
+  `MODE = "pull"` (default for `common`): fast-forward only, never commit
+  or push
+- `commit.py`: commits the user's changes, holding back large and marked
+  files (`HeldBack`)
+- `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
+  (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
+- `push.py`: pushes the branch, and force-pushes it to the workspace's own
+  `backup/<workspace-id>`
+- `refs.py`: ref names and refspecs of the configured branch
+- `busy.py`: whether the user is busy with the repository, so no cycle
+  starts: an unfinished merge, another branch or detached HEAD, unresolved
+  files, a fresh `index.lock`
+- `checks.py`: what is checked in the files about to be committed: mass
+  deletion, files over 50 MiB, conflict markers, default excludes
+
+`service/`: running the backup in the service
+
 - `bootstrap.py`: called once from `main.cli()` on startup; creates a
   missing config file, or clones and starts the sync, on a background
   thread, so the HTTP API never waits.
   `stop_git_backup()` is run by the FastAPI lifespan on shutdown
-- `provision.py`: copies the template into place when `config.toml` is
-  missing (mode `0600`, never overwriting) and adds a `.gitignore` holding
-  `*` to its directory
-- `runner.py`: runs every git command with prompts off, empty stdin and a
-  time limit, stopping an overrunning command and its child processes
+- `scheduler.py`: runs the cycle on a background daemon thread, clones a
+  repository whose clone failed (`clone_and_record()`, also used on
+  startup), and records each outcome in a `SyncStatus`
+- `status.py`: thread-safe record of the backup's `state` and, per
+  repository, its state, last attempt, success and error kind, served by
+  `/storage/status`
 
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.
@@ -375,7 +405,8 @@ Outside the image no template is set, and the backup stays disabled.
 The file holds an optional top-level `SYNC_INTERVAL_SECONDS` (1 to 86400,
 default 300; `--sync-interval` overrides it) and an `[assets.private]`
 and/or `[assets.common]` table with `GIT_REPO_URL`, `GIT_REPO_BRANCH` and
-`GIT_REPO_TOKEN`, plus an optional `MODE`. Unknown keys are logged as
+`GIT_REPO_TOKEN` (optional with `MODE = "pull"`), plus an optional
+`MODE`. Unknown keys are logged as
 warnings. Every path follows from `$PERSISTENT_DIR` and the section name:
 git directories in `.local/share/workspace-admin/<name>`, work trees in
 `assets/<name>`.
