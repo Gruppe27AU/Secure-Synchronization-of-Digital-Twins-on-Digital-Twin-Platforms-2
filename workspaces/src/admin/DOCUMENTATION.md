@@ -242,8 +242,10 @@ It is parsed with `tomllib`, so quoting and section syntax follow TOML
 rules. The template is `workspaces/src/templates/config.toml.example`.
 
 - **No file, template available** (the workspace image, where the
-  Dockerfile sets `WORKSPACE_CONFIG_TEMPLATE`): the template is copied into
-  place with mode `0600`, an existing file is never overwritten, and the
+  Dockerfile sets `WORKSPACE_CONFIG_TEMPLATE`): the template is copied to
+  the chosen path (`$WORKSPACE_ADMIN_CONFIG`, otherwise
+  `~/.config/workspace-admin/config.toml`, never the current directory)
+  with mode `0600`, an existing file is never overwritten, and the
   directory gets a `.gitignore` holding `*`, so a repository further up
   never commits the token. Its placeholder values are refused, so nothing
   is cloned until the user fills it in and restarts. The status reports
