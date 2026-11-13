@@ -26,7 +26,14 @@ from admin.git.config import (
     load_config,
     load_sync_interval,
 )
-from admin.git.locate import CONFIG_ENV_VAR, ConfigLocation, ConfigRule, discover_config
+from admin.git.locate import (
+    CONFIG_DIR,
+    CONFIG_ENV_VAR,
+    DEFAULT_CONFIG_FILE,
+    ConfigLocation,
+    ConfigRule,
+    discover_config,
+)
 from admin.git.provision import provision_config
 from admin.git.scheduler import start_sync_scheduler
 from admin.git.status import BackupState, SyncStatus
@@ -35,6 +42,14 @@ logger = logging.getLogger(__name__)
 
 #: Name of the thread that clones on startup, recognisable in a stack dump.
 BOOTSTRAP_THREAD_NAME = "git-bootstrap"
+
+#: Why each rule chose the config file, as logged on startup. The default is
+#: only reached when the variable is unset, the order
+#: :func:`admin.git.locate.discover_config` checks in.
+RULE_REASONS = {
+    ConfigRule.ENV: f"from {CONFIG_ENV_VAR}",
+    ConfigRule.DEFAULT: f"default location; {CONFIG_ENV_VAR} is not set",
+}
 
 #: Longest a stopping service waits for the git command it is in. Kept
 #: under the 10 seconds ``docker stop`` allows before it kills the process.
@@ -83,7 +98,11 @@ def _report_missing_config(location: ConfigLocation, status: SyncStatus) -> None
         )
         status.set_state(BackupState.CONFIG_ERROR)
     else:
-        _log_missing_config(location.path)
+        logger.info(
+            "%s is not set and %s does not exist; git backup is disabled",
+            CONFIG_ENV_VAR,
+            location.path,
+        )
 
 
 def _load_repos(
@@ -297,13 +316,19 @@ def start_git_backup(
     except RuntimeError as exc:
         # Path.home() raises this when no home directory can be determined,
         # so there is no default config; the HTTP API must start anyway.
-        logger.error("Cannot find the config file (%s); git backup is disabled", exc)
+        logger.error(
+            "%s is not set and the default %s cannot be resolved (%s); "
+            "git backup is disabled",
+            CONFIG_ENV_VAR,
+            Path("~", CONFIG_DIR, DEFAULT_CONFIG_FILE),
+            exc,
+        )
         status.set_state(BackupState.CONFIG_ERROR)
         thread = threading.Thread(target=lambda: None, name=BOOTSTRAP_THREAD_NAME, daemon=True)
         thread.start()
         return thread
 
-    logger.info("Git backup config file: %s", location.path)
+    logger.info("Using config %s (%s)", location.path, RULE_REASONS[location.rule])
     thread = threading.Thread(
         target=_clone_then_sync,
         args=(status, location, interval_seconds, stop_event),
