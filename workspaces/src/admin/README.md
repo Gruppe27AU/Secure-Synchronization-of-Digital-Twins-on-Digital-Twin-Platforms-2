@@ -57,8 +57,10 @@ The service chooses its config file once, when it starts:
    is resolved against the directory you start `workspace-admin` from.
 2. Otherwise `~/.config/workspace-admin/config.toml`.
 
-A file named by `WORKSPACE_ADMIN_CONFIG` is used even if it does not exist:
-the service never looks past it for another one.
+The service never looks past `WORKSPACE_ADMIN_CONFIG` for another file. If
+there is no file at its path, or the path is a directory, an error naming
+the path is logged and the backup stays off, even when
+`~/.config/workspace-admin/config.toml` exists.
 
 | Where it runs | Config file |
 | --- | --- |
@@ -317,6 +319,7 @@ If nothing happens, the log says why:
 | Log line | Meaning |
 | --- | --- |
 | `... config.toml not found; git backup is disabled` | No file at the logged path. Check the path in the first log line. |
+| `WORKSPACE_ADMIN_CONFIG names ..., but there is no config file there` | The variable points at a missing file or a directory. Fix the path, or create the file. |
 | `... placeholder ...` | The file still holds a value from the template. |
 | `Cannot clone git assets: ...` | The file is not valid; the rest of the line names the problem. |
 | `... GIT_REPO_TOKEN was rejected ...` | The remote refused the token. |

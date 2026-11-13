@@ -26,7 +26,7 @@ from admin.git.config import (
     load_config,
     load_sync_interval,
 )
-from admin.git.locate import discover_config
+from admin.git.locate import CONFIG_ENV_VAR, ConfigLocation, ConfigRule, discover_config
 from admin.git.provision import provision_config
 from admin.git.scheduler import start_sync_scheduler
 from admin.git.status import BackupState, SyncStatus
@@ -60,6 +60,30 @@ def _template_path() -> Path | None:
 def _log_missing_config(config_path: Path) -> None:
     """Report that the git backup is off because ``config_path`` is absent."""
     logger.info("%s not found; git backup is disabled", config_path)
+
+
+def _report_missing_config(location: ConfigLocation, status: SyncStatus) -> None:
+    """
+    Report that the git backup is off because the chosen config is not a file.
+
+    A path set in ``$WORKSPACE_ADMIN_CONFIG`` was chosen on purpose, so a
+    missing file or a directory there is most likely a typo: it is an error,
+    and no other location is tried. Without the variable a missing config
+    only means nobody has set up the backup.
+
+    Args:
+        location: The config file chosen on startup, and the rule that chose it.
+        status: Marked as a config error when the variable named the path.
+    """
+    if location.rule is ConfigRule.ENV:
+        logger.error(
+            "%s names %s, but there is no config file there; git backup is disabled",
+            CONFIG_ENV_VAR,
+            location.path,
+        )
+        status.set_state(BackupState.CONFIG_ERROR)
+    else:
+        _log_missing_config(location.path)
 
 
 def _load_repos(
@@ -192,7 +216,7 @@ def start_git_sync(
 
 def _clone_then_sync(
     status: SyncStatus,
-    config_path: Path,
+    location: ConfigLocation,
     interval_seconds: int | None,
     stop_event: threading.Event,
 ) -> None:
@@ -201,23 +225,27 @@ def _clone_then_sync(
 
     Runs on the thread started by :func:`start_git_backup`. A config file
     created now holds only placeholders, so nothing is cloned until the
-    user has filled it in and restarted. Every step logs its own failures;
+    user has filled it in and restarted. A config that is still missing
+    after that is reported only then, so the image's first start, which
+    creates it, is not an error. Every step logs its own failures;
     anything unexpected is caught here too, because an exception escaping
     a thread is easy to miss.
 
     Args:
         status: Where the outcome of every synchronization is recorded.
-        config_path: The config file chosen on startup.
+        location: The config file chosen on startup, and the rule that
+            chose it.
         interval_seconds: Seconds to wait between synchronizations, or None
             for the config file's ``SYNC_INTERVAL_SECONDS``.
         stop_event: Set when the service is stopping.
     """
+    config_path = location.path
     try:
         if provision_config(config_path, _template_path()):
             status.set_state(BackupState.NEEDS_SETUP)
             return
         if not config_path.is_file():
-            _log_missing_config(config_path)
+            _report_missing_config(location, status)
             return
         clone_configured_repos(status, config_path)
         if stop_event.is_set():
@@ -260,13 +288,13 @@ def start_git_backup(
         The started thread. It ends once the backup has stopped, or right
         after cloning when there is nothing to synchronize.
     """
-    config_path = discover_config().path
-    logger.info("Git backup config file: %s", config_path)
+    location = discover_config()
+    logger.info("Git backup config file: %s", location.path)
     if stop_event is None:
         stop_event = threading.Event()
     thread = threading.Thread(
         target=_clone_then_sync,
-        args=(status, config_path, interval_seconds, stop_event),
+        args=(status, location, interval_seconds, stop_event),
         name=BOOTSTRAP_THREAD_NAME,
         daemon=True,
     )

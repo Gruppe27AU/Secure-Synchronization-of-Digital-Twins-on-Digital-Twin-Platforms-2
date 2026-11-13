@@ -139,7 +139,7 @@ reachable through nginx.
 | --- | --- |
 | `disabled` | There is no `config.toml` and no template to create one from, as when the service runs outside the image |
 | `needs_setup` | `config.toml` was just created from the template, or still holds its placeholder values. Fill it in and restart |
-| `config_error` | `config.toml` cannot be used; the log names the file, section and key at fault |
+| `config_error` | `config.toml` cannot be used, or `$WORKSPACE_ADMIN_CONFIG` names a file that is missing; the log names the file, and the section and key at fault |
 | `starting` | The config is fine and the repositories are being cloned |
 | `running` | The repositories are backed up on every interval |
 
@@ -251,6 +251,14 @@ rules. The template is `workspaces/src/templates/config.toml.example`.
 - **No file, no template** (outside the image): the backup is disabled, the
   log shows `<path> not found; git backup is disabled`, and the status
   reports `disabled`.
+- **Still no file at `$WORKSPACE_ADMIN_CONFIG`** after the template has
+  had its chance, or a directory at that path: a variable set on purpose
+  most likely holds a typo, so the backup stays disabled, the log shows the
+  error `WORKSPACE_ADMIN_CONFIG names <path>, but there is no config file
+  there; git backup is disabled`, and the status reports `config_error`.
+  The default directory is not used instead, even when it holds a config.
+  Because the check comes after the template is copied, the image's first
+  start is not an error.
 
 ### Top-level keys
 

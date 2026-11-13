@@ -362,7 +362,10 @@ stop the HTTP API from starting.
 `$WORKSPACE_ADMIN_CONFIG` when it is set and not empty (a relative path is
 resolved against the current directory), otherwise
 `~/.config/workspace-admin/config.toml`. A file named by the variable is
-used even when it is missing; nothing falls back past it. `bootstrap`
+used even when it is missing; nothing falls back past it. If it is still
+missing (or is a directory) after provisioning, `bootstrap` logs an error
+naming the path and sets the status to `config_error`; without the
+variable a missing file only logs that the backup is disabled. `bootstrap`
 passes the chosen path to every step, so changing the variable later has
 no effect. In the image `custom_startup.sh` sets the variable to
 `$PERSISTENT_DIR/.config/workspace-admin/config.toml`
