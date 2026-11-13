@@ -124,8 +124,18 @@ def test_a_deleted_work_tree_is_restored_on_startup(world):
     _assert_restored(world)
 
 
-def test_a_deleted_work_tree_is_restored_before_a_cycle(world):
-    """Test the scheduler puts a deleted work tree back before it commits."""
+def test_an_emptied_work_tree_is_restored_on_startup(world):
+    """Test a folder holding only its .git file gets its files back."""
+    for name in SEED_FILES:
+        (world.workspace.work_tree / name).unlink()
+
+    assert clone_asset(world.workspace) is False
+
+    _assert_restored(world)
+
+
+def test_a_work_tree_deleted_while_running_stays_deleted(world):
+    """Test a cycle reports the missing folder and deletes nothing remotely."""
     _delete_work_tree(world)
     status = SyncStatus()
     status.enable([world.workspace.name])
@@ -133,6 +143,7 @@ def test_a_deleted_work_tree_is_restored_before_a_cycle(world):
     sync_all([world.workspace], status)
 
     repo_status = status.snapshot()["repositories"][world.workspace.name]
-    assert repo_status["last_error"] is None
-    assert repo_status["last_success"] is not None
-    _assert_restored(world)
+    assert repo_status["last_error"]["kind"] == "mass_deletion"
+    assert not world.workspace.work_tree.exists()
+    for name, content in SEED_FILES.items():
+        assert world.remote_file(name) == content

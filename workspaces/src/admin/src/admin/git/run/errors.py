@@ -39,6 +39,7 @@ class SyncErrorKind(StrEnum):
     TIMEOUT = "timeout"
     GIT_FAILED = "git_failed"
     PULL_FAILED = "pull_failed"
+    BACKUP_FAILED = "backup_failed"
     MERGE_CONFLICT = "merge_conflict"
     LOCAL_CHANGES = "local_changes"
     OPERATION_IN_PROGRESS = "operation_in_progress"

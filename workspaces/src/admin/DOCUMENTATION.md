@@ -170,6 +170,7 @@ read, with a `state` of its own:
 | `timeout` | A git command ran out of time and was stopped (see [Time limits and prompts](#time-limits-and-prompts)) |
 | `pull_failed` | The configured branch cannot be pulled, for example after its history was rewritten or it was renamed on the forge. The work is on the backup branch (see [The branch cannot be pulled](#the-branch-cannot-be-pulled)) |
 | `merge_conflict` | The workspace and the remote changed the same file. Nothing was merged or pushed to the configured branch; the work is on the backup branch (see [Conflicts](#the-remote-changed-the-same-file)) |
+| `backup_failed` | The push to the backup branch was refused, so the newest work is only in the container. Reported before any other failure of the same cycle (see [The backup branch](#the-backup-branch)) |
 | `local_changes` | A local file the backup does not commit is in the way of the remote's changes, for example an edit in a pull-only repository (see [Pull-only repositories](#pull-only-repositories)) |
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
@@ -178,7 +179,7 @@ read, with a `state` of its own:
 | `wrong_branch` | Another branch than `GIT_REPO_BRANCH` is checked out (see [Conflicts](#another-branch-is-checked-out)) |
 | `detached_head` | No branch is checked out, for example during `git bisect` (see [Conflicts](#another-branch-is-checked-out)) |
 | `index_locked` | Another git command was running in the repository, or an old `index.lock` could not be removed (see [Conflicts](#another-git-command-is-running)) |
-| `mass_deletion` | More than half of the tracked files are missing from the working tree (see [Conflicts](#most-files-are-missing)) |
+| `mass_deletion` | Every tracked file, or more than half and at least ten, is missing from the working tree, or the working tree itself is gone (see [Conflicts](#most-files-are-missing)) |
 | `git_failed` | Any other failing git command |
 | `unexpected` | An error that is not a git failure, for example `git` missing from the image |
 
@@ -615,18 +616,35 @@ backed up, on every interval until that succeeds. See
 
 Every cycle of a `sync` repository pushes the workspace's branch to a branch
 of its own on the remote, `backup/<workspace-id>`, right after the commit and
-before anything is pulled. Whatever happens to the pull afterwards, the
-newest work has left the container:
+before anything is pulled. Unless the forge refuses that push (see below),
+the newest work has left the container whatever happens to the pull:
 
 ```text
 INFO admin.git.repo.push Backed up repository 'private' to branch backup/3f2a9c01d4e5
 ```
 
-Only this workspace writes that branch, so the push is forced and is never
-refused. The id is made up once and kept in the git directory
-(`workspace-admin-id`), so it stays the same across restarts and differs
-between workspaces backing up to the same remote. The branch is not deleted
-automatically. A failed backup push is logged and the cycle goes on.
+Only this workspace writes that branch, so the push is forced and cannot be
+refused for being behind. The id is made up once and kept in the git
+directory (`workspace-admin-id`), so it stays the same across restarts and
+differs between workspaces backing up to the same remote. The branch is not
+deleted automatically.
+
+On a remote that does not have the configured branch yet, such as a new,
+empty project, the backup push waits until the first ordinary push has
+created that branch. The forge makes the first branch it receives the
+project's default, and that must be the configured branch, not
+`backup/<workspace-id>`.
+
+The forge can still refuse the push, for example with a rule that limits
+which branches may be created. The cycle then goes on, but the status
+reports `backup_failed`, because the work is now only in the container:
+
+```text
+ERROR admin.git.service.scheduler Could not push repository 'private' to its backup branch: Failed to push to the backup branch for repository 'private': <git's message>
+```
+
+A `backup_failed` is reported before any other failure in the same cycle,
+such as a conflict, whose message is added to it.
 
 ### The branch cannot be pulled
 
@@ -699,7 +717,8 @@ While the conflict lasts:
 - the working tree keeps the user's version, and new work is still
   committed every interval
 - every interval pushes that work to the [backup branch](#the-backup-branch),
-  so it is never only in the container
+  so it is not only in the container; if that push fails, the status
+  reports `backup_failed` instead
 - nothing from the remote is merged in, not even files without a conflict,
   and nothing is pushed to the configured branch
 - the status reports `merge_conflict`
@@ -713,9 +732,10 @@ is a line in the log of a container they cannot see. Keeping the remote's
 version does the same to the user. Which edit matters, or how the two
 should be combined, is only known to the people who made them.
 
-The backup can leave that decision to them because the user's work never
-depends on the merge to be safe. It reaches the backup branch before the
-pull is even tried. A conflict therefore costs time, not data: the remote
+The backup can leave that decision to them because the user's work does not
+depend on the merge to be safe. It reaches the backup branch before the
+pull is even tried, and a failure to get it there is reported on its own
+(`backup_failed`). A conflict therefore costs time, not data: the remote
 holds one version, the backup branch the other, and the user merges them
 once.
 
@@ -909,17 +929,24 @@ That is also how the last file of a repository is deleted.
 
 ### The working tree is deleted
 
-When the folder `/workspace/assets/<name>` itself is gone, it is restored
-from the git directory on startup and before each cycle, as of the last
-backup, with a warning in the log:
+When the folder `/workspace/assets/<name>` is gone, or holds nothing but
+its `.git` file, it is restored from the git directory on startup, as of the
+last backup, with a warning in the log:
 
 ```text
-WARNING admin.git.repo.clone Repository 'private' had lost /workspace/assets/private; restored from its git directory
+WARNING admin.git.repo.clone Repository 'private' had lost the files in /workspace/assets/private; restored from its git directory
 ```
 
-Only a missing folder is restored. Files deleted inside a folder that still
-exists are your decision, within the limits of
-[Most files are missing](#most-files-are-missing).
+Only on startup: a folder you delete while the service runs stays deleted,
+and nothing is deleted on the remote. Until the next start, every cycle
+stops with `mass_deletion`:
+
+```text
+ERROR admin.git.service.scheduler Not synchronizing repository 'private': /workspace/assets/private is missing; it is restored on the next start
+```
+
+Files deleted inside a folder that still holds others are your decision,
+within the limits of [Most files are missing](#most-files-are-missing).
 
 ### The `.git` file is missing
 
@@ -1000,8 +1027,8 @@ decision what goes into it.
       timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
    2. **Back up**: the branch is pushed to `backup/<workspace-id>`, so the
-      work has left the container whatever the pull does (see
-      [The backup branch](#the-backup-branch))
+      work has left the container whatever the pull does; a refused push is
+      reported as `backup_failed` (see [The backup branch](#the-backup-branch))
    3. **Pull**: the remote is fetched and merged in. Before merging, the
       branch is checked again. A conflict aborts the merge and ends the
       cycle (see [Conflicts](#the-remote-changed-the-same-file)), and so
@@ -1079,7 +1106,7 @@ above). Two gaps remained:
    message - correct, but not a "clear error message" pointing at the
    actual cause.
 
-Both are addressed by a new `admin/git/auth.py` module:
+Both are addressed by a new `admin/git/run/auth.py` module:
 
 - `auth_header_options()` is now the single place that builds the
   Basic-auth header; `clone.py` and `sync.py` both call it instead of
@@ -1090,7 +1117,7 @@ Both are addressed by a new `admin/git/auth.py` module:
   than bare status-code numbers, so an unrelated error containing "401"
   is not misclassified.
 - When a clone or push fails, has credentials configured, and
-  `is_auth_failure()` matches, `CloneError`/`SyncError` append a
+  `is_auth_failure()` matches, `SyncError` appends a
   token-free hint that `GIT_REPO_USERNAME`/`GIT_REPO_TOKEN` may be
   invalid or expired. GitLab returns the same rejection for a wrong
   token as for an expired one, so the two cannot be, and are not claimed
@@ -1398,7 +1425,7 @@ merge, as before.
 The old `_conflicted_files()` split git's output on whitespace, so a file
 name with a space would have been read as two files. `-z` avoids that.
 
-`tests/integration/test_git_sync_conflicts.py` runs this against real git,
+`tests/integration/git/repo/test_sync_conflicts.py` runs this against real git,
 with a local bare repository as the remote. Four of its five tests fail on
 the old `-X ours` code.
 
@@ -1433,7 +1460,7 @@ the remote until the user merges by hand. The documentation explains how,
 using `origin/<branch>`, which the backup fetches, so the user needs no
 credentials of their own.
 
-`tests/integration/test_git_sync_conflicts.py` was rewritten for the new
+`tests/integration/git/repo/test_sync_conflicts.py` was rewritten for the new
 behaviour: all four kinds of conflict leave both sides and the remote
 untouched, and a merge finished by hand is pushed by the next cycle.
 
@@ -1540,7 +1567,8 @@ the package. The tests mirror this layout under `tests/unit/git/` and
   - `repo/clone.py`: `clone_asset()` clones one `RepoConfig` with a separated
     git directory and working tree (`git clone --separate-git-dir`),
     skipping repositories that are already cloned, starting one locally on
-    an empty remote, and raising `CloneError`, a `SyncError`, on failure.
+    an empty remote, and raising `SyncError` on failure. `restore_work_tree()`
+    restores a missing or empty work tree on startup.
     `restore_git_file()` writes back a lost `.git` file
   - `repo/refs.py`: the configured branch's ref names and refspecs
   - `repo/commit.py`: `commit_local_changes()` commits the user's changes,
@@ -1621,20 +1649,30 @@ obvious test file:
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
 | `tests/unit/git/run/test_auth.py` | `admin/git/run/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/git/setup/test_config.py` | `admin/git/setup/load.py`, `validate.py` | Parsing, path resolution, missing/empty/mistyped keys, template fallback, token kept out of `repr`, branch names checked with `git check-ref-format` (and a hung check reported), https-only URLs without credentials, `SYNC_INTERVAL_SECONDS` read and defaulted, an out-of-range, mistyped or misplaced value falling back to 300 with a warning while the repositories still load |
+| `tests/unit/git/setup/test_load.py` | `admin/git/setup/load.py` | Sections become repositories, paths below the root, the token kept out of `repr`, errors in the file itself |
+| `tests/unit/git/setup/test_validate.py` | `admin/git/setup/validate.py` | Required and empty values, the token optional for `pull`, placeholders, `MODE`, keys that have no effect |
+| `tests/unit/git/setup/test_validate_remote.py` | `admin/git/setup/validate.py` | Branch and URL handed to git, two sections on one remote (also spelled differently or with `:443`), a work tree holding the config file |
+| `tests/unit/git/setup/test_interval.py` | `admin/git/setup/load.py`, `validate.py` | `SYNC_INTERVAL_SECONDS` and its fallbacks, a config file others can read |
 | `tests/unit/git/repo/test_clone.py` | `admin/git/repo/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
 | `tests/unit/git/repo/test_checks.py` | `admin/git/repo/checks.py` | Mass deletion limits (an emptied tree of any size refused), large files, real conflict markers only, an outdated exclude block replaced, an unwritable exclude file logged |
-| `tests/unit/git/repo/test_sync.py` | `admin/git/repo/commit.py`, `pull.py`, `push.py`, `sync.py` | Changes detected, no changes, clean merges, conflict detection and resolution, failed fetch/commit/merge/push, commit identity, timestamped message, explicit refspecs after `--`, time limits per command (long for fetch/push, short for local) and a hung command ending the cycle, https-only transport, an option-shaped branch never reaching git as an option, credential handling, clear error on invalid/expired token with the token never in the message, wrong branch and detached `HEAD` refused (also after the fetch), outgoing commits counted by branch name, a fresh `index.lock` refused and a stale one removed, stopping between steps |
-| `tests/unit/git/service/test_scheduler.py` | `admin/git/service/scheduler.py` | Syncing every repository, surviving one that fails, running until stopped, recording each outcome without the error message, the stop event reaching a running round, which records nothing for a cycle cut short |
+| `tests/unit/git/repo/test_commit.py` | `admin/git/repo/commit.py` | Commit or skip, identity and message, files held back for markers or size, default excludes, a mass deletion not staged |
+| `tests/unit/git/repo/test_busy.py` | `admin/git/repo/busy.py` | An unfinished operation, unmerged files, another branch or detached `HEAD`, a fresh or stale `index.lock`, a missing work tree |
+| `tests/unit/git/repo/test_pull.py` | `admin/git/repo/pull.py` | Clean merge, an aborted conflict naming its files, failed fetch or merge, no merge after a branch switch |
+| `tests/unit/git/repo/test_refs.py` | `admin/git/repo/refs.py` | The refs and refspecs, https only, an option-shaped branch never reaching git as an option |
+| `tests/unit/git/repo/test_push.py` | `admin/git/repo/push.py` | Push only when ahead, counted by branch, the token hint, no backup push before the branch is on the remote, a refused backup push as `backup_failed` |
+| `tests/unit/git/repo/test_sync.py` | `admin/git/repo/sync.py` | The order of a cycle, what counts as a change, the backup push and its failure, stopping between steps, every command naming its repository |
+| `tests/unit/git/repo/test_sync_failures.py` | `admin/git/repo/sync.py` | Time limits, an unreachable remote, a conflict ending the cycle, a pull that fails for good or may recover |
+| `tests/unit/git/service/test_scheduler.py` | `admin/git/service/scheduler.py` | Every repository cloned or synchronized once, failures and unexpected errors recorded, nothing started or recorded once stopped |
+| `tests/unit/git/service/test_scheduler_loop.py` | `admin/git/service/scheduler.py` | The daemon thread, one round per interval, the status enabled, the stop event handed to the round |
 | `tests/unit/git/service/test_status.py` | `admin/git/service/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
 | `tests/unit/git/run/test_runner.py` | `admin/git/run/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/git/service/test_bootstrap.py` | `admin/git/service/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
 | `tests/integration/git/repo/test_sync_conflicts.py` | `admin/git/repo/pull.py`, `sync.py` | Conflicts against real git: every kind aborts the merge and keeps both sides, the backup branch is pushed every cycle, a merge finished by hand is pushed |
 | `tests/unit/git/run/test_errors.py` | `admin/git/run/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
 | `tests/unit/git/run/test_command.py` | `admin/git/run/command.py` | Repository options before the subcommand, remote options, credentials and time limits, failures by kind with the token hint only when a token was sent, unchecked failures, time-outs, reading git's output |
-| `tests/integration/git/repo/test_sync_repository.py` | `admin/git/repo/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted working tree is restored on startup and before a cycle |
+| `tests/integration/git/repo/test_sync_repository.py` | `admin/git/repo/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted or emptied working tree is restored on startup, and one deleted while running stays deleted |
 | `tests/integration/git/repo/test_pull_only.py` | `admin/git/repo/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
-| `tests/integration/git/repo/test_remote_changes.py` | `admin/git/repo/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work on the backup branch; an empty remote is started and filled |
+| `tests/integration/git/repo/test_remote_changes.py` | `admin/git/repo/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work on the backup branch; an empty remote is started and filled; on an empty remote the configured branch is pushed before the backup branch |
 | `tests/integration/git/repo/test_auth_failure.py` | `admin/git/repo/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed`; the token reaches only the repository's URL, not another repository on the host |
 | `tests/integration/git/repo/test_backup_hygiene.py` | `admin/git/repo/commit.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
 

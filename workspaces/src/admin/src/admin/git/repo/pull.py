@@ -23,9 +23,11 @@ MISSING_REMOTE_REF = "couldn't find remote ref"
 LOCAL_CHANGES_MARKERS = ("would be overwritten", "local changes")
 
 
-def _in_the_way(output: str) -> bool:
-    """Check whether git refused because a local file is in the way."""
-    return any(marker in output.lower() for marker in LOCAL_CHANGES_MARKERS)
+def _failure_kind(output: str, otherwise: SyncErrorKind) -> SyncErrorKind:
+    """Return ``local_changes`` if git refused because a local file is in the way."""
+    if any(marker in output.lower() for marker in LOCAL_CHANGES_MARKERS):
+        return SyncErrorKind.LOCAL_CHANGES
+    return otherwise
 
 
 def _fetch(repo: RepoConfig) -> bool:
@@ -110,7 +112,7 @@ def _merge_failure(repo: RepoConfig, output: str) -> SyncError:
         )
     return SyncError(
         f"Failed to merge the remote's changes for repository '{repo.name}': {output}",
-        SyncErrorKind.LOCAL_CHANGES if _in_the_way(output) else SyncErrorKind.GIT_FAILED,
+        _failure_kind(output, SyncErrorKind.GIT_FAILED),
     )
 
 
@@ -171,8 +173,10 @@ def pull_only(repo: RepoConfig) -> bool:
     )
     if attempt.returncode != 0:
         reason = output_of(attempt)
-        kind = SyncErrorKind.LOCAL_CHANGES if _in_the_way(reason) else SyncErrorKind.PULL_FAILED
-        raise SyncError(f"Not updating pull-only repository '{repo.name}': {reason}", kind)
+        raise SyncError(
+            f"Not updating pull-only repository '{repo.name}': {reason}",
+            _failure_kind(reason, SyncErrorKind.PULL_FAILED),
+        )
 
     logger.info(
         "Updated pull-only repository '%s' with %d incoming commit(s)", repo.name, incoming

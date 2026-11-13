@@ -7,6 +7,8 @@ workspace's work must still reach the remote; and a remote with no commits
 at all must still be usable.
 """
 
+import os
+
 import pytest
 
 from admin.git.repo.clone import clone_asset
@@ -93,3 +95,22 @@ def test_an_empty_remote_with_nothing_to_back_up_is_not_an_error(empty):
     clone_asset(repo)
 
     assert sync_once(repo) is False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a shell hook")
+def test_an_empty_remote_gets_its_branch_before_the_backup_branch(empty):
+    """Test the first push creates the configured branch, so a forge makes it the default."""
+    repo, remote = empty
+    hook = remote / "hooks" / "post-receive"
+    hook.write_text('#!/bin/sh\nwhile read old new ref; do echo "$ref"; done >> pushed\n')
+    hook.chmod(0o755)
+    clone_asset(repo)
+    write(repo.work_tree / "first.txt", "first\n")
+
+    sync_once(repo)
+    write(repo.work_tree / "second.txt", "second\n")
+    sync_once(repo)
+
+    pushed = (remote / "pushed").read_text().split()
+    assert pushed[0] == "refs/heads/main"
+    assert pushed[1:] == [f"refs/heads/{backup_branch(repo)}", "refs/heads/main"]

@@ -68,31 +68,19 @@ class World:
             return None
 
 
-def make_world(tmp_path, monkeypatch):
-    """
-    Build a remote holding :data:`SEED_FILES`, cloned by the workspace and
-    a colleague.
-
-    Args:
-        tmp_path: Directory everything is created in.
-        monkeypatch: Used to isolate git from the user's own config and to
-            allow a local remote.
-
-    Returns:
-        The world.
-    """
-    # Keep the user's own git config, such as autocrlf, out of the test.
+def _isolate_git(tmp_path, monkeypatch):
+    """Keep the user's git config out, and allow a local path as the remote."""
     global_config = tmp_path / "gitconfig"
     global_config.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-
-    # The remote is a local path, which the https-only options would refuse.
     monkeypatch.setattr(command_module, "remote_options", lambda: [])
 
+
+def _seeded_remote(tmp_path):
+    """Create a bare remote whose main branch holds :data:`SEED_FILES`."""
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--quiet", "--bare", "-b", "main", str(remote))
-
     seed = tmp_path / "seed"
     git(tmp_path, "clone", "--quiet", str(remote), str(seed))
     for name, content in SEED_FILES.items():
@@ -100,15 +88,22 @@ def make_world(tmp_path, monkeypatch):
     git(seed, "add", "-A")
     git(seed, "commit", "-m", "base")
     git(seed, "push", "--quiet", "origin", "main")
+    return remote
 
+
+def make_world(tmp_path, monkeypatch):
+    """
+    Build a remote holding :data:`SEED_FILES`, cloned by the workspace and
+    a colleague.
+    """
+    _isolate_git(tmp_path, monkeypatch)
+    remote = _seeded_remote(tmp_path)
     workspace = make_repo(
         repo_url=str(remote),
         git_dir=tmp_path / "workspace" / "git",
         work_tree=tmp_path / "app" / "tree",
     )
     clone_asset(workspace)
-
     colleague = tmp_path / "colleague"
     git(tmp_path, "clone", "--quiet", str(remote), str(colleague))
-
     return World(remote=remote, workspace=workspace, colleague=colleague)

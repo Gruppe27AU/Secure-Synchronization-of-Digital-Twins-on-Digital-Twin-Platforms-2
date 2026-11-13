@@ -13,9 +13,8 @@ from pathlib import Path
 import pytest
 
 from admin.git.service import bootstrap, scheduler
-from admin.git.repo.clone import CloneError
 from admin.git.setup.config import ConfigError
-from admin.git.run.errors import SyncErrorKind
+from admin.git.run.errors import SyncError, SyncErrorKind
 from admin.git.setup.locate import CONFIG_ENV_VAR
 from admin.git.service.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
@@ -174,7 +173,7 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
 
     def fake_clone_asset(repo):
         if repo.name == "private":
-            raise CloneError("git clone failed for repository 'private': denied")
+            raise SyncError("git clone failed for repository 'private': denied")
         return True
 
     monkeypatch.setattr(scheduler, "clone_asset", fake_clone_asset)
@@ -670,7 +669,7 @@ def test_status_lists_a_repository_whose_clone_failed(config_file, monkeypatch):
     monkeypatch.setattr(bootstrap, "load_config", lambda _path, _root: [make_repo("private")])
 
     def refuse(_repo):
-        raise CloneError("denied", SyncErrorKind.AUTH_FAILED)
+        raise SyncError("denied", SyncErrorKind.AUTH_FAILED)
 
     monkeypatch.setattr(scheduler, "clone_asset", refuse)
     status = SyncStatus()
