@@ -30,6 +30,13 @@ The main changes made so far are listed here.
   is unset and no home directory can be determined: the error is logged,
   the backup stays off with `/storage/status` reporting `config_error`, and
   the HTTP API is served as usual
+* The default config directory follows `XDG_CONFIG_HOME`: when it is set to
+  an absolute path, `workspace-admin` looks in
+  `$XDG_CONFIG_HOME/workspace-admin/config.toml` instead of
+  `~/.config/workspace-admin/config.toml`. **If you set `XDG_CONFIG_HOME`
+  and keep your config in `~/.config`, move it or point
+  `WORKSPACE_ADMIN_CONFIG` at it.** The image is not affected, since it
+  always sets `WORKSPACE_ADMIN_CONFIG`
 
 ## Week of 2-Nov-2026
 

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from admin import main
 from admin.api import create_app
-from admin.git.locate import CONFIG_ENV_VAR
+from admin.git.locate import CONFIG_ENV_VAR, XDG_CONFIG_HOME_VAR
 from admin.main import build_parser, cli
 
 
@@ -175,6 +175,7 @@ def test_cli_starts_without_any_config(monkeypatch, caplog, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+    monkeypatch.delenv(XDG_CONFIG_HOME_VAR, raising=False)
     monkeypatch.delenv("WORKSPACE_CONFIG_TEMPLATE", raising=False)
     monkeypatch.delenv("PATH_PREFIX", raising=False)
     monkeypatch.setenv("HOME", str(home))

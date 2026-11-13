@@ -319,8 +319,9 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `comma
 → `errors` → `auth` → `config` → `runner`; `locate` depends on nothing:
 
 - `locate.py`: `discover_config()` chooses the config file,
-  `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
-  and returns the path with the rule that chose it
+  `$WORKSPACE_ADMIN_CONFIG` before
+  `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml`, and returns
+  the path with the rule that chose it
 - `config.py`: reads `config.toml` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
@@ -361,7 +362,10 @@ stop the HTTP API from starting.
 `locate.discover_config()` chooses `config.toml` once on startup:
 `$WORKSPACE_ADMIN_CONFIG` when it is set and not empty (a relative path is
 resolved against the current directory), otherwise
-`~/.config/workspace-admin/config.toml`. A file named by the variable is
+`~/.config/workspace-admin/config.toml`, or
+`$XDG_CONFIG_HOME/workspace-admin/config.toml` when `$XDG_CONFIG_HOME` is
+an absolute path (an empty or relative one is ignored, per the XDG
+specification). A file named by the variable is
 used even when it is missing; nothing falls back past it. If it is still
 missing (or is a directory) after provisioning, `bootstrap` logs an error
 naming the path and sets the status to `config_error`; without the
@@ -403,12 +407,16 @@ To add new services to the workspace:
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
 - `WORKSPACE_ADMIN_CONFIG`: Config file of the git backup; when unset or
-  empty, `~/.config/workspace-admin/config.toml` is used. In the image
+  empty, `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml` is
+  used. In the image
   `custom_startup.sh` sets it in prefix form for `workspace-admin` alone,
   so Jupyter and VS Code never see it; it is deliberately not a Dockerfile
   `ENV`, which `.docker_set_envs` would pin over runtime values
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when it is
   missing (set by the Dockerfile; unset outside the image)
+- `XDG_CONFIG_HOME`: When set to an absolute path, replaces `~/.config` as
+  the base of the default config directory. Tests that build the default
+  path from a fake home must unset it, since CI runners may set it
 
 ## Code Quality Standards
 

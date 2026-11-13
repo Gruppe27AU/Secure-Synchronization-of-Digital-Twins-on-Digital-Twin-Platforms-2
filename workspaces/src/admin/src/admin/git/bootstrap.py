@@ -27,7 +27,7 @@ from admin.git.config import (
     load_sync_interval,
 )
 from admin.git.locate import (
-    CONFIG_DIR,
+    APP_DIR,
     CONFIG_ENV_VAR,
     DEFAULT_CONFIG_FILE,
     ConfigLocation,
@@ -320,7 +320,7 @@ def start_git_backup(
             "%s is not set and the default %s cannot be resolved (%s); "
             "git backup is disabled",
             CONFIG_ENV_VAR,
-            Path("~", CONFIG_DIR, DEFAULT_CONFIG_FILE),
+            Path("~", ".config", APP_DIR, DEFAULT_CONFIG_FILE),
             exc,
         )
         status.set_state(BackupState.CONFIG_ERROR)

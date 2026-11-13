@@ -2,13 +2,16 @@
 Unit tests for finding the config file.
 
 Covers :mod:`admin.git.locate`: ``$WORKSPACE_ADMIN_CONFIG`` first, then
-``~/.config/workspace-admin/config.toml``.
+``${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml``.
 """
+
+from pathlib import Path
 
 import pytest
 
 from admin.git.locate import (
     CONFIG_ENV_VAR,
+    XDG_CONFIG_HOME_VAR,
     ConfigLocation,
     ConfigRule,
     discover_config,
@@ -23,6 +26,8 @@ def fixture_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+    # Set on some machines, CI runners among them; it would move the default.
+    monkeypatch.delenv(XDG_CONFIG_HOME_VAR, raising=False)
     return home
 
 
@@ -109,3 +114,47 @@ def test_the_variable_is_used_even_when_its_file_is_missing(
     monkeypatch.setenv(CONFIG_ENV_VAR, str(missing))
 
     assert discover_config() == ConfigLocation(missing, ConfigRule.ENV)
+
+
+# --------------------------------------------------------------------------
+# $XDG_CONFIG_HOME moves the default directory
+# --------------------------------------------------------------------------
+
+
+def test_xdg_config_home_moves_the_default_directory(tmp_path, monkeypatch):
+    """Test the default directory is below $XDG_CONFIG_HOME when it is set."""
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv(XDG_CONFIG_HOME_VAR, str(xdg))
+
+    expected = xdg / "workspace-admin" / "config.toml"
+    assert discover_config() == ConfigLocation(expected, ConfigRule.DEFAULT)
+
+
+@pytest.mark.parametrize("value", ["", str(Path("relative", "dir"))])
+def test_an_empty_or_relative_xdg_config_home_is_ignored(home, monkeypatch, value):
+    """Test an empty or relative $XDG_CONFIG_HOME falls back to ~/.config, as XDG says."""
+    monkeypatch.setenv(XDG_CONFIG_HOME_VAR, value)
+
+    expected = home / ".config" / "workspace-admin" / "config.toml"
+    assert discover_config() == ConfigLocation(expected, ConfigRule.DEFAULT)
+
+
+def test_the_variable_wins_over_xdg_config_home(env_config, tmp_path, monkeypatch):
+    """Test $WORKSPACE_ADMIN_CONFIG still comes first with $XDG_CONFIG_HOME set."""
+    monkeypatch.setenv(XDG_CONFIG_HOME_VAR, str(tmp_path / "xdg"))
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(env_config))
+
+    assert discover_config() == ConfigLocation(env_config, ConfigRule.ENV)
+
+
+def test_xdg_config_home_needs_no_home_directory(tmp_path, monkeypatch):
+    """Test that with $XDG_CONFIG_HOME set an unknown home directory does not matter."""
+
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv(XDG_CONFIG_HOME_VAR, str(xdg))
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+
+    assert discover_config().path == xdg / "workspace-admin" / "config.toml"

@@ -18,7 +18,7 @@ from admin.git import bootstrap
 from admin.git.clone import CloneError
 from admin.git.config import ConfigError
 from admin.git.errors import SyncErrorKind
-from admin.git.locate import CONFIG_ENV_VAR
+from admin.git.locate import CONFIG_ENV_VAR, XDG_CONFIG_HOME_VAR
 from admin.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
 from tests.helpers.templates import EXAMPLE_CONFIG_PATH
@@ -505,10 +505,11 @@ def test_start_git_backup_creates_a_missing_config_and_clones_nothing(
 
 
 def _point_home_at(home, monkeypatch):
-    """Make ``home`` the home directory, on every platform."""
+    """Make ``home`` the home directory, on every platform, with ``~/.config`` as default."""
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv(XDG_CONFIG_HOME_VAR, raising=False)
 
 
 def test_start_git_backup_reports_a_missing_default_config_once(
@@ -541,6 +542,8 @@ def test_start_git_backup_survives_an_unknown_home_directory(monkeypatch, caplog
         raise RuntimeError("Could not determine home directory.")
 
     monkeypatch.delenv(CONFIG_ENV_VAR)
+    # With it set, the home directory is not needed at all.
+    monkeypatch.delenv(XDG_CONFIG_HOME_VAR, raising=False)
     monkeypatch.setattr(Path, "home", staticmethod(no_home))
     monkeypatch.setattr(bootstrap, "provision_config", _fail_if_called)
     monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
@@ -694,6 +697,28 @@ def test_start_git_backup_creates_the_default_config_without_the_variable(
     if os.name == "posix":  # file modes are POSIX-only
         assert stat.S_IMODE(default_config.stat().st_mode) == 0o600
     assert "ERROR" not in caplog.text
+    assert status.snapshot()["state"] == "needs_setup"
+
+
+def test_start_git_backup_creates_the_default_config_below_xdg_config_home(
+    monkeypatch, tmp_path
+):
+    """Test that with $XDG_CONFIG_HOME set the template lands below it, not in ~/.config."""
+    home = tmp_path / "home"
+    _point_home_at(home, monkeypatch)
+    monkeypatch.delenv(CONFIG_ENV_VAR)
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv(XDG_CONFIG_HOME_VAR, str(xdg))
+    _use_the_example_template(tmp_path, monkeypatch)
+    monkeypatch.setattr(bootstrap, "clone_configured_repos", _fail_if_called)
+    status = SyncStatus()
+
+    bootstrap.start_git_backup(status, 60).join(timeout=30)
+
+    created = xdg / "workspace-admin" / "config.toml"
+    assert created.read_bytes() == EXAMPLE_CONFIG_PATH.read_bytes()
+    assert (created.parent / ".gitignore").is_file()
+    assert not (home / ".config").exists()
     assert status.snapshot()["state"] == "needs_setup"
 
 
