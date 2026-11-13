@@ -223,6 +223,56 @@ def test_load_repos_keeps_the_root_on_persistent_dir(
     assert received == {"path": config_file, "root": persistent_dir}
 
 
+#: A config the real ``load_config`` accepts: no placeholder values left.
+REAL_CONFIG = """\
+[assets.private]
+GIT_REPO_URL = "https://gitlab.example.org/team/private.git"
+GIT_REPO_BRANCH = "main"
+GIT_REPO_TOKEN = "a-real-looking-token"
+"""
+
+
+def _cloned_repo(config_file, monkeypatch):
+    """Clone from ``config_file`` with the real ``load_config``; return the repo seen."""
+    config_file.write_text(REAL_CONFIG, encoding="utf-8")
+    cloned = []
+    monkeypatch.setattr(bootstrap, "clone_asset", lambda repo: cloned.append(repo) or True)
+
+    bootstrap.clone_configured_repos(SyncStatus(), config_file)
+
+    assert len(cloned) == 1
+    return cloned[0]
+
+
+def test_repositories_stay_on_persistent_dir_wherever_the_config_is(
+    config_file, persistent_dir, monkeypatch
+):
+    """Test a config outside $PERSISTENT_DIR still puts the repositories there."""
+    repo = _cloned_repo(config_file, monkeypatch)
+
+    assert repo.git_dir == persistent_dir / ".local" / "share" / "workspace-admin" / "private"
+    assert repo.work_tree == persistent_dir / "assets" / "private"
+    assert not repo.git_dir.is_relative_to(config_file.parent)
+    assert not repo.work_tree.is_relative_to(config_file.parent)
+
+
+def test_repositories_go_to_home_without_persistent_dir(
+    config_file, monkeypatch, tmp_path
+):
+    """Test that without $PERSISTENT_DIR the repositories go below home, not the config."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("PERSISTENT_DIR")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    assert not config_file.is_relative_to(home)
+
+    repo = _cloned_repo(config_file, monkeypatch)
+
+    assert repo.git_dir == home / ".local" / "share" / "workspace-admin" / "private"
+    assert repo.work_tree == home / "assets" / "private"
+
+
 def test_start_git_sync_schedules_every_configured_repository(config_file, monkeypatch):
     """Test a repository whose clone failed is scheduled too, to be retried."""
     private_repo = make_repo("private")
