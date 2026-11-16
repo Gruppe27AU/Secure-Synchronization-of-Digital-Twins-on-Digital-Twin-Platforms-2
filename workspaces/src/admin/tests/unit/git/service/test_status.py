@@ -104,6 +104,17 @@ def test_last_error_is_kept_after_a_later_success():
     }
 
 
+def test_a_synced_failure_moves_the_last_success_too():
+    """Test a refused backup push still counts the configured branch as synced."""
+    status = SyncStatus(clock=step_clock())
+    status.enable(["private"])
+    status.record_failure("private", SyncErrorKind.BACKUP_FAILED, synced=True)
+
+    repo = status.snapshot()["repositories"]["private"]
+    assert repo["last_success"] == repo["last_error"]["at"] == "2026-10-09T12:00:00+00:00"
+    assert repo["last_error"]["kind"] == "backup_failed"
+
+
 def test_enable_again_keeps_recorded_outcomes():
     """Test enabling a repository twice does not reset its history."""
     status = SyncStatus(clock=step_clock())

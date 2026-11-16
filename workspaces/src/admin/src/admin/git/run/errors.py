@@ -61,6 +61,8 @@ class SyncError(Exception):
         kind: Why it failed, safe to expose where the message is not.
         git_output: What git printed, when a git command failed; empty
             otherwise. For telling failures apart, never for display.
+        synced: True if the configured branch is up to date anyway, so the
+            cycle still counts as a success.
     """
 
     def __init__(
@@ -68,10 +70,12 @@ class SyncError(Exception):
         message: str,
         kind: SyncErrorKind = SyncErrorKind.GIT_FAILED,
         git_output: str = "",
+        synced: bool = False,
     ):
         super().__init__(message)
         self.kind = kind
         self.git_output = git_output
+        self.synced = synced
 
 
 def is_network_failure(output: str) -> bool:

@@ -8,7 +8,7 @@ same layout and remote instead, and the first push creates the branch.
 import logging
 from pathlib import Path
 
-from admin.git.run.command import run, run_local
+from admin.git.run.command import list_paths, run, run_local
 from admin.git.run.errors import SyncError
 from admin.git.setup.config import RepoConfig
 
@@ -38,7 +38,8 @@ def _restore_files(repo: RepoConfig) -> None:
     """
     Recreate a missing or empty work tree from the index, as of the last cycle.
 
-    Files deleted from a tree that still holds others are left to
+    An empty index, as on a remote with no files yet, is left alone. Files
+    deleted from a tree that still holds others are left to
     :func:`admin.git.repo.checks.ensure_no_mass_deletion`. A failure is
     logged, not raised.
     """
@@ -46,6 +47,8 @@ def _restore_files(repo: RepoConfig) -> None:
         return
     try:
         repo.work_tree.mkdir(parents=True, exist_ok=True)
+        if not list_paths(repo, [], "list the tracked files"):
+            return
         run_local(repo, ["checkout-index", "--all"], "restore the work tree")
     except (OSError, SyncError) as error:
         logger.warning(

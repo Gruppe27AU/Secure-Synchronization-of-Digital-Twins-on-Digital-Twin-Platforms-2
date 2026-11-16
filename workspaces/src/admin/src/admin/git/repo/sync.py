@@ -157,8 +157,8 @@ def _merge_and_push(
     held: HeldBack | None,
 ) -> bool:
     """
-    Merge the remote, then push; a failed backup outranks any failure here,
-    since the work is then only in the container.
+    Merge the remote, then push; a refused backup push outranks any failure
+    here, since the work is then only in the container.
 
     Returns:
         True if anything was merged or pushed.
@@ -168,7 +168,7 @@ def _merge_and_push(
         _stop_if_requested(repo, stop_event, "push")
         return push_if_ahead(repo) or merged
     except SyncError as error:
-        if backup.error:
+        if backup.error and backup.error.kind is SyncErrorKind.BACKUP_FAILED:
             raise SyncError(f"{backup.error}; {error}", SyncErrorKind.BACKUP_FAILED) from error
         raise
 
@@ -185,7 +185,7 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
 
     Raises:
         SyncError: If a step fails, or at the end if the backup push failed
-            or files were held back.
+            (``synced`` when nothing was held back) or files were held back.
         SyncStopped: If ``stop_event`` was set before the cycle finished.
     """
     if repo.mode is SyncMode.PULL:
@@ -200,7 +200,8 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
     _stop_if_requested(repo, stop_event, "pull")
     changed = _merge_and_push(repo, stop_event, backup, held)
     if backup.error:
-        raise backup.error
+        error = backup.error
+        raise SyncError(str(error), error.kind, synced=held is None) from error
     if held:
         raise held
     return committed or changed

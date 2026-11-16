@@ -15,6 +15,8 @@ from admin.git.repo.clone import clone_asset
 from admin.git.run.errors import SyncError, SyncErrorKind
 from admin.git.repo.push import backup_branch
 from admin.git.repo.sync import sync_once
+from admin.git.service.scheduler import sync_all
+from admin.git.service.status import SyncStatus
 from tests.helpers.git_world import git, write
 from tests.helpers.repo_factory import make_repo
 
@@ -95,6 +97,35 @@ def test_an_empty_remote_with_nothing_to_back_up_is_not_an_error(empty):
     clone_asset(repo)
 
     assert sync_once(repo) is False
+
+
+def test_an_empty_remote_logs_no_lost_files_on_startup(empty, caplog):
+    """Test a repository with no files yet is not reported as having lost them."""
+    repo, _ = empty
+    clone_asset(repo)
+    sync_once(repo)
+
+    assert clone_asset(repo) is False
+
+    assert "lost the files" not in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a shell hook")
+def test_a_refused_backup_branch_still_counts_the_cycle_as_synced(world):
+    """Test a forge rule against backup/* reports backup_failed, yet last_success moves."""
+    hook = world.remote / "hooks" / "pre-receive"
+    hook.write_text('#!/bin/sh\ngrep -q " refs/heads/backup/" && exit 1\nexit 0\n')
+    hook.chmod(0o755)
+    write(world.workspace.work_tree / "new.txt", "new\n")
+    status = SyncStatus()
+    status.enable([world.workspace.name])
+
+    sync_all([world.workspace], status)
+
+    repo_status = status.snapshot()["repositories"][world.workspace.name]
+    assert repo_status["last_error"]["kind"] == "backup_failed"
+    assert repo_status["last_success"] == repo_status["last_error"]["at"]
+    assert world.remote_file("new.txt") == "new\n"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="needs a shell hook")

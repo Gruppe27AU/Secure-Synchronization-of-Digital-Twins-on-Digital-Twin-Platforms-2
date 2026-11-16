@@ -26,7 +26,11 @@ The main changes made so far are listed here.
   remote
 * A refused backup push is reported in `/storage/status` as the new kind
   `backup_failed`, before any other failure of the same cycle; before, the
-  cycle reported success while the work was only in the container
+  cycle reported success while the work was only in the container. A
+  rejected token, an unreachable remote or a time-out keeps its own kind,
+  and when the configured branch was pushed, `last_success` moves too
+* A repository with no files yet no longer logs "had lost the files" on
+  every startup
 * A missing or empty working tree is restored on startup only. A folder
   deleted while the service runs stays deleted and is reported as
   `mass_deletion` until the next start

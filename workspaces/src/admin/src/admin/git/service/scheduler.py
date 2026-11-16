@@ -61,7 +61,7 @@ def _sync_one(
         return False
     except SyncError as error:
         logger.error("%s", error)
-        status.record_failure(repo.name, error.kind)
+        status.record_failure(repo.name, error.kind, error.synced)
     except Exception:  # pylint: disable=broad-exception-caught
         logger.exception("Unexpected error while syncing repository '%s'", repo.name)
         status.record_failure(repo.name, SyncErrorKind.UNEXPECTED)
