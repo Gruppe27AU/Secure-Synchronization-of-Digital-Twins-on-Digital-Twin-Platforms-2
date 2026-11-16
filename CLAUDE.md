@@ -320,8 +320,8 @@ same way, `bootstrap` → `scheduler` → `sync`/`clone` → `checks` → `comma
 
 - `locate.py`: `discover_config()` chooses the config file,
   `$WORKSPACE_ADMIN_CONFIG` before
-  `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml`, and returns
-  the path with the rule that chose it
+  `${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml` before
+  `./config.toml`, and returns the path with the rule that chose it
 - `config.py`: reads `config.toml` and returns one `RepoConfig` per
   repository, raising `ConfigError` on anything unusable
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
@@ -365,8 +365,12 @@ resolved against the current directory), otherwise
 `~/.config/workspace-admin/config.toml`, or
 `$XDG_CONFIG_HOME/workspace-admin/config.toml` when `$XDG_CONFIG_HOME` is
 an absolute path (an empty or relative one is ignored, per the XDG
-specification). A file named by the variable is
-used even when it is missing; nothing falls back past it. If it is still
+specification), otherwise `config.toml` in the current directory, for
+development. That last file is used only when it exists and the default
+one does not; it is only read, never provisioned, and like any config it
+must lie outside every work tree. In the image the variable is always set,
+so the current directory never matters there. A file named by the variable
+is used even when it is missing; nothing falls back past it. If it is still
 missing (or is a directory) after provisioning, `bootstrap` logs an error
 naming the path and sets the status to `config_error`; without the
 variable a missing file only logs that the backup is disabled. `bootstrap`

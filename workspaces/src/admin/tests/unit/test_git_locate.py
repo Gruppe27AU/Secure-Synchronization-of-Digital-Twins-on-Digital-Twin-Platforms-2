@@ -2,7 +2,8 @@
 Unit tests for finding the config file.
 
 Covers :mod:`admin.git.locate`: ``$WORKSPACE_ADMIN_CONFIG`` first, then
-``${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml``.
+``${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml``, then
+``./config.toml``.
 """
 
 from pathlib import Path
@@ -20,15 +21,26 @@ from admin.git.locate import (
 
 @pytest.fixture(name="home", autouse=True)
 def fixture_home(tmp_path, monkeypatch):
-    """Make a fresh directory the home directory, on POSIX and Windows."""
+    """Make fresh directories the home and current directory, on POSIX and Windows."""
     home = tmp_path / "home"
     home.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
     # Set on some machines, CI runners among them; it would move the default.
     monkeypatch.delenv(XDG_CONFIG_HOME_VAR, raising=False)
     return home
+
+
+@pytest.fixture(name="cwd_config")
+def fixture_cwd_config(tmp_path):
+    """Create config.toml in the current directory."""
+    path = tmp_path / "cwd" / "config.toml"
+    path.write_text("", encoding="utf-8")
+    return path
 
 
 @pytest.fixture(name="default_config")
@@ -116,6 +128,31 @@ def test_the_variable_is_used_even_when_its_file_is_missing(
     assert discover_config() == ConfigLocation(missing, ConfigRule.ENV)
 
 
+def test_the_current_directory_is_used_when_nothing_else_is_found(cwd_config):
+    """Test ./config.toml is used when the variable is unset and the default is missing."""
+    assert discover_config() == ConfigLocation(cwd_config, ConfigRule.CWD)
+
+
+def test_the_current_directory_is_not_used_when_the_variable_is_set(
+    tmp_path, cwd_config, monkeypatch
+):
+    """Test ./config.toml is passed over for a variable naming a missing file."""
+    assert cwd_config.is_file()
+    missing = tmp_path / "missing.toml"
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(missing))
+
+    assert discover_config() == ConfigLocation(missing, ConfigRule.ENV)
+
+
+def test_the_default_directory_wins_over_the_current_directory(
+    cwd_config, default_config
+):
+    """Test ~/.config/workspace-admin/config.toml wins when both files exist."""
+    assert cwd_config.is_file()
+
+    assert discover_config() == ConfigLocation(default_config, ConfigRule.DEFAULT)
+
+
 # --------------------------------------------------------------------------
 # $XDG_CONFIG_HOME moves the default directory
 # --------------------------------------------------------------------------
@@ -158,3 +195,16 @@ def test_xdg_config_home_needs_no_home_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(no_home))
 
     assert discover_config().path == xdg / "workspace-admin" / "config.toml"
+
+
+def test_the_xdg_default_wins_over_the_current_directory(
+    tmp_path, cwd_config, monkeypatch
+):
+    """Test the config below $XDG_CONFIG_HOME wins over ./config.toml."""
+    assert cwd_config.is_file()
+    xdg_config = tmp_path / "xdg" / "workspace-admin" / "config.toml"
+    xdg_config.parent.mkdir(parents=True)
+    xdg_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv(XDG_CONFIG_HOME_VAR, str(tmp_path / "xdg"))
+
+    assert discover_config() == ConfigLocation(xdg_config, ConfigRule.DEFAULT)

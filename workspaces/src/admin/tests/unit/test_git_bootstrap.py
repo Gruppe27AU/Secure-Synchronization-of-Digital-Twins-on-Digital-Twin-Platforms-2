@@ -744,6 +744,32 @@ def test_start_git_backup_never_creates_the_config_in_the_current_directory(
     assert not any(cwd.iterdir())
 
 
+def test_start_git_backup_only_reads_a_config_in_the_current_directory(
+    monkeypatch, tmp_path
+):
+    """Test ./config.toml is used as it is, with no .gitignore added beside it."""
+    _use_the_default_config(tmp_path, monkeypatch)
+    _use_the_example_template(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    cwd_config = cwd / "config.toml"
+    cwd_config.write_text("# my own settings\n", encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    cloned_from = []
+    monkeypatch.setattr(
+        bootstrap,
+        "clone_configured_repos",
+        lambda _status, config_path: cloned_from.append(config_path),
+    )
+    monkeypatch.setattr(bootstrap, "start_git_sync", lambda *_args: None)
+
+    bootstrap.start_git_backup(SyncStatus(), 60).join(timeout=30)
+
+    assert cloned_from == [cwd_config]
+    assert list(cwd.iterdir()) == [cwd_config]
+    assert cwd_config.read_text(encoding="utf-8") == "# my own settings\n"
+
+
 def test_start_git_backup_never_overwrites_an_existing_config(
     config_file, monkeypatch, caplog, tmp_path
 ):

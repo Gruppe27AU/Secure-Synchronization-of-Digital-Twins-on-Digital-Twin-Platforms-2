@@ -43,12 +43,17 @@ logger = logging.getLogger(__name__)
 #: Name of the thread that clones on startup, recognisable in a stack dump.
 BOOTSTRAP_THREAD_NAME = "git-bootstrap"
 
-#: Why each rule chose the config file, as logged on startup. The default is
-#: only reached when the variable is unset, the order
+#: Why each rule chose the config file, as logged on startup. Each rule is
+#: only reached when the ones before it found nothing, the order
 #: :func:`admin.git.locate.discover_config` checks in.
 RULE_REASONS = {
     ConfigRule.ENV: f"from {CONFIG_ENV_VAR}",
     ConfigRule.DEFAULT: f"default location; {CONFIG_ENV_VAR} is not set",
+    ConfigRule.CWD: (
+        f"current directory; {CONFIG_ENV_VAR} is not set and "
+        f"${{XDG_CONFIG_HOME:-~/.config}}/{APP_DIR}/{DEFAULT_CONFIG_FILE} "
+        "does not exist"
+    ),
 }
 
 #: Longest a stopping service waits for the git command it is in. Kept
@@ -260,7 +265,11 @@ def _clone_then_sync(
     """
     config_path = location.path
     try:
-        if provision_config(config_path, _template_path()):
+        # A config in the current directory is only read: provisioning
+        # would add a .gitignore of "*" to the developer's directory.
+        if location.rule is not ConfigRule.CWD and provision_config(
+            config_path, _template_path()
+        ):
             status.set_state(BackupState.NEEDS_SETUP)
             return
         if not config_path.is_file():
