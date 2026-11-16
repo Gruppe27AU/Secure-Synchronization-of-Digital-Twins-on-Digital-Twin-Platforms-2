@@ -55,7 +55,10 @@ The service chooses its config file once, when it starts:
 
 1. `WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
    is resolved against the directory you start `workspace-admin` from.
-2. Otherwise `~/.config/workspace-admin/config.toml`.
+2. Otherwise `~/.config/workspace-admin/config.toml`. When
+   `XDG_CONFIG_HOME` is set to an absolute path, as on some Linux desktops,
+   `$XDG_CONFIG_HOME/workspace-admin/config.toml` takes the place of
+   `~/.config/...`, like it does for git and other tools.
 
 The service never looks past `WORKSPACE_ADMIN_CONFIG` for another file. If
 there is no file at its path, or the path is a directory, an error naming

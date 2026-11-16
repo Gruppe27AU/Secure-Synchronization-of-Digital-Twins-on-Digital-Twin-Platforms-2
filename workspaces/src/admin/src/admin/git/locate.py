@@ -5,7 +5,8 @@ Finding the config file of the git backup.
 checking in order:
 
 1. ``$WORKSPACE_ADMIN_CONFIG``, when it is set and not empty
-2. ``~/.config/workspace-admin/config.toml``
+2. ``workspace-admin/config.toml`` in the config base directory:
+   ``$XDG_CONFIG_HOME`` when it is an absolute path, otherwise ``~/.config``
 3. ``./config.toml``, in the current directory
 
 It only chooses a path and never reads the file, so a variable naming a
@@ -28,8 +29,12 @@ CONFIG_ENV_VAR = "WORKSPACE_ADMIN_CONFIG"
 #: Filename of the config file.
 DEFAULT_CONFIG_FILE = "config.toml"
 
-#: Directory holding the config file, below the home directory.
-CONFIG_DIR = Path(".config", "workspace-admin")
+#: Environment variable naming the base directory of user config files, as
+#: in the XDG Base Directory Specification.
+XDG_CONFIG_HOME_VAR = "XDG_CONFIG_HOME"
+
+#: Directory holding the config file, below the config base directory.
+APP_DIR = "workspace-admin"
 
 
 class ConfigRule(StrEnum):
@@ -37,8 +42,8 @@ class ConfigRule(StrEnum):
     The rule that chose the config file.
 
     ``env`` is ``$WORKSPACE_ADMIN_CONFIG``; ``default`` is the file in the
-    default directory below the home directory; ``cwd`` is the file in the
-    current directory.
+    default directory, ``${XDG_CONFIG_HOME:-~/.config}/workspace-admin``;
+    ``cwd`` is the file in the current directory.
     """
 
     ENV = "env"
@@ -60,9 +65,24 @@ class ConfigLocation:
     rule: ConfigRule
 
 
+def _config_home() -> Path:
+    """
+    Return the base directory of user config files.
+
+    ``$XDG_CONFIG_HOME`` when it is set to an absolute path, otherwise
+    ``~/.config``. The XDG specification has a relative value ignored, and
+    an empty one counts as unset. With the variable set, the home directory
+    is never looked up, so it need not be known.
+    """
+    xdg_config_home = os.environ.get(XDG_CONFIG_HOME_VAR)
+    if xdg_config_home and Path(xdg_config_home).is_absolute():
+        return Path(xdg_config_home)
+    return Path.home() / ".config"
+
+
 def default_config_path() -> Path:
-    """Return ``~/.config/workspace-admin/config.toml``."""
-    return Path.home() / CONFIG_DIR / DEFAULT_CONFIG_FILE
+    """Return ``${XDG_CONFIG_HOME:-~/.config}/workspace-admin/config.toml``."""
+    return _config_home() / APP_DIR / DEFAULT_CONFIG_FILE
 
 
 def discover_config() -> ConfigLocation:
