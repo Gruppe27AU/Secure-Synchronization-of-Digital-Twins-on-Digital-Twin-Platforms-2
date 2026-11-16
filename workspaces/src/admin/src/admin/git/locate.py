@@ -6,9 +6,13 @@ checking in order:
 
 1. ``$WORKSPACE_ADMIN_CONFIG``, when it is set and not empty
 2. ``~/.config/workspace-admin/config.toml``
+3. ``./config.toml``, in the current directory
 
 It only chooses a path and never reads the file, so a variable naming a
 file that does not exist is still the answer: nothing falls back past it.
+The current directory is only chosen when its file exists and the default
+one does not, so a missing config is created in the default directory,
+never in the current one.
 Where the repositories are kept does not depend on the answer; that stays
 below ``$PERSISTENT_DIR``.
 """
@@ -33,11 +37,13 @@ class ConfigRule(StrEnum):
     The rule that chose the config file.
 
     ``env`` is ``$WORKSPACE_ADMIN_CONFIG``; ``default`` is the file in the
-    default directory below the home directory.
+    default directory below the home directory; ``cwd`` is the file in the
+    current directory.
     """
 
     ENV = "env"
     DEFAULT = "default"
+    CWD = "cwd"
 
 
 @dataclass(frozen=True)
@@ -65,7 +71,8 @@ def discover_config() -> ConfigLocation:
 
     An empty ``$WORKSPACE_ADMIN_CONFIG`` counts as unset. A relative one is
     resolved against the current directory now, so the result does not
-    change if the directory does later.
+    change if the directory does later. ``./config.toml`` is chosen only
+    when the variable is unset, the default file does not exist and it does.
 
     Returns:
         The chosen config file, as an absolute path, and the rule that
@@ -74,4 +81,8 @@ def discover_config() -> ConfigLocation:
     configured = os.environ.get(CONFIG_ENV_VAR)
     if configured:
         return ConfigLocation(Path(configured).absolute(), ConfigRule.ENV)
-    return ConfigLocation(default_config_path(), ConfigRule.DEFAULT)
+    default = default_config_path()
+    local = Path(DEFAULT_CONFIG_FILE).absolute()
+    if not default.is_file() and local.is_file():
+        return ConfigLocation(local, ConfigRule.CWD)
+    return ConfigLocation(default, ConfigRule.DEFAULT)
