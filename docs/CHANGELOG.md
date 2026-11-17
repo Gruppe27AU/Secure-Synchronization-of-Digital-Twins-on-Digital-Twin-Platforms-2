@@ -2,6 +2,19 @@
 
 The main changes made so far are listed here.
 
+## Week of 16-Nov-2026
+
+### Changed
+
+* The `admin.git` package is split in two: `admin.config` reads
+  `config.toml`, and `admin.sync.git` runs the backup, its former `run`,
+  `repo` and `service` modules side by side. The service catalogue moves
+  to `templates/services_template.json`, and the tests mirror the new
+  layout. **The loggers are renamed with it**, for example
+  `admin.git.service.scheduler` is now `admin.sync.git.scheduler` and
+  `admin.git.setup.load` is now `admin.config.load`; a log filter on the
+  old names must be updated
+
 ## Week of 9-Nov-2026
 
 ### Changed

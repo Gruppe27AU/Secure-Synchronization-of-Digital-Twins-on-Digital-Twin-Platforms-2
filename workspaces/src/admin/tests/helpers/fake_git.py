@@ -1,15 +1,15 @@
 """
 Stand-in for git in the sync tests.
 
-:class:`FakeGit` replaces :func:`admin.git.run.runner.run_git` where
-:mod:`admin.git.run.command` uses it, records every command and answers it with
+:class:`FakeGit` replaces :func:`admin.sync.git.runner.run_git` where
+:mod:`admin.sync.git.command` uses it, records every command and answers it with
 canned results.
 """
 
 import subprocess
 from dataclasses import dataclass, field
 
-from admin.git.run import command as command_module
+from admin.sync.git import command as command_module
 
 
 #: Key for each git subcommand that is only ever run one way.
@@ -76,7 +76,7 @@ def _listing(paths):
 @dataclass
 class FakeGit:  # pylint: disable=too-many-instance-attributes
     """
-    Stands in for :func:`admin.git.run.runner.run_git` and records every git call.
+    Stands in for :func:`admin.sync.git.runner.run_git` and records every git call.
 
     Args:
         status_output: What ``git status --porcelain`` prints. Empty means
@@ -211,6 +211,6 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
 
 
 def install_fake_git(monkeypatch, fake_git):
-    """Make admin.git.repo.sync use the fake instead of real git."""
+    """Make admin.sync.git.sync use the fake instead of real git."""
     monkeypatch.setattr(command_module, "run_git", fake_git.run)
     return fake_git

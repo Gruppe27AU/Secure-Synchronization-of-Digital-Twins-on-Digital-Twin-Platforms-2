@@ -3,7 +3,7 @@ Workspace service discovery.
 
 Loads the catalogue of services (desktop, VS Code, Jupyter, ...) that the
 workspace exposes. The catalogue is data, not code: it is read from
-``config/services_template.json`` at request time, so adding a service only
+``templates/services_template.json`` at request time, so adding a service only
 requires editing that file.
 """
 
@@ -11,8 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-CONFIG_DIR = Path(__file__).parent / "config"
-SERVICES_TEMPLATE_PATH = CONFIG_DIR / "services_template.json"
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+SERVICES_TEMPLATE_PATH = TEMPLATES_DIR / "services_template.json"
 
 
 def load_services() -> dict[str, Any]:
