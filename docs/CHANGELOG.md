@@ -6,6 +6,15 @@ The main changes made so far are listed here.
 
 ### Changed
 
+* **The backup branch `backup/<workspace-id>` is no longer pushed.** A
+  cycle commits, pulls and pushes; nothing else reaches the remote. The
+  status kind `backup_failed` is gone. While the configured branch cannot
+  be pushed (`pull_failed`, `overwrite_refused`), the work is committed but
+  only in the container. Existing `backup/` branches on the remote are left
+  alone and can be deleted
+* **`remote-backup/` branches are named by the user**, as
+  `remote-backup/<MAIN_USER>/<time>`, or `remote-backup/workspace/<time>`
+  when `MAIN_USER` is unset
 * **A merge conflict now ends with the workspace's branch on the remote.**
   The merge is aborted, the remote's branch is saved on a new branch
   `remote-backup/<workspace-id>/<time>`, and the workspace's branch is

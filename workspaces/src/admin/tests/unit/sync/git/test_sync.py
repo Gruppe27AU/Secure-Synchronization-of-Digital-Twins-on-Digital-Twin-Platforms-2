@@ -5,16 +5,13 @@ Real git is never invoked: :class:`tests.helpers.fake_git.FakeGit` answers
 every command.
 """
 
-import subprocess
 import threading
 
 import pytest
 
 from admin.sync.git.sync import sync_once, SyncStopped
 from admin.sync.git import command as command_module
-from admin.sync.git.errors import SyncError, SyncErrorKind
 from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
-from tests.unit.sync.git.test_commit import MARKED_NOTES
 
 
 def test_sync_once_commits_before_it_merges(monkeypatch, repo):
@@ -51,93 +48,6 @@ def test_sync_once_reports_a_change_when_only_the_remote_moved(
     assert sync_once(repo) is True
 
 
-def test_sync_once_backs_up_every_cycle_before_it_pulls(monkeypatch, repo):
-    """Test the backup push runs even with nothing to commit or merge."""
-    repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(monkeypatch, FakeGit())
-
-    assert sync_once(repo) is False
-    assert fake_git.keys.index("backup-push") < fake_git.keys.index("fetch")
-
-
-def test_a_failed_backup_push_is_reported_after_the_cycle(monkeypatch, repo):
-    """Test the cycle still pulls and pushes, then reports backup_failed."""
-    repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, outgoing=1, failing="backup-push")
-    )
-
-    with pytest.raises(SyncError, match="backup branch") as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
-    assert excinfo.value.synced is True
-    assert "merge" in fake_git.keys and "push" in fake_git.keys
-
-
-def test_a_failed_backup_push_with_a_held_back_file_is_not_synced(monkeypatch, repo):
-    """Test the cycle is no success while a file is still only in the container."""
-    repo.git_dir.mkdir(parents=True)
-    install_fake_git(monkeypatch, FakeGit(**MARKED_NOTES, failing="backup-push"))
-
-    with pytest.raises(SyncError, match="backup branch") as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.synced is False
-
-
-def test_a_conflict_still_replaces_the_remote_when_the_backup_push_failed(
-    monkeypatch, repo
-):
-    """Test the work reaches the branch anyway, so the cycle counts as synced."""
-    repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], failing="backup-push")
-    )
-
-    with pytest.raises(SyncError, match="backup branch") as excinfo:
-        sync_once(repo)
-
-    assert "overwrite-push" in fake_git.keys
-    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
-    assert excinfo.value.synced is True
-
-
-def test_a_failed_backup_push_outranks_a_refused_overwrite(monkeypatch, repo):
-    """Test the status shows the work is not safe, not only the conflict."""
-    repo.git_dir.mkdir(parents=True)
-
-    def run(command, timeout, env=None):
-        if command_key(command) == "overwrite-push":
-            return subprocess.CompletedProcess(command, 1, "", "protected branch")
-        return fake_git.run(command, timeout, env)
-
-    fake_git = FakeGit(incoming=1, conflicts=["a.txt"], failing="backup-push")
-    monkeypatch.setattr(command_module, "run_git", run)
-
-    with pytest.raises(SyncError, match=r"backup branch.*a\.txt.*protected") as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
-    assert excinfo.value.synced is False
-
-
-def test_the_backup_branch_stays_the_same_across_cycles(monkeypatch, repo):
-    """Test one workspace always pushes to the same backup branch."""
-    repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(monkeypatch, FakeGit(incoming=1, failing="merge"))
-
-    for _ in range(2):
-        with pytest.raises(SyncError):
-            sync_once(repo)
-
-    pushes = [
-        command[-1] for command in fake_git.commands
-        if command_key(command) == "backup-push"
-    ]
-    assert len(pushes) == 2 and pushes[0] == pushes[1]
-
-
 def test_sync_once_stops_after_the_commit_when_asked_to(monkeypatch, repo):
     """Test a stopping service starts no remote command after the commit."""
     fake_git = install_fake_git(
@@ -146,11 +56,10 @@ def test_sync_once_stops_after_the_commit_when_asked_to(monkeypatch, repo):
     stop_event = threading.Event()
     stop_event.set()
 
-    with pytest.raises(SyncStopped, match="before it could back up"):
+    with pytest.raises(SyncStopped, match="before it could pull"):
         sync_once(repo, stop_event)
 
     assert "commit" in fake_git.keys
-    assert "backup-push" not in fake_git.keys
     assert "fetch" not in fake_git.keys
 
 
@@ -209,21 +118,3 @@ def _subcommand_index(command):
     while command[index].startswith("-"):
         index += 2 if command[index] in ("-c", "-C") else 1
     return index
-
-
-def test_a_failed_backup_push_outranks_a_failed_push(monkeypatch, repo):
-    """Test a push that fails after a failed backup still reports backup_failed."""
-    repo.git_dir.mkdir(parents=True)
-    fake_git = FakeGit(outgoing=1, failing="backup-push")
-
-    def run(command, timeout, env=None):
-        if command_key(command) == "push":
-            return subprocess.CompletedProcess(command, 1, "", "fatal: push refused")
-        return fake_git.run(command, timeout, env)
-
-    monkeypatch.setattr(command_module, "run_git", run)
-
-    with pytest.raises(SyncError, match="backup branch.*push refused") as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED

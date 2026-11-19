@@ -27,7 +27,7 @@ _PLAIN_KEYS = {
 }
 
 #: Keys of the commands that talk to the remote.
-_REMOTE_KEYS = {"fetch", "push", "backup-push", "overwrite-push"}
+_REMOTE_KEYS = {"fetch", "push", "overwrite-push"}
 
 #: What ``git rev-parse --verify`` prints for a ref it finds.
 FAKE_COMMIT = "c0ffee" * 6 + "c0ff"
@@ -52,9 +52,6 @@ def command_key(command):
     """Name the git command in a way the tests can assert on."""
     if "rev-list" in command:
         return "incoming" if command[-1].startswith("HEAD..") else "outgoing"
-
-    if "push" in command and command[-1].startswith("+"):
-        return "backup-push"
 
     for word, argument, key in _ARGUMENT_KEYS:
         if word in command and argument in command:

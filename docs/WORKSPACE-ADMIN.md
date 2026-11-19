@@ -212,24 +212,23 @@ The status shows the reason in `last_error.kind`:
 | `network`, `timeout` | GitHub or GitLab cannot be reached. The backup tries again by itself. |
 | `remote_changed` | Someone pushed to the repository while the backup was solving a conflict. The backup tries again by itself. |
 | `overwrite_refused` | The repository does not allow force-pushes to your branch, so a conflict could not be solved. Allow force-pushes to the branch, or open a terminal in `/workspace/assets/private`, run `git merge origin/main`, fix the files and commit. |
-| `backup_failed` | The repository refused the backup branch `backup/<workspace-id>`. Check that the token may push to it. |
 
-Your changes are pushed to `backup/<workspace-id>` before a merge, so they
-are not lost in a conflict.
+While the status shows `overwrite_refused`, your changes are saved in the
+workspace, but not on GitHub or GitLab.
 
 ### When you and the repository changed the same file
 
 You do not need to do anything. Your version wins: the backup replaces the
 branch in the repository with yours. The repository's version is saved
-first, on a branch named like
-`remote-backup/<workspace-id>/20261119T101530Z`, and the log names it. The
-status shows the time in `last_remote_overwrite`.
+first, on a branch named like `remote-backup/user1/20261119T101530Z`,
+where `user1` is your username, and the log names it. The status shows
+the time in `last_remote_overwrite`.
 
 To get a file back from that branch, open a terminal in
 `/workspace/assets/private` and run:
 
 ```bash
-git fetch origin remote-backup/<workspace-id>/<time>
+git fetch origin remote-backup/<username>/<time>
 git checkout FETCH_HEAD -- notes.md
 ```
 

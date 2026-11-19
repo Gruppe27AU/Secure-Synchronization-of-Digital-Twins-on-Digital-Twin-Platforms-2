@@ -9,7 +9,6 @@ FastAPI service for workspace service discovery and management.
 - Command-line interface for standalone operation
 - Periodic git backup - commits, pulls and pushes the workspace's git assets
   every five minutes by default, so users never run a git command themselves
-- The work is pushed to the workspace's own backup branch every cycle
 - On a merge conflict the workspace's branch replaces the remote's, so the
   workspace stays the one true version; the remote's version is saved
   first on a `remote-backup/` branch, in the same atomic push (see
@@ -46,10 +45,10 @@ src/admin/
         ├── auth.py               # HTTP auth header (in the environment), https only
         ├── errors.py             # Status kinds, and sorting failures by kind
         ├── clone.py              # Clone a single RepoConfig
-        ├── sync.py               # One cycle: commit, back up, pull, push
+        ├── sync.py               # One cycle: commit, pull, push
         ├── commit.py             # Commit the user's changes
         ├── pull.py               # Fetch and merge, or fast-forward
-        ├── push.py               # Push, and back up to backup/<id>
+        ├── push.py               # Push, and replace the remote's branch
         ├── refs.py               # Ref names and refspecs of the branch
         ├── busy.py               # Whether the user is busy with the repository
         ├── checks.py             # What is checked in the files to commit

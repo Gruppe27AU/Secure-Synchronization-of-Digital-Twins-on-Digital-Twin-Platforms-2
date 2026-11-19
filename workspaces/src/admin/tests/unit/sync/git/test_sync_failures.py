@@ -10,7 +10,6 @@ import threading
 
 import pytest
 
-from admin.sync.git import push
 from admin.sync.git.sync import sync_once, SyncStopped
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
@@ -23,14 +22,14 @@ from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
 
 
 def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):
-    """Test fetch and both pushes may take longer than the local commands."""
+    """Test fetch and push may take longer than the local commands."""
     fake_git = install_fake_git(
         monkeypatch, FakeGit(status_output=" M file.txt", incoming=1, outgoing=1)
     )
 
     sync_once(repo)
 
-    remote = ("fetch", "push", "backup-push")
+    remote = ("fetch", "push")
     for key, timeout in zip(fake_git.keys, fake_git.timeouts):
         expected = REMOTE_TIMEOUT_SECONDS if key in remote else LOCAL_TIMEOUT_SECONDS
         assert timeout == expected, key
@@ -65,7 +64,7 @@ def test_a_command_that_times_out_raises_sync_error(
 
 
 def test_an_unreachable_remote_is_reported_as_a_network_failure(monkeypatch, repo):
-    """Test a remote that cannot be reached gets its own kind, not backup_failed."""
+    """Test a remote that cannot be reached gets its own kind."""
     repo.git_dir.mkdir(parents=True)
     install_fake_git(
         monkeypatch,
@@ -126,7 +125,7 @@ def test_a_failed_overwrite_ends_the_cycle_naming_the_conflict(
     )
     saved = []
 
-    with pytest.raises(SyncError, match=r"a\.txt.*backup/") as excinfo:
+    with pytest.raises(SyncError, match=r"a\.txt.*replace branch main") as excinfo:
         sync_once(repo, on_overwrite=saved.append)
 
     assert excinfo.value.kind is kind
@@ -181,29 +180,6 @@ def test_sync_once_leaves_an_unfinished_merge_alone(monkeypatch, repo):
     assert fake_git.keys == []
 
 
-def test_a_pull_that_fails_for_good_names_the_backup_branch(monkeypatch, repo):
-    """Test the failure says which backup branch holds the work."""
-    repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(
-        monkeypatch,
-        FakeGit(
-            incoming=1,
-            failing="merge",
-            failure_message="fatal: refusing to merge unrelated histories",
-        ),
-    )
-
-    with pytest.raises(SyncError, match="on branch backup/") as excinfo:
-        sync_once(repo)
-
-    assert excinfo.value.kind is SyncErrorKind.PULL_FAILED
-    workspace = (repo.git_dir / push.WORKSPACE_ID_FILE).read_text().strip()
-    assert fake_git.command_for("backup-push")[-2:] == [
-        "origin",
-        f"+refs/heads/main:refs/heads/backup/{workspace}",
-    ]
-
-
 @pytest.mark.parametrize(
     ("message", "kind"),
     [
@@ -213,7 +189,7 @@ def test_a_pull_that_fails_for_good_names_the_backup_branch(monkeypatch, repo):
     ],
 )
 def test_a_pull_that_may_recover_is_reported_as_it_is(monkeypatch, repo, message, kind):
-    """Test a rejected token or a network failure is not a pull or backup failure."""
+    """Test a rejected token or a network failure is not a pull failure."""
     repo.git_dir.mkdir(parents=True)
     install_fake_git(monkeypatch, FakeGit(remote_failure=message))
 
@@ -246,7 +222,7 @@ def test_a_branch_that_disappeared_from_the_remote_is_a_pull_failure(
 ):
     """Test a branch renamed or deleted on the forge is a lasting pull failure."""
     repo.git_dir.mkdir(parents=True)
-    fake_git = install_fake_git(
+    install_fake_git(
         monkeypatch,
         FakeGit(failing="fetch", failure_message="fatal: couldn't find remote ref main"),
     )
@@ -255,4 +231,3 @@ def test_a_branch_that_disappeared_from_the_remote_is_a_pull_failure(
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.PULL_FAILED
-    assert "backup-push" in fake_git.keys

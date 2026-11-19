@@ -14,9 +14,8 @@ from admin.sync.git import push as push_module
 from admin.sync.git.push import (
     overwrite_remote,
     push_if_ahead,
-    push_to_backup_branch,
     remote_backup_branch,
-    workspace_id,
+    workspace_user,
 )
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
@@ -152,47 +151,16 @@ def test_an_unborn_branch_has_nothing_to_push(monkeypatch, repo):
     assert "push" not in fake_git.keys
 
 
-def test_no_backup_before_the_branch_is_on_the_remote(monkeypatch, repo):
-    """Test an empty remote gets the configured branch first, so it becomes the default."""
-    fake_git = install_fake_git(
-        monkeypatch, FakeGit(missing_refs={"refs/remotes/origin/main"})
-    )
-
-    assert push_to_backup_branch(repo) is None
-    assert "backup-push" not in fake_git.keys
-
-
-@pytest.mark.parametrize(
-    ("message", "kind"),
-    [
-        ("! [remote rejected] (pre-receive hook declined)", SyncErrorKind.BACKUP_FAILED),
-        ("fatal: Authentication failed for 'https://x/'", SyncErrorKind.AUTH_FAILED),
-        ("fatal: unable to access 'https://x/': Connection refused", SyncErrorKind.NETWORK),
-    ],
-)
-def test_a_failed_backup_push_keeps_a_kind_the_user_can_act_on(
-    monkeypatch, repo, message, kind
-):
-    """Test only a refused push is backup_failed; a token or network failure stays itself."""
-    repo.git_dir.mkdir(parents=True)
-    install_fake_git(monkeypatch, FakeGit(failing="backup-push", failure_message=message))
-
-    with pytest.raises(SyncError, match="backup branch") as excinfo:
-        push_to_backup_branch(repo)
-
-    assert excinfo.value.kind is kind
-
-
 def test_overwrite_remote_backs_up_and_replaces_in_one_atomic_push(monkeypatch, repo):
     """Test the remote's commit is saved and the branch forced only under a lease."""
-    repo.git_dir.mkdir(parents=True)
     moment = datetime(2026, 11, 19, 10, 15, 30, tzinfo=timezone.utc)
     monkeypatch.setattr(push_module, "_utc_now", lambda: moment)
+    monkeypatch.setenv("MAIN_USER", "user1")
     fake_git = install_fake_git(monkeypatch, FakeGit())
 
     branch = overwrite_remote(repo)
 
-    assert branch == f"remote-backup/{workspace_id(repo)}/20261119T101530Z"
+    assert branch == "remote-backup/user1/20261119T101530Z"
     command = fake_git.command_for("overwrite-push")
     assert "--atomic" in command
     assert f"--force-with-lease=refs/heads/main:{FAKE_COMMIT}" in command
@@ -207,9 +175,8 @@ def test_overwrite_remote_backs_up_and_replaces_in_one_atomic_push(monkeypatch, 
     assert fake_git.command_for("ref")[-1] == "refs/remotes/origin/main^{commit}"
 
 
-def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch, repo):
+def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch):
     """Test a later conflict never replaces the remote's earlier backup."""
-    repo.git_dir.mkdir(parents=True)
     moments = iter(
         [
             datetime(2026, 11, 19, 10, 0, 0, tzinfo=timezone.utc),
@@ -218,7 +185,24 @@ def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch, repo):
     )
     monkeypatch.setattr(push_module, "_utc_now", lambda: next(moments))
 
-    assert remote_backup_branch(repo) != remote_backup_branch(repo)
+    assert remote_backup_branch() != remote_backup_branch()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("user1", "user1"),
+        ("dtaas-user", "dtaas-user"),
+        ("", "workspace"),
+        ("a..b", "workspace"),
+        ("-x", "workspace"),
+    ],
+)
+def test_the_branch_names_the_user_when_git_allows_it(monkeypatch, value, expected):
+    """Test MAIN_USER names the branch, and an unset or unsafe one falls back."""
+    monkeypatch.setenv("MAIN_USER", value)
+
+    assert workspace_user() == expected
 
 
 @pytest.mark.parametrize(
@@ -238,7 +222,6 @@ def test_a_failed_overwrite_keeps_a_kind_the_user_can_act_on(
     monkeypatch, repo, message, kind
 ):
     """Test a moved remote, a protected branch, a token and the network are told apart."""
-    repo.git_dir.mkdir(parents=True)
     install_fake_git(
         monkeypatch, FakeGit(failing="overwrite-push", failure_message=message)
     )

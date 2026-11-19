@@ -67,8 +67,7 @@ class RepoStatus:
 
     The last error is kept after a later success, so comparing
     ``last_success`` with ``last_error_at`` tells whether it still applies.
-    The two are equal when the configured branch was synced but the backup
-    push failed. ``last_remote_overwrite`` is when a merge conflict last
+    ``last_remote_overwrite`` is when a merge conflict last
     made the workspace's branch replace the remote's.
     """
 
@@ -212,22 +211,18 @@ class SyncStatus:
                 current, last_remote_overwrite=self._clock()
             )
 
-    def record_failure(
-        self, repo_name: str, kind: SyncErrorKind, synced: bool = False
-    ) -> None:
+    def record_failure(self, repo_name: str, kind: SyncErrorKind) -> None:
         """
         Record that synchronizing a repository failed.
 
         Args:
             repo_name: Name of the repository.
             kind: Why it failed.
-            synced: The configured branch is up to date anyway, so
-                ``last_success`` moves too.
         """
-        self._record_failure(repo_name, kind, RepoState.SYNCING, synced)
+        self._record_failure(repo_name, kind, RepoState.SYNCING)
 
     def _record_failure(
-        self, repo_name: str, kind: SyncErrorKind, state: RepoState, synced: bool = False
+        self, repo_name: str, kind: SyncErrorKind, state: RepoState
     ) -> None:
         """Record a failed attempt of either kind."""
         with self._lock:
@@ -235,7 +230,6 @@ class SyncStatus:
             current = self._repos.get(repo_name, RepoStatus())
             self._repos[repo_name] = replace(
                 current,
-                last_success=now if synced else current.last_success,
                 state=state,
                 last_attempt=now,
                 last_error_kind=kind,

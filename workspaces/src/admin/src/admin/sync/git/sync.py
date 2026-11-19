@@ -1,10 +1,10 @@
 """
 One backup cycle for one cloned repository.
 
-- ``sync``: commit, push to the backup branch, merge the remote, push. A
-  conflict aborts the merge, and the workspace's branch replaces the
-  remote's (:func:`admin.sync.git.push.overwrite_remote`); the remote's
-  version is kept on a ``remote-backup/`` branch.
+- ``sync``: commit, merge the remote, push. A conflict aborts the merge,
+  and the workspace's branch replaces the remote's
+  (:func:`admin.sync.git.push.overwrite_remote`); the remote's version is
+  kept on a ``remote-backup/`` branch.
 - ``pull``: fast-forward only (:func:`admin.sync.git.pull.pull_only`).
 
 The commit identity and the ``Authorization`` header are passed per
@@ -14,14 +14,13 @@ command, never written into the repository.
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
 
 from admin.sync.git.checks import MAX_FILE_BYTES
 from admin.sync.git.commit import HeldBack, commit_local_changes
 from admin.config.config import RepoConfig, SyncMode
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.pull import pull_changes, pull_only
-from admin.sync.git.push import overwrite_remote, push_if_ahead, push_to_backup_branch
+from admin.sync.git.push import overwrite_remote, push_if_ahead
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +54,9 @@ def _stop_if_requested(
         )
 
 
-def _pull(repo: RepoConfig, backup: str | None) -> bool:
+def _pull(repo: RepoConfig) -> bool:
     """
-    Pull; on a conflict or lasting failure, say where the work is.
-
-    Args:
-        backup: Backup branch pushed to this cycle, or None.
+    Pull, reporting a lasting failure as ``pull_failed``.
 
     Raises:
         SyncError: As :func:`admin.sync.git.pull.pull_changes`, with
@@ -69,19 +65,9 @@ def _pull(repo: RepoConfig, backup: str | None) -> bool:
     try:
         return pull_changes(repo)
     except SyncError as error:
-        if error.kind not in (SyncErrorKind.GIT_FAILED, SyncErrorKind.MERGE_CONFLICT):
+        if error.kind is not SyncErrorKind.GIT_FAILED:
             raise
-        saved = (
-            f"; the local work is on branch {backup}"
-            if backup
-            else "; the local work is not pushed anywhere"
-        )
-        kind = (
-            SyncErrorKind.MERGE_CONFLICT
-            if error.kind is SyncErrorKind.MERGE_CONFLICT
-            else SyncErrorKind.PULL_FAILED
-        )
-        raise SyncError(f"{error}{saved}", kind) from error
+        raise SyncError(str(error), SyncErrorKind.PULL_FAILED) from error
 
 
 def _blocked_message(repo: RepoConfig, marked: list[str], too_large: list[str]) -> str:
@@ -129,26 +115,10 @@ def _held_back_in_the_way(
     return blocked
 
 
-@dataclass
-class _Backup:
-    """The backup push's outcome: the branch pushed to, or why it failed."""
-
-    branch: str | None = None
-    error: SyncError | None = None
-
-
-def _back_up(repo: RepoConfig) -> _Backup:
-    """Push to the backup branch; a failure is kept, so the cycle goes on."""
-    try:
-        return _Backup(branch=push_to_backup_branch(repo))
-    except SyncError as error:
-        return _Backup(error=error)
-
-
-def _merge(repo: RepoConfig, backup: str | None, held: HeldBack | None) -> bool:
+def _merge(repo: RepoConfig, held: HeldBack | None) -> bool:
     """Pull; a held-back file in the way is named instead of git's error."""
     try:
-        return _pull(repo, backup)
+        return _pull(repo)
     except SyncError as error:
         blocked = _held_back_in_the_way(repo, error, held)
         if blocked:
@@ -176,7 +146,6 @@ def _overwrite(
 def _merge_or_overwrite(
     repo: RepoConfig,
     stop_event: threading.Event | None,
-    backup: _Backup,
     held: HeldBack | None,
     on_overwrite: OnOverwrite | None,
 ) -> bool:
@@ -187,7 +156,7 @@ def _merge_or_overwrite(
         True if anything was merged or pushed.
     """
     try:
-        merged = _merge(repo, backup.branch, held)
+        merged = _merge(repo, held)
     except SyncError as error:
         if error.kind is not SyncErrorKind.MERGE_CONFLICT:
             raise
@@ -196,25 +165,6 @@ def _merge_or_overwrite(
         return True
     _stop_if_requested(repo, stop_event, "push")
     return push_if_ahead(repo) or merged
-
-
-def _merge_and_push(
-    repo: RepoConfig,
-    stop_event: threading.Event | None,
-    backup: _Backup,
-    held: HeldBack | None,
-    on_overwrite: OnOverwrite | None,
-) -> bool:
-    """
-    As :func:`_merge_or_overwrite`; a refused backup push outranks any
-    failure here, since the work is then only in the container.
-    """
-    try:
-        return _merge_or_overwrite(repo, stop_event, backup, held, on_overwrite)
-    except SyncError as error:
-        if backup.error and backup.error.kind is SyncErrorKind.BACKUP_FAILED:
-            raise SyncError(f"{backup.error}; {error}", SyncErrorKind.BACKUP_FAILED) from error
-        raise
 
 
 def sync_once(
@@ -234,8 +184,7 @@ def sync_once(
         True if a commit, merge or push to the configured branch was made.
 
     Raises:
-        SyncError: If a step fails, or at the end if the backup push failed
-            (``synced`` when nothing was held back) or files were held back.
+        SyncError: If a step fails, or at the end if files were held back.
         SyncStopped: If ``stop_event`` was set before the cycle finished.
     """
     if repo.mode is SyncMode.PULL:
@@ -245,13 +194,8 @@ def sync_once(
         committed = commit_local_changes(repo)
     except HeldBack as error:
         committed, held = error.committed, error
-    _stop_if_requested(repo, stop_event, "back up")
-    backup = _back_up(repo)
     _stop_if_requested(repo, stop_event, "pull")
-    changed = _merge_and_push(repo, stop_event, backup, held, on_overwrite)
-    if backup.error:
-        error = backup.error
-        raise SyncError(str(error), error.kind, synced=held is None) from error
+    changed = _merge_or_overwrite(repo, stop_event, held, on_overwrite)
     if held:
         raise held
     return committed or changed

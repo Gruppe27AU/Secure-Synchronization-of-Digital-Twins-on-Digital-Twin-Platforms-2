@@ -14,7 +14,6 @@ import pytest
 from admin.sync.git import command as command_module
 from admin.sync.git import push as push_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.push import backup_branch
 from admin.sync.git.sync import sync_once
 from tests.helpers.git_world import NOTEBOOK, git, write
 
@@ -188,26 +187,16 @@ def test_a_push_during_the_overwrite_is_never_lost(world, monkeypatch, ticking_c
 
 
 def test_a_remote_that_refuses_force_pushes_keeps_its_branch(world):
-    """Test a protected branch stops the cycle, and the work stays backed up."""
+    """Test a protected branch stops the cycle, and the work stays committed."""
     git(world.remote, "config", "receive.denyNonFastForwards", "true")
     path = _both_edit(world)
     remote_main = _sha(world.remote, "main")
 
-    with pytest.raises(SyncError, match=rf"{path}.*backup/") as excinfo:
+    with pytest.raises(SyncError, match=rf"(?s){path}.*allow force-pushes") as excinfo:
         sync_once(world.workspace)
 
     assert excinfo.value.kind is SyncErrorKind.OVERWRITE_REFUSED
     assert _sha(world.remote, "main") == remote_main
     assert not _remote_backups(world)
-    assert _show(world, backup_branch(world.workspace), path).startswith("LOCAL1\n")
-
-
-def test_the_backup_branch_is_pushed_every_cycle(world):
-    """Test the work reaches the backup branch without anything going wrong."""
-    write(world.workspace.work_tree / "thesis.md", "work\n")
-
-    assert sync_once(world.workspace) is True
-
-    branch = backup_branch(world.workspace)
-    assert _show(world, branch, "thesis.md") == "work\n"
-    assert world.remote_file("thesis.md") == "work\n"
+    committed = git(world.workspace.work_tree, "show", f"main:{path}")
+    assert committed.startswith("LOCAL1\n")

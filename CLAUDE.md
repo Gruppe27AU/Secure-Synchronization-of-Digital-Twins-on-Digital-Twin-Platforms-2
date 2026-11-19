@@ -358,7 +358,7 @@ The backup lives in two packages, and the tests mirror them under
   apart; starts one locally on an empty remote; on startup restores a
   missing or empty working tree; writes back a lost `.git` file
 - `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
-  `private`): commit, back up, pull, push; on a conflict the workspace's
+  `private`): commit, pull, push; on a conflict the workspace's
   branch replaces the remote's (`push.overwrite_remote`).
   `MODE = "pull"` (default for `common`): fast-forward only, never commit
   or push
@@ -366,10 +366,10 @@ The backup lives in two packages, and the tests mirror them under
   files (`HeldBack`)
 - `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
   (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
-- `push.py`: pushes the branch, and force-pushes it to the workspace's own
-  `backup/<workspace-id>`; after a conflict, `overwrite_remote()` saves the
-  remote's branch on `remote-backup/<workspace-id>/<time>` and force-pushes
-  the workspace's over it, in one atomic push with `--force-with-lease`
+- `push.py`: pushes the branch; after a conflict, `overwrite_remote()`
+  saves the remote's branch on `remote-backup/<user>/<time>` (`<user>` is
+  `$MAIN_USER`, else `workspace`) and force-pushes the workspace's over
+  it, in one atomic push with `--force-with-lease`
 - `refs.py`: ref names and refspecs of the configured branch
 - `busy.py`: whether the user is busy with the repository, so no cycle
   starts: a missing working tree, an unfinished merge, another branch or

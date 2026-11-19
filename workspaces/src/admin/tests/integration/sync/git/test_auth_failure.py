@@ -79,7 +79,7 @@ def test_an_expired_token_is_reported_as_an_auth_failure(
     [("rejecting", SyncErrorKind.AUTH_FAILED), ("unreachable", SyncErrorKind.NETWORK)],
 )
 def test_a_cycle_reports_why_the_remote_failed(world, server_url, monkeypatch, server, kind):
-    """Test a rejected token or an unreachable remote is not reported as backup_failed."""
+    """Test a rejected token or an unreachable remote gets its own kind."""
     monkeypatch.setattr(auth, "PROTOCOL_OPTIONS", [])
     base = server_url if server == "rejecting" else "http://127.0.0.1:1"
     repo = replace(world.workspace, repo_url=f"{base}/me/priv.git", token="expired-token")

@@ -142,22 +142,6 @@ def test_sync_all_records_success_and_failure_kinds(monkeypatch):
     assert "secret stderr" not in str(status.snapshot())
 
 
-def test_sync_all_records_a_synced_failure_as_a_success_too(monkeypatch):
-    """Test a refused backup push does not hold back last_success."""
-
-    def fake_sync_once(_repo, _stop_event, **_kwargs):
-        raise SyncError("backup refused", SyncErrorKind.BACKUP_FAILED, synced=True)
-
-    monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
-    status = SyncStatus()
-
-    scheduler.sync_all([make_repo("private")], status)
-
-    repo = status.snapshot()["repositories"]["private"]
-    assert repo["last_error"]["kind"] == "backup_failed"
-    assert repo["last_success"] is not None
-
-
 def test_sync_all_records_an_overwrite_of_the_remote(monkeypatch):
     """Test a conflict that replaced the remote's branch shows in the status."""
 
