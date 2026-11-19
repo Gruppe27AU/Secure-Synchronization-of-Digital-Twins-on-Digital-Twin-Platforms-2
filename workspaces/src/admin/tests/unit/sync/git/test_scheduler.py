@@ -146,7 +146,7 @@ def test_sync_all_records_an_overwrite_of_the_remote(monkeypatch):
     """Test a conflict that replaced the remote's branch shows in the status."""
 
     def fake_sync_once(_repo, _stop_event, on_overwrite=None):
-        on_overwrite("remote-backup/abc/20261119T101530Z")
+        on_overwrite("remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d")
         return True
 
     monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)

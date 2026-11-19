@@ -367,8 +367,8 @@ The backup lives in two packages, and the tests mirror them under
 - `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
   (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
 - `push.py`: pushes the branch; after a conflict, `overwrite_remote()`
-  saves the remote's branch on `remote-backup/<user>/<time>` (`<user>` is
-  `$MAIN_USER`, else `workspace`) and force-pushes the workspace's over
+  saves the remote's branch on `remote-backup/<time>-<hash>` (UTC time,
+  short hash of the saved commit) and force-pushes the workspace's over
   it, in one atomic push with `--force-with-lease`
 - `refs.py`: ref names and refspecs of the configured branch
 - `busy.py`: whether the user is busy with the repository, so no cycle

@@ -684,16 +684,17 @@ the two, so the backup aborts the merge, and the workspace's branch
 replaces the remote's:
 
 ```text
-WARNING admin.sync.git.push Repository 'private': the workspace's version replaced branch main on the remote; the remote's version is on branch remote-backup/user1/20261119T101530Z
+WARNING admin.sync.git.push Repository 'private': the workspace's version replaced branch main on the remote; the remote's version is on branch remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d
 ```
 
 In one cycle:
 
 - the merge is aborted, so the working tree keeps the user's version
 - the remote's branch, as last fetched, is pushed to a new branch
-  `remote-backup/<user>/<time>`, with every commit it held. `<user>` is
-  `$MAIN_USER`, so the branch shows which workspace overwrote the remote;
-  without it, or when it cannot be part of a branch name, it is `workspace`
+  `remote-backup/<time>-<hash>`, with every commit it held. `<time>` is
+  UTC, so the branches sort by time; `<hash>` is the saved commit's short
+  hash, as the forge shows it, so two versions saved in the same second
+  still get branches of their own
 - the workspace's branch is force-pushed over the remote's, so the
   configured branch on the remote is exactly the workspace's: no merge
   commit, and nothing of the remote's version left on it
@@ -766,7 +767,7 @@ clone. In the workspace:
 
 ```bash
 cd /workspace/assets/private
-git fetch origin remote-backup/user1/20261119T101530Z
+git fetch origin remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d
 git show FETCH_HEAD:notes.md               # read the remote's notes.md
 git checkout FETCH_HEAD -- notes.md        # or take it over whole
 ```
@@ -1524,10 +1525,10 @@ up" when nothing was sent.
   before the pull
 - `backup_failed` is gone, and with it the `synced` flag that let a failed
   cycle count as a success
-- `remote-backup/` branches are named by `$MAIN_USER` instead of the id,
-  so the forge shows who replaced the branch:
-  `remote-backup/user1/20261119T101530Z`. `workspace_user()` falls back to
-  `workspace` when the variable is unset or not safe in a branch name
+- `remote-backup/` branches are named by the time and the saved commit's
+  short hash instead of the id: `remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d`.
+  A user name was tried first, but the branch holds the version that was
+  overwritten, usually someone else's, so the name read the wrong way round
 
 While the configured branch cannot be pushed, the work is now only in the
 container. The status says so through `pull_failed` or `overwrite_refused`.
@@ -1646,7 +1647,7 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
     merge; `pull_only()` fast-forwards a `pull` repository
   - `sync/git/push.py`: `push_if_ahead()` pushes the branch;
     `overwrite_remote()` saves the remote's branch on
-    `remote-backup/<user>/<time>` and force-pushes the workspace's over it,
+    `remote-backup/<time>-<hash>` and force-pushes the workspace's over it,
     in one atomic push
   - `sync/git/sync.py`: `sync_once()` runs one cycle. For a `sync` repository:
     commit, pull, push; on a conflict, `overwrite_remote()` in

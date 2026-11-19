@@ -220,15 +220,17 @@ workspace, but not on GitHub or GitLab.
 
 You do not need to do anything. Your version wins: the backup replaces the
 branch in the repository with yours. The repository's version is saved
-first, on a branch named like `remote-backup/user1/20261119T101530Z`,
-where `user1` is your username, and the log names it. The status shows
-the time in `last_remote_overwrite`.
+first, on a branch named like
+`remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d`: the time in UTC, and
+the short id of the saved commit, as GitHub and GitLab show it. The log
+names the branch, and the status shows the time in
+`last_remote_overwrite`.
 
 To get a file back from that branch, open a terminal in
 `/workspace/assets/private` and run:
 
 ```bash
-git fetch origin remote-backup/<username>/<time>
+git fetch origin remote-backup/<time>-<id>
 git checkout FETCH_HEAD -- notes.md
 ```
 

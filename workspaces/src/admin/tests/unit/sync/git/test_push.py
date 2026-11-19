@@ -15,7 +15,6 @@ from admin.sync.git.push import (
     overwrite_remote,
     push_if_ahead,
     remote_backup_branch,
-    workspace_user,
 )
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
@@ -155,12 +154,11 @@ def test_overwrite_remote_backs_up_and_replaces_in_one_atomic_push(monkeypatch, 
     """Test the remote's commit is saved and the branch forced only under a lease."""
     moment = datetime(2026, 11, 19, 10, 15, 30, tzinfo=timezone.utc)
     monkeypatch.setattr(push_module, "_utc_now", lambda: moment)
-    monkeypatch.setenv("MAIN_USER", "user1")
     fake_git = install_fake_git(monkeypatch, FakeGit())
 
     branch = overwrite_remote(repo)
 
-    assert branch == "remote-backup/user1/20261119T101530Z"
+    assert branch == f"remote-backup/2026-11-19_10-15-30-UTC-{FAKE_COMMIT[:7]}"
     command = fake_git.command_for("overwrite-push")
     assert "--atomic" in command
     assert f"--force-with-lease=refs/heads/main:{FAKE_COMMIT}" in command
@@ -185,24 +183,20 @@ def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch):
     )
     monkeypatch.setattr(push_module, "_utc_now", lambda: next(moments))
 
-    assert remote_backup_branch() != remote_backup_branch()
+    assert remote_backup_branch(FAKE_COMMIT) != remote_backup_branch(FAKE_COMMIT)
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("user1", "user1"),
-        ("dtaas-user", "dtaas-user"),
-        ("", "workspace"),
-        ("a..b", "workspace"),
-        ("-x", "workspace"),
-    ],
-)
-def test_the_branch_names_the_user_when_git_allows_it(monkeypatch, value, expected):
-    """Test MAIN_USER names the branch, and an unset or unsafe one falls back."""
-    monkeypatch.setenv("MAIN_USER", value)
+def test_two_versions_saved_in_the_same_second_get_branches_of_their_own(monkeypatch):
+    """Test the hash keeps two workspaces' conflicts apart within one second."""
+    moment = datetime(2026, 11, 19, 10, 15, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(push_module, "_utc_now", lambda: moment)
 
-    assert workspace_user() == expected
+    assert remote_backup_branch("a1b2c3d" + "0" * 33) == (
+        "remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d"
+    )
+    assert remote_backup_branch("a1b2c3d" + "0" * 33) != remote_backup_branch(
+        "e4f5a6b" + "0" * 33
+    )
 
 
 @pytest.mark.parametrize(

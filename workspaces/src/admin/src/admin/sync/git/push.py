@@ -4,8 +4,6 @@ workspace's after a merge conflict.
 """
 
 import logging
-import os
-import re
 from datetime import datetime, timezone
 
 from admin.sync.git.command import count_commits, ref_exists, resolve_commit, run_remote
@@ -16,17 +14,11 @@ from admin.sync.git.refs import local_branch, push_refspec, remote_ref
 logger = logging.getLogger(__name__)
 
 #: Prefix of the branches keeping the remote's version after a conflict,
-#: followed by the workspace's user and the time.
+#: followed by the time and the saved commit's short hash.
 REMOTE_BACKUP_BRANCH_PREFIX = "remote-backup/"
 
-#: Names the workspace's user in the branch; set in every workspace image.
-USER_VARIABLE = "MAIN_USER"
-
-#: Used when ``MAIN_USER`` is unset or not safe in a branch name.
-FALLBACK_USER = "workspace"
-
-#: A user name safe as one part of a branch name.
-_SAFE_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+#: Characters of the commit hash in the branch name, as forges show it.
+SHORT_HASH_LENGTH = 7
 
 #: git's reason when ``--force-with-lease`` finds the remote has moved.
 STALE_LEASE_MARKER = "stale info"
@@ -70,30 +62,16 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def workspace_user() -> str:
-    """Return ``$MAIN_USER``, or :data:`FALLBACK_USER` if unset or unsafe."""
-    user = os.environ.get(USER_VARIABLE, "")
-    if _SAFE_USER.fullmatch(user):
-        return user
-    if user:
-        logger.warning(
-            "%s=%r cannot be part of a branch name; using '%s'",
-            USER_VARIABLE,
-            user,
-            FALLBACK_USER,
-        )
-    return FALLBACK_USER
-
-
-def remote_backup_branch() -> str:
+def remote_backup_branch(commit: str) -> str:
     """
-    Return a new branch for the remote's version, for example
-    ``remote-backup/user1/20261119T101530Z``.
+    Return a new branch for the remote's version ``commit``, for example
+    ``remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d``.
 
-    Every conflict gets a branch of its own, so no earlier one is overwritten.
+    The time sorts the branches; the hash tells two saved versions apart and
+    matches what the forge shows for the commit.
     """
-    stamp = _utc_now().strftime("%Y%m%dT%H%M%SZ")
-    return f"{REMOTE_BACKUP_BRANCH_PREFIX}{workspace_user()}/{stamp}"
+    stamp = _utc_now().strftime("%Y-%m-%d_%H-%M-%S-UTC")
+    return f"{REMOTE_BACKUP_BRANCH_PREFIX}{stamp}-{commit[:SHORT_HASH_LENGTH]}"
 
 
 def overwrite_remote(repo: RepoConfig) -> str:
@@ -120,7 +98,7 @@ def overwrite_remote(repo: RepoConfig) -> str:
     local = local_branch(repo)
     try:
         remote_commit = resolve_commit(repo, f"refs/remotes/{remote_ref(repo)}")
-        branch = remote_backup_branch()
+        branch = remote_backup_branch(remote_commit)
         run_remote(
             repo,
             [

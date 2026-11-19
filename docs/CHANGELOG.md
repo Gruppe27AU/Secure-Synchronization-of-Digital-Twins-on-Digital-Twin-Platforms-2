@@ -12,9 +12,9 @@ The main changes made so far are listed here.
   be pushed (`pull_failed`, `overwrite_refused`), the work is committed but
   only in the container. Existing `backup/` branches on the remote are left
   alone and can be deleted
-* **`remote-backup/` branches are named by the user**, as
-  `remote-backup/<MAIN_USER>/<time>`, or `remote-backup/workspace/<time>`
-  when `MAIN_USER` is unset
+* **`remote-backup/` branches are named by the time and the saved
+  commit's short hash**, as `remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d`,
+  not `remote-backup/<workspace-id>/20261119T101530Z`
 * **A merge conflict now ends with the workspace's branch on the remote.**
   The merge is aborted, the remote's branch is saved on a new branch
   `remote-backup/<workspace-id>/<time>`, and the workspace's branch is
