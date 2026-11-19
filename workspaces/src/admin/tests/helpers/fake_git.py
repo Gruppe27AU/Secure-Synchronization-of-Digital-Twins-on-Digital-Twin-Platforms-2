@@ -1,15 +1,15 @@
 """
 Stand-in for git in the sync tests.
 
-:class:`FakeGit` replaces :func:`admin.git.run.runner.run_git` where
-:mod:`admin.git.run.command` uses it, records every command and answers it with
+:class:`FakeGit` replaces :func:`admin.sync.git.runner.run_git` where
+:mod:`admin.sync.git.command` uses it, records every command and answers it with
 canned results.
 """
 
 import subprocess
 from dataclasses import dataclass, field
 
-from admin.git.run import command as command_module
+from admin.sync.git import command as command_module
 
 
 #: Key for each git subcommand that is only ever run one way.
@@ -27,7 +27,10 @@ _PLAIN_KEYS = {
 }
 
 #: Keys of the commands that talk to the remote.
-_REMOTE_KEYS = {"fetch", "push", "backup-push"}
+_REMOTE_KEYS = {"fetch", "push", "overwrite-push"}
+
+#: What ``git rev-parse --verify`` prints for a ref it finds.
+FAKE_COMMIT = "c0ffee" * 6 + "c0ff"
 
 #: Subcommands run more than one way, told apart by one of their arguments.
 #: Checked before ``_PLAIN_KEYS``.
@@ -41,6 +44,7 @@ _ARGUMENT_KEYS = (
     ("diff", "--quiet", "staged-check"),
     ("merge", "--abort", "merge-abort"),
     ("merge", "--ff-only", "fast-forward"),
+    ("push", "--atomic", "overwrite-push"),
 )
 
 
@@ -48,9 +52,6 @@ def command_key(command):
     """Name the git command in a way the tests can assert on."""
     if "rev-list" in command:
         return "incoming" if command[-1].startswith("HEAD..") else "outgoing"
-
-    if "push" in command and command[-1].startswith("+"):
-        return "backup-push"
 
     for word, argument, key in _ARGUMENT_KEYS:
         if word in command and argument in command:
@@ -76,7 +77,7 @@ def _listing(paths):
 @dataclass
 class FakeGit:  # pylint: disable=too-many-instance-attributes
     """
-    Stands in for :func:`admin.git.run.runner.run_git` and records every git call.
+    Stands in for :func:`admin.sync.git.runner.run_git` and records every git call.
 
     Args:
         status_output: What ``git status --porcelain`` prints. Empty means
@@ -186,6 +187,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
             "incoming": str(self.incoming),
             "outgoing": str(self.outgoing),
             "head": self.head,
+            "ref": FAKE_COMMIT,
             "untracked-files": _listing(self.untracked),
             "modified-files": _listing(self.modified),
         }.get(key, "")
@@ -211,6 +213,6 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
 
 
 def install_fake_git(monkeypatch, fake_git):
-    """Make admin.git.repo.sync use the fake instead of real git."""
+    """Make admin.sync.git.sync use the fake instead of real git."""
     monkeypatch.setattr(command_module, "run_git", fake_git.run)
     return fake_git

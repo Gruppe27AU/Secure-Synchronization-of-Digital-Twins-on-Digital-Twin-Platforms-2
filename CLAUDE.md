@@ -309,18 +309,20 @@ The package is layered, and the test files mirror it:
   (tested by `tests/unit/test_services.py`)
 - `src/admin/main.py` - CLI entry point
   (tested by `tests/unit/test_main.py`)
-- `src/admin/git/` - Git backup of workspace directories
-- `src/admin/config/` - Service catalogue and other configuration data
+- `src/admin/config/` - What to back up: finding, creating and reading
+  `config.toml`
+- `src/admin/sync/git/` - Git backup of workspace directories
+- `src/admin/templates/` - Service catalogue (`services_template.json`)
 
 Dependencies point one way only: `main` → `api` → `services`.
 
-The `git/` package backs the workspace up to its remotes. It has four
-subpackages, and the tests mirror them under `tests/unit/git/` and
-`tests/integration/git/`. Dependencies point one way, `service` → `repo` →
-`run`/`setup`; `setup` and `run` only share their bottom modules,
-`setup/config.py` and `run/runner.py`, which import nothing from the package.
+The backup lives in two packages, and the tests mirror them under
+`tests/unit/config/`, `tests/unit/sync/git/` and
+`tests/integration/sync/git/`. Dependencies point one way, `sync/git` →
+`config`; `config/validate.py` uses only `sync/git/runner.py`.
+`config/config.py` and `sync/git/runner.py` import nothing from the package.
 
-`setup/`: what to back up
+`config/`: what to back up
 
 - `locate.py`: `discover_config()` chooses the config file,
   `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
@@ -335,7 +337,7 @@ subpackages, and the tests mirror them under `tests/unit/git/` and
 - `load.py`: reads `config.toml` and returns one `RepoConfig` per
   repository
 
-`run/`: running git
+`sync/git/`, running git:
 
 - `runner.py`: runs every git command with prompts off, empty stdin and a
   time limit, stopping an overrunning command and its child processes
@@ -349,22 +351,25 @@ subpackages, and the tests mirror them under `tests/unit/git/` and
 - `errors.py`: `SyncErrorKind`, `SyncError`, and `failure_kind()` sorting a
   failure into `auth_failed`, `network` or `git_failed`
 
-`repo/`: working on one repository, `sync` → `pull`/`push` → `commit` →
-`busy`/`checks`
+`sync/git/`, working on one repository, `sync` → `pull`/`push` → `commit`
+→ `busy`/`checks`:
 
 - `clone.py`: clones one repository, git directory and working tree kept
   apart; starts one locally on an empty remote; on startup restores a
   missing or empty working tree; writes back a lost `.git` file
 - `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
-  `private`): commit, back up, pull, push; a conflict ends the cycle.
+  `private`): commit, pull, push; on a conflict the workspace's
+  branch replaces the remote's (`push.overwrite_remote`).
   `MODE = "pull"` (default for `common`): fast-forward only, never commit
   or push
 - `commit.py`: commits the user's changes, holding back large and marked
   files (`HeldBack`)
 - `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
   (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
-- `push.py`: pushes the branch, and force-pushes it to the workspace's own
-  `backup/<workspace-id>`
+- `push.py`: pushes the branch; after a conflict, `overwrite_remote()`
+  saves the remote's branch on `remote-backup/<time>-<hash>` (UTC time,
+  short hash of the saved commit) and force-pushes the workspace's over
+  it, in one atomic push with `--force-with-lease`
 - `refs.py`: ref names and refspecs of the configured branch
 - `busy.py`: whether the user is busy with the repository, so no cycle
   starts: a missing working tree, an unfinished merge, another branch or
@@ -372,7 +377,7 @@ subpackages, and the tests mirror them under `tests/unit/git/` and
 - `checks.py`: what is checked in the files about to be committed: mass
   deletion, files over 50 MiB, conflict markers, default excludes
 
-`service/`: running the backup in the service
+`sync/git/`, running the backup in the service:
 
 - `bootstrap.py`: called once from `main.cli()` on startup; creates a
   missing config file, or clones and starts the sync, on a background
@@ -382,8 +387,8 @@ subpackages, and the tests mirror them under `tests/unit/git/` and
   repository whose clone failed (`clone_and_record()`, also used on
   startup), and records each outcome in a `SyncStatus`
 - `status.py`: thread-safe record of the backup's `state` and, per
-  repository, its state, last attempt, success and error kind, served by
-  `/storage/status`
+  repository, its state, last attempt, success, error kind and last
+  overwrite of the remote's branch, served by `/storage/status`
 
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.
@@ -413,7 +418,7 @@ git directories in `.local/share/workspace-admin/<name>`, work trees in
 
 To add new services to the workspace:
 
-1. Edit `src/admin/src/admin/config/services_template.json`
+1. Edit `src/admin/src/admin/templates/services_template.json`
 2. Add service definition with name, description, and endpoint
 3. No code changes needed - template is read at runtime
 

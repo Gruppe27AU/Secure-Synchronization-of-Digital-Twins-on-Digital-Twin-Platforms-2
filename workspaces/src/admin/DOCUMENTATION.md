@@ -118,7 +118,8 @@ reachable through nginx.
       "last_error": {
         "kind": "auth_failed",
         "at": "2026-10-09T12:05:00+00:00"
-      }
+      },
+      "last_remote_overwrite": "2026-10-08T15:30:00+00:00"
     },
     "common": {
       "state": "clone_failed",
@@ -127,7 +128,8 @@ reachable through nginx.
       "last_error": {
         "kind": "network",
         "at": "2026-10-09T12:05:00+00:00"
-      }
+      },
+      "last_remote_overwrite": null
     }
   }
 }
@@ -156,9 +158,11 @@ read, with a `state` of its own:
 | `syncing` | Cloned, and backed up on every interval |
 
 - `last_error` is kept after a later success. If `last_success` is newer
-  than `last_error.at`, the error has since cleared. If the two are equal,
-  the configured branch is up to date but the backup push failed
-  (`backup_failed`)
+  than `last_error.at`, the error has since cleared
+- `last_remote_overwrite` is when a merge conflict last made the
+  workspace's branch replace the remote's (see
+  [Conflicts](#the-remote-changed-the-same-file)). It is not an error: that
+  cycle counts as a success
 - Every timestamp is `null` until the first attempt. The first backup runs
   one interval after startup
 - Timestamps are UTC, in ISO 8601
@@ -170,9 +174,9 @@ read, with a `state` of its own:
 | `auth_failed` | The remote rejected the credentials. Check `GIT_REPO_TOKEN` |
 | `network` | The remote could not be reached: unknown host, connection refused or timed out |
 | `timeout` | A git command ran out of time and was stopped (see [Time limits and prompts](#time-limits-and-prompts)) |
-| `pull_failed` | The configured branch cannot be pulled, for example after its history was rewritten or it was renamed on the forge. The work is on the backup branch (see [The branch cannot be pulled](#the-branch-cannot-be-pulled)) |
-| `merge_conflict` | The workspace and the remote changed the same file. Nothing was merged or pushed to the configured branch; the work is on the backup branch (see [Conflicts](#the-remote-changed-the-same-file)) |
-| `backup_failed` | The forge refused the push to the backup branch, for example by a rule on which branches may be created. If the rest of the cycle succeeded, the work is on the configured branch and `last_success` moves too; otherwise the newest work is only in the container. Reported before any other failure of the same cycle (see [The backup branch](#the-backup-branch)) |
+| `pull_failed` | The configured branch cannot be pulled, for example after its history was rewritten or it was renamed on the forge. The work stays committed, but only in the container (see [The branch cannot be pulled](#the-branch-cannot-be-pulled)) |
+| `remote_changed` | A merge conflict was found, but the remote's branch changed again before the workspace's could replace it. Nothing was overwritten; the next cycle tries again (see [Conflicts](#the-remote-changed-the-same-file)) |
+| `overwrite_refused` | A merge conflict was found, and the forge refused to let the workspace's branch replace the remote's, for example because the branch is protected from force-pushes. The work stays committed, but only in the container (see [Conflicts](#the-remote-changed-the-same-file)) |
 | `local_changes` | A local file the backup does not commit is in the way of the remote's changes, for example an edit in a pull-only repository (see [Pull-only repositories](#pull-only-repositories)) |
 | `operation_in_progress` | A merge, rebase, cherry-pick or revert is unfinished (see [Conflicts](#a-merge-or-rebase-you-started-is-unfinished)) |
 | `unresolved_conflicts` | Git still lists files as conflicted (see [Conflicts](#git-still-lists-files-as-conflicted)) |
@@ -223,7 +227,7 @@ curl http://localhost:8091/{path-prefix}
 
 ## Configuration
 
-The git backup reads one TOML file. `admin.git.setup.locate.discover_config()`
+The git backup reads one TOML file. `admin.config.locate.discover_config()`
 chooses it once, on startup, checking in order:
 
 1. `$WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
@@ -273,7 +277,7 @@ whole number (`300.0`, `"300"`, `true`), or is outside 1 to 86400, is
 reported as a warning and the default of 300 seconds is used instead:
 
 ```text
-WARNING admin.git.setup.load /workspace/.config/workspace-admin/config.toml: 'SYNC_INTERVAL_SECONDS' must be between 1 and 86400 seconds, got 0; using the default of 300 seconds
+WARNING admin.config.load /workspace/.config/workspace-admin/config.toml: 'SYNC_INTERVAL_SECONDS' must be between 1 and 86400 seconds, got 0; using the default of 300 seconds
 ```
 
 The upper limit keeps the backup frequent enough to be useful, and keeps
@@ -317,7 +321,7 @@ from an older version of the file, or a misspelt one, does not silently do
 nothing:
 
 ```text
-WARNING admin.git.setup.validate <path>: 'SYNC_INTERVAL' in the top level is not a known setting and has no effect; expected only SYNC_INTERVAL_SECONDS, assets
+WARNING admin.config.validate <path>: 'SYNC_INTERVAL' in the top level is not a known setting and has no effect; expected only SYNC_INTERVAL_SECONDS, assets
 ```
 
 This covers the keys earlier versions read: `HOME_DIR`, `WORKSPACE_DIR`,
@@ -352,7 +356,7 @@ warning gives the command to fix it. It is only a warning, because the
 permissions on a mounted volume are not always the user's to change.
 
 ```text
-WARNING admin.git.setup.validate /workspace/.config/workspace-admin/config.toml holds tokens but can be read or changed by other users (mode 644); restrict it with: chmod 600 /workspace/.config/workspace-admin/config.toml
+WARNING admin.config.validate /workspace/.config/workspace-admin/config.toml holds tokens but can be read or changed by other users (mode 644); restrict it with: chmod 600 /workspace/.config/workspace-admin/config.toml
 ```
 
 ### When the file is wrong
@@ -552,7 +556,7 @@ A failed clone is logged, recorded in the status as `clone_failed` with the
 reason as `last_error.kind`, and the service carries on:
 
 ```text
-ERROR admin.git.service.bootstrap Failed to clone for repository 'common': <git's message>
+ERROR admin.sync.git.bootstrap Failed to clone for repository 'common': <git's message>
 ```
 
 - Each repository is cloned on its own, so a failure in `common` does not
@@ -614,47 +618,6 @@ configured repository. One that is not cloned yet is cloned instead of
 backed up, on every interval until that succeeds. See
 [Git Backup Flow](#git-backup-flow) for what the backup does.
 
-### The backup branch
-
-Every cycle of a `sync` repository pushes the workspace's branch to a branch
-of its own on the remote, `backup/<workspace-id>`, right after the commit and
-before anything is pulled. Unless the forge refuses that push (see below),
-the newest work has left the container whatever happens to the pull:
-
-```text
-INFO admin.git.repo.push Backed up repository 'private' to branch backup/3f2a9c01d4e5
-```
-
-Only this workspace writes that branch, so the push is forced and cannot be
-refused for being behind. The id is made up once and kept in the git
-directory (`workspace-admin-id`), so it stays the same across restarts and
-differs between workspaces backing up to the same remote. The branch is not
-deleted automatically.
-
-On a remote that does not have the configured branch yet, such as a new,
-empty project, the backup push waits until the first ordinary push has
-created that branch. The forge makes the first branch it receives the
-project's default, and that must be the configured branch, not
-`backup/<workspace-id>`.
-
-The forge can still refuse the push, for example with a rule that limits
-which branches may be created. The cycle then goes on, and the status
-reports `backup_failed`:
-
-```text
-ERROR admin.git.service.scheduler Could not push repository 'private' to its backup branch: Failed to push to the backup branch for repository 'private': <git's message>
-```
-
-If the rest of the cycle succeeds, the work is on the configured branch, so
-`last_success` moves as well and equals `last_error.at`. If the cycle also
-fails, for example on a conflict, the newest work is only in the container.
-`backup_failed` is then reported before the other failure, whose message is
-added to it.
-
-A rejected token, an unreachable remote or a time-out is not
-`backup_failed`: the backup push is usually the first command to reach the
-remote, and it reports `auth_failed`, `network` or `timeout` like any other.
-
 ### The branch cannot be pulled
 
 Some pull failures do not go away by themselves:
@@ -664,15 +627,18 @@ Some pull failures do not go away by themselves:
 - the configured branch was renamed or deleted on the forge
   (`couldn't find remote ref`)
 
-Then nothing is pushed to the configured branch, and the status reports
-`pull_failed`. The work is on the backup branch, which the log names:
+Then nothing is pushed, and the status reports `pull_failed`. The work
+stays committed in the workspace, but until this is fixed it is only in
+the container:
 
 ```text
-ERROR admin.git.service.scheduler Failed to merge the remote's changes for repository 'private': fatal: refusing to merge unrelated histories; the local work is on branch backup/3f2a9c01d4e5
+ERROR admin.sync.git.scheduler Failed to merge the remote's changes for repository 'private': fatal: refusing to merge unrelated histories
 ```
 
-To recover, fix the branch on the forge (or point `GIT_REPO_BRANCH` at the
-new name) and merge `backup/<id>` into it.
+To recover, rename the branch back on the forge, or after a rewritten
+history merge it by hand in the working tree with
+`git merge --allow-unrelated-histories origin/<branch>`. The next cycle
+pushes the result.
 
 A rejected token, an unreachable remote, a time-out or a branch switch is
 reported as it is: the next cycle simply tries again.
@@ -693,7 +659,7 @@ doing without reading the log.
 
 | Situation | Handled by | What the backup does | To get sync going again |
 | --- | --- | --- | --- |
-| The remote changed the same file, deleted it, or put a directory where it is | You | Aborts the merge; keeps backing up to the backup branch, pushes nothing to the configured branch | Merge `origin/<branch>` by hand |
+| The remote changed the same file, deleted it, or put a directory where it is | The backup | Aborts the merge, saves the remote's version on a `remote-backup/` branch, and replaces the remote's branch with the workspace's | Nothing; take back anything you need from the `remote-backup/` branch |
 | A merge, rebase, cherry-pick or revert you have started is unfinished | You | Waits: no commit, no pull, no push | Finish or abort the changes |
 | Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
 | A file holds conflict markers | You | Leaves that file out, commits and pushes the rest | Remove the markers |
@@ -714,61 +680,76 @@ identity, so that nothing is written into the repository on your behalf.
 A collaborator, or another workspace, pushed a change to a file the user
 also changed. The same applies when one side deleted a file the other
 changed, or put a directory where the other has a file. Git cannot combine
-the two, so the backup aborts the merge and leaves everything as it was:
+the two, so the backup aborts the merge, and the workspace's branch
+replaces the remote's:
 
 ```text
-ERROR admin.git.service.scheduler Repository 'private': the remote changed notes.md as well; merge them by hand; the local work is on branch backup/3f2a9c01d4e5
+WARNING admin.sync.git.push Repository 'private': the workspace's version replaced branch main on the remote; the remote's version is on branch remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d
 ```
 
-While the conflict lasts:
+In one cycle:
 
-- the configured branch on the remote keeps the collaborator's version
-- the working tree keeps the user's version, and new work is still
-  committed every interval
-- every interval pushes that work to the [backup branch](#the-backup-branch),
-  so it is not only in the container; if the forge refuses that push, the
-  status reports `backup_failed` instead
-- nothing from the remote is merged in, not even files without a conflict,
-  and nothing is pushed to the configured branch
-- the status reports `merge_conflict`
+- the merge is aborted, so the working tree keeps the user's version
+- the remote's branch, as last fetched, is pushed to a new branch
+  `remote-backup/<time>-<hash>`, with every commit it held. `<time>` is
+  UTC, so the branches sort by time; `<hash>` is the saved commit's short
+  hash, as the forge shows it, so two versions saved in the same second
+  still get branches of their own
+- the workspace's branch is force-pushed over the remote's, so the
+  configured branch on the remote is exactly the workspace's: no merge
+  commit, and nothing of the remote's version left on it
+- the status records the time in `last_remote_overwrite`, and the cycle
+  counts as a success
 
-#### Why the backup does not pick a side
+Both pushes are one atomic push: either both happen or neither does, so
+the remote's branch is never replaced before its version is saved. Every
+conflict gets a `remote-backup/` branch of its own, so a later conflict
+never replaces an earlier one. They are never deleted by the backup.
 
-Keeping either version automatically would throw the other away without
-anyone deciding to. Keeping the workspace's version replaces the
-collaborator's work on the remote, and they are never told: the only trace
-is a line in the log of a container they cannot see. Keeping the remote's
-version does the same to the user. Which edit matters, or how the two
-should be combined, is only known to the people who made them.
+Only a real conflict does this. Remote changes that merge cleanly are
+merged as before, and the branch is pushed normally.
 
-The backup can leave that decision to them because the user's work does not
-depend on the merge to be safe. It reaches the backup branch before the
-pull is even tried, and a failure to get it there is reported on its own
-(`backup_failed`). A conflict therefore costs time, not data: the remote
-holds one version, the backup branch the other, and the user merges them
-once.
+#### Why the workspace's version wins
 
-#### To get sync going again
+The workspace is where the user works, and the backup is there so they
+never have to stop and run git. Merging by hand would hold back every
+change from the remote until someone did it, and a merge left half done
+leaves code from both sides in the files. Replacing the remote's branch
+keeps the workspace's branch the one true version, and the user can carry
+on.
 
-Merge the remote's branch by hand in the working tree. The backup fetches
-it every interval as `origin/<branch>`, so no credentials are needed:
+The remote's version is not thrown away. It is on the `remote-backup/`
+branch, which the log names, and a collaborator can take back anything
+they need from it.
+
+#### When the remote's branch is not replaced
+
+The force-push names the commit the backup fetched
+(`--force-with-lease`). If someone pushed to the remote between the fetch
+and the force-push, the whole push is refused and nothing is changed:
+
+```text
+ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Did not replace branch main of repository 'private': the remote changed meanwhile; the next cycle tries again
+```
+
+The status reports `remote_changed`. The next cycle fetches the newer
+version, and saves and replaces that one instead, so a push nobody has
+saved is never overwritten.
+
+Some forges refuse force-pushes to a protected branch. Then nothing is
+changed either, and the status reports `overwrite_refused`, every interval,
+until the protection is lifted. While it lasts, the user's work is
+committed, but only in the container. To get sync going again, allow
+force-pushes to the configured branch, or merge `origin/<branch>` by hand
+in the working tree:
 
 ```bash
 cd /workspace/assets/private
 git merge origin/main         # stops on the conflict
 ```
 
-Open each file git names and keep the content you want. Between `<<<<<<<`
-and `=======` is your version, between `=======` and `>>>>>>>` the
-remote's; delete the three marker lines too. To keep one side of a file
-whole instead:
-
-```bash
-git checkout --ours -- notes.md     # your version
-git checkout --theirs -- notes.md   # the remote's version
-```
-
-Then mark the files resolved and conclude the merge:
+Open each file git names and keep the content you want, then mark the files
+resolved and conclude the merge:
 
 ```bash
 git add notes.md
@@ -779,13 +760,27 @@ The backup waits while the merge is unfinished (see
 [A merge or rebase you started is unfinished](#a-merge-or-rebase-you-started-is-unfinished)),
 and the next interval after the commit pushes the result.
 
+#### Taking back the remote's version
+
+The `remote-backup/` branch is on the remote, so it can be read from any
+clone. In the workspace:
+
+```bash
+cd /workspace/assets/private
+git fetch origin remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d
+git show FETCH_HEAD:notes.md               # read the remote's notes.md
+git checkout FETCH_HEAD -- notes.md        # or take it over whole
+```
+
+The next interval commits and pushes whatever was taken over.
+
 ### A merge or rebase you started is unfinished
 
 If you started a merge, rebase, cherry-pick or revert by hand and it stopped
 on a conflict, the backup leaves it alone:
 
 ```text
-ERROR admin.git.service.scheduler Not synchronizing repository 'common': a git operation is in progress (MERGE_HEAD); finish or abort it first
+ERROR admin.sync.git.scheduler Not synchronizing repository 'common': a git operation is in progress (MERGE_HEAD); finish or abort it first
 ```
 
 Committing at this point would conclude your merge for you, conflict and
@@ -814,7 +809,7 @@ The same protection applies when git holds unresolved files without an
 operation in progress, for example after a `git stash pop` that conflicted:
 
 ```text
-ERROR admin.git.service.scheduler Not synchronizing repository 'common': unresolved conflicts in notes.md
+ERROR admin.sync.git.scheduler Not synchronizing repository 'common': unresolved conflicts in notes.md
 ```
 
 **To get sync going again**, open each file the log names, keep the content
@@ -833,7 +828,7 @@ around a conflict (`<<<<<<<`, `=======`, `>>>>>>>`). The backup checks what
 it is about to commit and leaves such a file out:
 
 ```text
-WARNING admin.git.repo.commit Not committing some files in repository 'private': conflict markers left in notes.md
+WARNING admin.sync.git.commit Not committing some files in repository 'private': conflict markers left in notes.md
 ```
 
 Every other change is still committed, pulled and pushed, so one file
@@ -845,7 +840,7 @@ If the remote changed the same file, the merge would overwrite it, so
 nothing is merged until it is fixed, and the log says so:
 
 ```text
-WARNING admin.git.repo.sync Repository 'private': notes.md is held back (conflict markers left in notes.md), remove the conflict markers in order to merge.
+WARNING admin.sync.git.sync Repository 'private': notes.md is held back (conflict markers left in notes.md), remove the conflict markers in order to merge.
 ```
 
 **To get sync going again**, open each file the log names. Between
@@ -875,8 +870,8 @@ you check out another branch, or no branch at all (a tag, a single commit,
 or a `git bisect` session), the backup waits:
 
 ```text
-ERROR admin.git.service.scheduler Not synchronizing repository 'common': 'experiment' is checked out, not 'main'; check out 'main' to resume the backup
-ERROR admin.git.service.scheduler Not synchronizing repository 'common': HEAD is detached; check out branch 'main' to resume the backup
+ERROR admin.sync.git.scheduler Not synchronizing repository 'common': 'experiment' is checked out, not 'main'; check out 'main' to resume the backup
+ERROR admin.sync.git.scheduler Not synchronizing repository 'common': HEAD is detached; check out branch 'main' to resume the backup
 ```
 
 Without this check the backup commits would land on your branch, while the
@@ -900,7 +895,7 @@ Every git command that changes the staging area first creates
 file exists, the backup leaves the repository alone for that interval:
 
 ```text
-ERROR admin.git.service.scheduler Not synchronizing repository 'common': another git process holds /workspace/common/index.lock; trying again next cycle
+ERROR admin.sync.git.scheduler Not synchronizing repository 'common': another git process holds /workspace/common/index.lock; trying again next cycle
 ```
 
 Usually there is nothing to do: your command finishes and the next
@@ -921,7 +916,7 @@ of them and at least ten, the backup does not commit, so the files are not
 deleted on the remote either:
 
 ```text
-ERROR admin.git.service.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. If that is intended, commit the deletion there by hand to resume the backup
+ERROR admin.sync.git.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. If that is intended, commit the deletion there by hand to resume the backup
 ```
 
 A folder that has been emptied is far more often an accident, such as a
@@ -944,7 +939,7 @@ last backup, with a warning in the log. A repository with no files yet, as
 on a new, empty remote, has nothing to restore and logs nothing:
 
 ```text
-WARNING admin.git.repo.clone Repository 'private' had lost the files in /workspace/assets/private; restored from its git directory
+WARNING admin.sync.git.clone Repository 'private' had lost the files in /workspace/assets/private; restored from its git directory
 ```
 
 Only on startup: a folder you delete while the service runs stays deleted,
@@ -952,7 +947,7 @@ and nothing is deleted on the remote. Until the next start, every cycle
 stops with `mass_deletion`:
 
 ```text
-ERROR admin.git.service.scheduler Not synchronizing repository 'private': /workspace/assets/private is missing; it is restored on the next start
+ERROR admin.sync.git.scheduler Not synchronizing repository 'private': /workspace/assets/private is missing; it is restored on the next start
 ```
 
 Files deleted inside a folder that still holds others are your decision,
@@ -989,7 +984,7 @@ enough tree would make staging hit its time limit on every cycle. So:
   the status reports `file_too_large`:
 
   ```text
-  WARNING admin.git.repo.commit Not committing some files in repository 'private': larger than 50 MiB: results/run1.h5
+  WARNING admin.sync.git.commit Not committing some files in repository 'private': larger than 50 MiB: results/run1.h5
   ```
 
   Move it out of the folder, make it smaller, or add it to a `.gitignore`
@@ -1008,7 +1003,7 @@ decision what goes into it.
 
 1. User accesses `http://{domain}/{path-prefix}/services` (or `/services` without prefix)
 2. nginx receives the request and routes it to the admin service on port 8091
-3. Admin service reads the `config/services_template.json` file
+3. Admin service reads the `templates/services_template.json` file
 4. JSON response is returned to the client
 5. Path prefix is configured via CLI argument when starting the service
 
@@ -1025,7 +1020,7 @@ decision what goes into it.
    otherwise) a repository that is not cloned yet is cloned, a pull-only
    repository is fast-forwarded (see
    [Pull-only repositories](#pull-only-repositories)), and every other
-   working tree goes through the same four steps, in this order:
+   working tree goes through the same three steps, in this order:
    1. **Commit**: the repository is first checked for a running git
       command (`index.lock`), an unfinished merge, rebase, cherry-pick or
       revert, another branch or a detached `HEAD`, and unresolved files,
@@ -1036,18 +1031,15 @@ decision what goes into it.
       conflict markers, which are held back, and committed with a
       timestamped message (see
       [Conflicts](#conflicts-what-is-automatic-and-what-is-manual))
-   2. **Back up**: the branch is pushed to `backup/<workspace-id>`, so the
-      work has left the container whatever the pull does; a push the forge
-      refuses is reported as `backup_failed` (see
-      [The backup branch](#the-backup-branch))
-   3. **Pull**: the remote is fetched and merged in. Before merging, the
-      branch is checked again. A conflict aborts the merge and ends the
-      cycle (see [Conflicts](#the-remote-changed-the-same-file)), and so
-      does a pull that cannot succeed (see
-      [The branch cannot be pulled](#the-branch-cannot-be-pulled))
-   4. **Push**: the branch is pushed only when it actually holds commits
+   2. **Pull**: the remote is fetched and merged in. Before merging, the
+      branch is checked again. A pull that cannot succeed ends the cycle
+      (see [The branch cannot be pulled](#the-branch-cannot-be-pulled))
+   3. **Push**: the branch is pushed only when it actually holds commits
       the remote does not. Both the count and the push name the branch, not
-      `HEAD`
+      `HEAD`. After a conflict, the push is replaced: the merge is aborted,
+      the remote's version is saved on a `remote-backup/` branch, and the
+      workspace's branch is force-pushed over the remote's, in one atomic
+      push (see [Conflicts](#the-remote-changed-the-same-file))
 4. Committing happens *before* merging on purpose: git refuses to merge over
    modified files, so an uncommitted working tree would make every pull fail
    as soon as the remote had something to deliver
@@ -1064,7 +1056,9 @@ decision what goes into it.
    but not yet pushed is pushed by the first interval after the next start
 
 Saving a file in Jupyter or VS Code is enough for it to reach the remote
-within one interval. The user only runs git to settle a conflict.
+within one interval. The user only runs git to take back something from a
+`remote-backup/` branch, or in the situations under
+[Conflicts](#conflicts-what-is-automatic-and-what-is-manual).
 
 ### About the Implementation Reports
 
@@ -1117,7 +1111,7 @@ above). Two gaps remained:
    message - correct, but not a "clear error message" pointing at the
    actual cause.
 
-Both are addressed by a new `admin/git/run/auth.py` module:
+Both are addressed by a new `admin/sync/git/auth.py` module:
 
 - `auth_header_options()` is now the single place that builds the
   Basic-auth header; `clone.py` and `sync.py` both call it instead of
@@ -1436,7 +1430,7 @@ merge, as before.
 The old `_conflicted_files()` split git's output on whitespace, so a file
 name with a space would have been read as two files. `-z` avoids that.
 
-`tests/integration/git/repo/test_sync_conflicts.py` runs this against real git,
+`tests/integration/sync/git/test_sync_conflicts.py` runs this against real git,
 with a local bare repository as the remote. Four of its five tests fail on
 the old `-X ours` code.
 
@@ -1471,9 +1465,73 @@ the remote until the user merges by hand. The documentation explains how,
 using `origin/<branch>`, which the backup fetches, so the user needs no
 credentials of their own.
 
-`tests/integration/git/repo/test_sync_conflicts.py` was rewritten for the new
+`tests/integration/sync/git/test_sync_conflicts.py` was rewritten for the new
 behaviour: all four kinds of conflict leave both sides and the remote
 untouched, and a merge finished by hand is pushed by the next cycle.
+
+### Implementation Report: The Workspace's Branch Replaces the Remote's
+
+Leaving conflicts to the user kept everyone's work, but it stopped the
+backup until someone merged by hand, and every change from the remote was
+held back meanwhile. The workspace is meant to be the one true version of
+the branch, so a conflict now ends with the workspace's branch on the
+remote, and nothing of the remote's version left on it.
+
+The remote's version is not lost: it is saved first, in the same push.
+
+- `overwrite_remote()` in `push.py` looks up the commit `origin/<branch>`
+  was fetched at, and makes one atomic push (`--atomic`): that commit to a
+  new branch `remote-backup/<workspace-id>/<time>`, and the branch over the
+  remote's. Either both happen or neither does
+- The force-push uses `--force-with-lease=refs/heads/<branch>:<commit>`. If
+  the remote moved after the fetch, git refuses the whole push, the status
+  reports `remote_changed`, and the next cycle saves and replaces the newer
+  version instead. A push nobody has saved is never overwritten. The
+  scheduler does not need to pause for this
+- `sync.py` calls it when the merge stops on `merge_conflict`, after the
+  merge is aborted, in place of the normal push. A forge that refuses
+  force-pushes reports `overwrite_refused`, and the cycle ends as a
+  conflict did before
+- Every conflict gets a `remote-backup/` branch of its own, named by the
+  time, so a later conflict never replaces an earlier one
+- `sync_once()` takes an `on_overwrite` callback, and the scheduler uses it
+  to record the time in the status as `last_remote_overwrite`. The branch
+  name stays in the log, like every other name
+
+Only a real conflict replaces the remote's branch. Remote changes that
+merge cleanly are still merged.
+
+`tests/integration/sync/git/test_sync_conflicts.py` was rewritten again:
+all four kinds of conflict leave the remote's branch equal to the
+workspace's, with the remote's commit on its `remote-backup/` branch; a
+commit that did not conflict is saved too; a push during the overwrite is
+never lost; and a remote that refuses force-pushes keeps its branch.
+
+### Implementation Report: The Backup Branch Is Gone
+
+Once a conflict ended with the workspace's branch on the remote, the
+per-workspace backup branch had lost most of its reason. It mattered only
+in a cycle where the backup push succeeded but the configured branch could
+not be pushed for a long time: a protected branch (`overwrite_refused`) or
+a branch that cannot be pulled (`pull_failed`). That is rare, and it cost
+a forced push every cycle, a branch per workspace that was never cleaned
+up, a token allowed to create branches, and a log line that said "Backed
+up" when nothing was sent.
+
+- `push_to_backup_branch()`, `backup_branch()` and `workspace_id()` are
+  gone, and so is the `workspace-admin-id` file. A file left by an earlier
+  version is ignored
+- `sync_once()` commits, pulls and pushes; nothing goes to the remote
+  before the pull
+- `backup_failed` is gone, and with it the `synced` flag that let a failed
+  cycle count as a success
+- `remote-backup/` branches are named by the time and the saved commit's
+  short hash instead of the id: `remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d`.
+  A user name was tried first, but the branch holds the version that was
+  overwritten, usually someone else's, so the name read the wrong way round
+
+While the configured branch cannot be pushed, the work is now only in the
+container. The status says so through `pull_failed` or `overwrite_refused`.
 
 ### Package Layout
 
@@ -1486,41 +1544,41 @@ src/admin/
 ├── api.py                        # FastAPI app factory and HTTP routes
 ├── services.py                   # Workspace service discovery
 ├── main.py                       # Command-line entry point
-├── config/
+├── templates/
 │   └── services_template.json    # Service catalogue (data, not code)
-└── git/                          # Git backup of workspace directories
-    ├── setup/                    # What to back up
-    │   ├── locate.py             # Chooses which config.toml to read
-    │   ├── provision.py          # Creates a missing config.toml from the template
-    │   ├── config.py             # RepoConfig, SyncMode, ConfigError and the settings
-    │   ├── validate.py           # Checks the values of config.toml
-    │   └── load.py               # Reads config.toml into RepoConfig objects
-    ├── run/                      # Running git
-    │   ├── runner.py             # Runs git without prompts, within a time limit
-    │   ├── command.py            # The one runner for every git command
-    │   ├── auth.py               # HTTP auth header, https-only options, rejected tokens
-    │   └── errors.py             # SyncErrorKind, SyncError, sorting failures by kind
-    ├── repo/                     # Working on one repository
-    │   ├── clone.py              # Clones a single RepoConfig
-    │   ├── sync.py               # One cycle: commit, back up, pull, push
-    │   ├── commit.py             # Commits the user's changes
-    │   ├── pull.py               # Fetches and merges, or fast-forwards
-    │   ├── push.py               # Pushes, and backs up to backup/<id>
-    │   ├── refs.py               # Ref names and refspecs of the branch
-    │   ├── busy.py               # Whether the user is busy with the repository
-    │   └── checks.py             # What is checked in the files to commit
-    └── service/                  # Running the backup in the service
+├── config/                       # What to back up
+│   ├── locate.py                 # Chooses which config.toml to read
+│   ├── provision.py              # Creates a missing config.toml from the template
+│   ├── config.py                 # RepoConfig, SyncMode, ConfigError and the settings
+│   ├── validate.py               # Checks the values of config.toml
+│   └── load.py                   # Reads config.toml into RepoConfig objects
+└── sync/
+    └── git/                      # Git backup of workspace directories
+        ├── runner.py             # Runs git without prompts, within a time limit
+        ├── command.py            # The one runner for every git command
+        ├── auth.py               # HTTP auth header, https-only options, rejected tokens
+        ├── errors.py             # SyncErrorKind, SyncError, sorting failures by kind
+        ├── clone.py              # Clones a single RepoConfig
+        ├── sync.py               # One cycle: commit, pull, push
+        ├── commit.py             # Commits the user's changes
+        ├── pull.py               # Fetches and merges, or fast-forwards
+        ├── push.py               # Push, and replace the remote's branch
+        ├── refs.py               # Ref names and refspecs of the branch
+        ├── busy.py               # Whether the user is busy with the repository
+        ├── checks.py             # What is checked in the files to commit
         ├── bootstrap.py          # Starts and stops the backup
         ├── scheduler.py          # Runs clone and sync on a timer, in the background
         └── status.py             # Where the backup stands, for /storage/status
 ```
 
-Dependencies point one way: `main` → `api` → `services`, and within `git/`:
-`service` → `repo` → `run`/`setup`. Inside `repo`: `sync` → `pull`/`push`
-→ `commit` → `busy`/`checks`. `setup` and `run` only share their bottom
-modules, `setup/config.py` and `run/runner.py`, which import nothing from
-the package. The tests mirror this layout under `tests/unit/git/` and
-`tests/integration/git/`.
+Dependencies point one way: `main` → `api` → `services`, and for the
+backup: `sync/git` → `config`. Inside `sync/git`: `bootstrap` →
+`scheduler` → `clone`/`sync` → `pull`/`push` → `commit` → `busy`/`checks`
+→ `command` → `auth`/`errors`/`runner`. `config/validate.py` uses only
+`sync/git/runner.py`, to ask git about a branch name. `config/config.py`
+and `sync/git/runner.py` import nothing from the package. The tests mirror
+this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
+`tests/integration/sync/git/`.
 
 ### Components
 
@@ -1534,65 +1592,68 @@ the package. The tests mirror this layout under `tests/unit/git/` and
 - **CLI Entry Point** (`src/admin/main.py`): Argument parsing
   (`build_parser`) and the `workspace-admin` command (`cli`), which either
   prints the catalogue or serves the API with uvicorn
-- **Git Backup** (`src/admin/git/`): Configuration, cloning, authentication
+- **Git Backup** (`src/admin/config/`, `src/admin/sync/git/`): Configuration, cloning, authentication
   and working tree synchronization for shared and private git assets
-  - `run/runner.py`: `run_git()` runs every git command of the backup with
+  - `sync/git/runner.py`: `run_git()` runs every git command of the backup with
     prompts switched off, empty standard input and a time limit, and stops
     a command that overruns it together with the processes it started,
     raising `GitTimeoutError`. Extra environment, such as the credentials,
     is passed per command. See
     [Time limits and prompts](#time-limits-and-prompts)
-  - `setup/locate.py`: `discover_config()` chooses the config file,
+  - `config/locate.py`: `discover_config()` chooses the config file,
     `$WORKSPACE_ADMIN_CONFIG` before
     `~/.config/workspace-admin/config.toml`, and returns a
     `ConfigLocation` holding the absolute path and the `ConfigRule` that
     chose it. See [Configuration](#configuration)
-  - `setup/config.py`: the types `RepoConfig`, `SyncMode`, `ConfigError` and
+  - `config/config.py`: the types `RepoConfig`, `SyncMode`, `ConfigError` and
     `PlaceholderError`, and the names and limits of the settings
-  - `setup/validate.py`: checks each value (https URL, branch, `MODE`, interval,
+  - `config/validate.py`: checks each value (https URL, branch, `MODE`, interval,
     placeholders) and warns about unknown keys and a file others can read
-  - `setup/load.py`: `load_config()` reads the chosen file and returns a
+  - `config/load.py`: `load_config()` reads the chosen file and returns a
     `RepoConfig` per `[assets.<name>]` table (`private` and `common`), with
     both paths derived from the name and the root, and its `SyncMode`.
     `load_sync_interval()` reads `SYNC_INTERVAL_SECONDS`
-  - `run/auth.py`: `auth_environment()` builds the `GIT_CONFIG_COUNT`
+  - `sync/git/auth.py`: `auth_environment()` builds the `GIT_CONFIG_COUNT`
     variables that carry `GIT_REPO_TOKEN`, with the fixed username
     `oauth2`, as an HTTP Basic header scoped to the repository's URL (see
     [How the token is sent](#how-the-token-is-sent)). `remote_options()`
     limits a command to https, switches off credential helpers and
     abandons stalled transfers. `is_auth_failure()` recognizes git's and
     GitLab's rejection texts, including `could not read Username`
-  - `run/errors.py`: `SyncErrorKind`, the reasons `/storage/status` may report,
+  - `sync/git/errors.py`: `SyncErrorKind`, the reasons `/storage/status` may report,
     and `SyncError`. `failure_kind()` sorts a failed command's output into
     `auth_failed`, `network` or `git_failed`
-  - `run/command.py`: `run()` runs every git command of the backup and the
+  - `sync/git/command.py`: `run()` runs every git command of the backup and the
     clone, and turns a failure or time-out into a `SyncError` of the right
     kind; the caller logs it. `run_local()` and `run_remote()` add
     `--git-dir` and `--work-tree` for a cloned repository
-  - `repo/busy.py`: `ensure_safe_to_sync()` stops a cycle while the user is
+  - `sync/git/busy.py`: `ensure_safe_to_sync()` stops a cycle while the user is
     busy with the repository (index lock, unfinished operation, branch,
     unmerged files); `ensure_on_branch()` is checked again before a merge
-  - `repo/checks.py`: what is checked in the files about to be committed:
+  - `sync/git/checks.py`: what is checked in the files about to be committed:
     `ensure_no_mass_deletion()`, `large_files()`,
     `staged_conflict_markers()` and `ensure_default_excludes()`
-  - `repo/clone.py`: `clone_asset()` clones one `RepoConfig` with a separated
+  - `sync/git/clone.py`: `clone_asset()` clones one `RepoConfig` with a separated
     git directory and working tree (`git clone --separate-git-dir`),
     skipping repositories that are already cloned, starting one locally on
     an empty remote, and raising `SyncError` on failure. `restore_work_tree()`
     restores a missing or empty work tree on startup.
     `restore_git_file()` writes back a lost `.git` file
-  - `repo/refs.py`: the configured branch's ref names and refspecs
-  - `repo/commit.py`: `commit_local_changes()` commits the user's changes,
+  - `sync/git/refs.py`: the configured branch's ref names and refspecs
+  - `sync/git/commit.py`: `commit_local_changes()` commits the user's changes,
     holding back large and marked files (`HeldBack`). The commit identity
     is passed per command with `git -c`, never written to `.git/config`
-  - `repo/pull.py`: `pull_changes()` fetches and merges, aborting a conflicted
+  - `sync/git/pull.py`: `pull_changes()` fetches and merges, aborting a conflicted
     merge; `pull_only()` fast-forwards a `pull` repository
-  - `repo/push.py`: `push_if_ahead()` pushes the branch;
-    `push_to_backup_branch()` force-pushes it to `backup/<workspace-id>`
-  - `repo/sync.py`: `sync_once()` runs one cycle. For a `sync` repository:
-    commit, back up, pull, push. For a `pull` repository: `pull_only()`.
+  - `sync/git/push.py`: `push_if_ahead()` pushes the branch;
+    `overwrite_remote()` saves the remote's branch on
+    `remote-backup/<time>-<hash>` and force-pushes the workspace's over it,
+    in one atomic push
+  - `sync/git/sync.py`: `sync_once()` runs one cycle. For a `sync` repository:
+    commit, pull, push; on a conflict, `overwrite_remote()` in
+    place of the push. For a `pull` repository: `pull_only()`.
     Held-back files are reported once the rest of the cycle is done
-  - `service/scheduler.py`: `start_sync_scheduler()` runs `sync_all()` on a
+  - `sync/git/scheduler.py`: `start_sync_scheduler()` runs `sync_all()` on a
     background daemon thread, every `SYNC_INTERVAL_SECONDS` from the
     config file (300 when it is not set), unless `--sync-interval`
     overrides it. A repository that is not cloned yet is cloned instead,
@@ -1601,13 +1662,13 @@ the package. The tests mirror this layout under `tests/unit/git/` and
     loop, and every exception is caught, not just `SyncError`, because the
     thread is the only thing keeping the backup alive. Each outcome is
     recorded in the `SyncStatus` it is given
-  - `service/status.py`: `SyncStatus` holds the `BackupState`, and per repository
+  - `sync/git/status.py`: `SyncStatus` holds the `BackupState`, and per repository
     its `RepoState`, last attempt, success and error kind, behind one
     lock. It stores a `SyncErrorKind`, never an error message
-  - `setup/provision.py`: `provision_config()` copies the template into place
+  - `config/provision.py`: `provision_config()` copies the template into place
     when `config.toml` is missing (mode `0600`, never overwriting) and adds
     a `.gitignore` holding `*` to its directory
-  - `service/bootstrap.py`: `start_git_backup()` is called once from
+  - `sync/git/bootstrap.py`: `start_git_backup()` is called once from
     `admin.main.cli()` on startup and returns at once, running
     `clone_configured_repos()` and then `start_git_sync()` on the
     `git-bootstrap` daemon thread, so the HTTP API never waits for a
@@ -1617,7 +1678,7 @@ the package. The tests mirror this layout under `tests/unit/git/` and
     `running` as it goes. Errors are logged, never raised, so a missing or
     broken git configuration does not prevent the admin service from
     starting
-- **Services Template** (`src/admin/config/services_template.json`): JSON
+- **Services Template** (`src/admin/templates/services_template.json`): JSON
   template defining available services
 - **nginx Configuration** (`startup/nginx.conf`): Reverse proxy routing
 - **Startup Script** (`startup/custom_startup.sh`): Service bootstrap and
@@ -1659,33 +1720,33 @@ obvious test file:
 | `tests/unit/test_api.py`   | `admin/api.py`     | Routes, responses, path prefix handling, `/storage/status` serving the live status and refusing writes, the shutdown hook running once when the server stops |
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
-| `tests/unit/git/run/test_auth.py` | `admin/git/run/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
-| `tests/unit/git/setup/test_load.py` | `admin/git/setup/load.py` | Sections become repositories, paths below the root, the token kept out of `repr`, errors in the file itself |
-| `tests/unit/git/setup/test_validate.py` | `admin/git/setup/validate.py` | Required and empty values, the token optional for `pull`, placeholders, `MODE`, keys that have no effect |
-| `tests/unit/git/setup/test_validate_remote.py` | `admin/git/setup/validate.py` | Branch and URL handed to git, two sections on one remote (also spelled differently or with `:443`), a work tree holding the config file |
-| `tests/unit/git/setup/test_interval.py` | `admin/git/setup/load.py`, `validate.py` | `SYNC_INTERVAL_SECONDS` and its fallbacks, a config file others can read |
-| `tests/unit/git/repo/test_clone.py` | `admin/git/repo/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
-| `tests/unit/git/repo/test_checks.py` | `admin/git/repo/checks.py` | Mass deletion limits (an emptied tree of any size refused), large files, real conflict markers only, an outdated exclude block replaced, an unwritable exclude file logged |
-| `tests/unit/git/repo/test_commit.py` | `admin/git/repo/commit.py` | Commit or skip, identity and message, files held back for markers or size, default excludes, a mass deletion not staged |
-| `tests/unit/git/repo/test_busy.py` | `admin/git/repo/busy.py` | An unfinished operation, unmerged files, another branch or detached `HEAD`, a fresh or stale `index.lock`, a missing work tree |
-| `tests/unit/git/repo/test_pull.py` | `admin/git/repo/pull.py` | Clean merge, an aborted conflict naming its files, failed fetch or merge, no merge after a branch switch |
-| `tests/unit/git/repo/test_refs.py` | `admin/git/repo/refs.py` | The refs and refspecs, https only, an option-shaped branch never reaching git as an option |
-| `tests/unit/git/repo/test_push.py` | `admin/git/repo/push.py` | Push only when ahead, counted by branch, the token hint, no backup push before the branch is on the remote, a refused backup push as `backup_failed` while a token or network failure keeps its own kind |
-| `tests/unit/git/repo/test_sync.py` | `admin/git/repo/sync.py` | The order of a cycle, what counts as a change, the backup push and its failure, stopping between steps, every command naming its repository |
-| `tests/unit/git/repo/test_sync_failures.py` | `admin/git/repo/sync.py` | Time limits, an unreachable remote, a conflict ending the cycle, a pull that fails for good or may recover |
-| `tests/unit/git/service/test_scheduler.py` | `admin/git/service/scheduler.py` | Every repository cloned or synchronized once, failures and unexpected errors recorded, nothing started or recorded once stopped |
-| `tests/unit/git/service/test_scheduler_loop.py` | `admin/git/service/scheduler.py` | The daemon thread, one round per interval, the status enabled, the stop event handed to the round |
-| `tests/unit/git/service/test_status.py` | `admin/git/service/status.py` | Disabled until enabled, success and failure timestamps, last error kept after a success, snapshots are copies, concurrent writers |
-| `tests/unit/git/run/test_runner.py` | `admin/git/run/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
-| `tests/unit/git/service/test_bootstrap.py` | `admin/git/service/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
-| `tests/integration/git/repo/test_sync_conflicts.py` | `admin/git/repo/pull.py`, `sync.py` | Conflicts against real git: every kind aborts the merge and keeps both sides, the backup branch is pushed every cycle, a merge finished by hand is pushed |
-| `tests/unit/git/run/test_errors.py` | `admin/git/run/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
-| `tests/unit/git/run/test_command.py` | `admin/git/run/command.py` | Repository options before the subcommand, remote options, credentials and time limits, failures by kind with the token hint only when a token was sent, unchecked failures, time-outs, reading git's output |
-| `tests/integration/git/repo/test_sync_repository.py` | `admin/git/repo/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted or emptied working tree is restored on startup, and one deleted while running stays deleted |
-| `tests/integration/git/repo/test_pull_only.py` | `admin/git/repo/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
-| `tests/integration/git/repo/test_remote_changes.py` | `admin/git/repo/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work on the backup branch; an empty remote is started and filled; on an empty remote the configured branch is pushed before the backup branch |
-| `tests/integration/git/repo/test_auth_failure.py` | `admin/git/repo/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed`; the token reaches only the repository's URL, not another repository on the host |
-| `tests/integration/git/repo/test_backup_hygiene.py` | `admin/git/repo/commit.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
+| `tests/unit/sync/git/test_auth.py` | `admin/sync/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/config/test_load.py` | `admin/config/load.py` | Sections become repositories, paths below the root, the token kept out of `repr`, errors in the file itself |
+| `tests/unit/config/test_validate.py` | `admin/config/validate.py` | Required and empty values, the token optional for `pull`, placeholders, `MODE`, keys that have no effect |
+| `tests/unit/config/test_validate_remote.py` | `admin/config/validate.py` | Branch and URL handed to git, two sections on one remote (also spelled differently or with `:443`), a work tree holding the config file |
+| `tests/unit/config/test_interval.py` | `admin/config/load.py`, `validate.py` | `SYNC_INTERVAL_SECONDS` and its fallbacks, a config file others can read |
+| `tests/unit/sync/git/test_clone.py` | `admin/sync/git/clone.py` | Successful clone, already-cloned skip, failed clone, timed-out clone and its time limit, https-only transport, `--` before the URL, credential handling, clear error on invalid/expired token with the token never in the message |
+| `tests/unit/sync/git/test_checks.py` | `admin/sync/git/checks.py` | Mass deletion limits (an emptied tree of any size refused), large files, real conflict markers only, an outdated exclude block replaced, an unwritable exclude file logged |
+| `tests/unit/sync/git/test_commit.py` | `admin/sync/git/commit.py` | Commit or skip, identity and message, files held back for markers or size, default excludes, a mass deletion not staged |
+| `tests/unit/sync/git/test_busy.py` | `admin/sync/git/busy.py` | An unfinished operation, unmerged files, another branch or detached `HEAD`, a fresh or stale `index.lock`, a missing work tree |
+| `tests/unit/sync/git/test_pull.py` | `admin/sync/git/pull.py` | Clean merge, an aborted conflict naming its files, failed fetch or merge, no merge after a branch switch |
+| `tests/unit/sync/git/test_refs.py` | `admin/sync/git/refs.py` | The refs and refspecs, https only, an option-shaped branch never reaching git as an option |
+| `tests/unit/sync/git/test_push.py` | `admin/sync/git/push.py` | Push only when ahead, counted by branch, the token hint, the atomic overwrite with its lease, a branch of its own per conflict named by time and hash, a moved remote and a protected branch told apart |
+| `tests/unit/sync/git/test_sync.py` | `admin/sync/git/sync.py` | The order of a cycle, what counts as a change, stopping between steps, every command naming its repository |
+| `tests/unit/sync/git/test_sync_failures.py` | `admin/sync/git/sync.py` | Time limits, an unreachable remote, a conflict replacing the remote's branch, a refused overwrite naming the conflict, a stop before the overwrite, a pull that fails for good or may recover |
+| `tests/unit/sync/git/test_scheduler.py` | `admin/sync/git/scheduler.py` | Every repository cloned or synchronized once, failures, overwrites of the remote's branch and unexpected errors recorded, nothing started or recorded once stopped |
+| `tests/unit/sync/git/test_scheduler_loop.py` | `admin/sync/git/scheduler.py` | The daemon thread, one round per interval, the status enabled, the stop event handed to the round |
+| `tests/unit/sync/git/test_status.py` | `admin/sync/git/status.py` | Disabled until enabled, success, failure and overwrite timestamps, last error kept after a success, snapshots are copies, concurrent writers |
+| `tests/unit/sync/git/test_runner.py` | `admin/sync/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
+| `tests/unit/sync/git/test_bootstrap.py` | `admin/sync/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
+| `tests/integration/sync/git/test_sync_conflicts.py` | `admin/sync/git/push.py`, `sync.py` | Conflicts against real git: every kind leaves the remote's branch equal to the workspace's with the remote's version on a `remote-backup/` branch, a commit that did not conflict is saved too, nothing is left to do after, a branch of its own per conflict, a push during the overwrite is never lost, a remote refusing force-pushes keeps its branch with the work still committed |
+| `tests/unit/sync/git/test_errors.py` | `admin/sync/git/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
+| `tests/unit/sync/git/test_command.py` | `admin/sync/git/command.py` | Repository options before the subcommand, remote options, credentials and time limits, failures by kind with the token hint only when a token was sent, unchecked failures, time-outs, reading git's output |
+| `tests/integration/sync/git/test_sync_repository.py` | `admin/sync/git/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted or emptied working tree is restored on startup, and one deleted while running stays deleted |
+| `tests/integration/sync/git/test_pull_only.py` | `admin/sync/git/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |
+| `tests/integration/sync/git/test_remote_changes.py` | `admin/sync/git/sync.py`, `clone.py` | A rewritten history or renamed branch is a `pull_failed` with the work still committed; an empty remote is started and filled; only the configured branch is pushed |
+| `tests/integration/sync/git/test_auth_failure.py` | `admin/sync/git/clone.py` | A real 401 from a local HTTP server is reported as `auth_failed`; the token reaches only the repository's URL, not another repository on the host |
+| `tests/integration/sync/git/test_backup_hygiene.py` | `admin/sync/git/commit.py`, `checks.py` | Files held back for conflict markers or size while the rest is committed, and named when the remote changed them too; default excludes |
 
 `tests/helpers/repo_factory.py` is a shared helper rather than a test file:
 it builds the `RepoConfig` objects the git tests need, so no test module has
@@ -1756,7 +1817,7 @@ glances, allowing easy command-line operation and service listing.
 
 To add a new service to the workspace:
 
-1. Update `config/services_template.json` with the new service definition:
+1. Update `templates/services_template.json` with the new service definition:
 
 ```json
 {

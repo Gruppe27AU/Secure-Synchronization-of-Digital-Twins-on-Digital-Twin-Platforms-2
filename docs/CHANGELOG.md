@@ -2,6 +2,37 @@
 
 The main changes made so far are listed here.
 
+## Week of 16-Nov-2026
+
+### Changed
+
+* **The backup branch `backup/<workspace-id>` is no longer pushed.** A
+  cycle commits, pulls and pushes; nothing else reaches the remote. The
+  status kind `backup_failed` is gone. While the configured branch cannot
+  be pushed (`pull_failed`, `overwrite_refused`), the work is committed but
+  only in the container. Existing `backup/` branches on the remote are left
+  alone and can be deleted
+* **`remote-backup/` branches are named by the time and the saved
+  commit's short hash**, as `remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d`,
+  not `remote-backup/<workspace-id>/20261119T101530Z`
+* **A merge conflict now ends with the workspace's branch on the remote.**
+  The merge is aborted, the remote's branch is saved on a new branch
+  `remote-backup/<time>-<hash>`, and the workspace's branch is
+  force-pushed over the remote's, in one atomic push. `--force-with-lease`
+  refuses the push if the remote moved since the fetch (`remote_changed`;
+  the next cycle tries again). A forge that refuses force-pushes reports
+  `overwrite_refused`. The status kind `merge_conflict` is no longer
+  reported, and each repository in `/storage/status` has a new field,
+  `last_remote_overwrite`
+* The `admin.git` package is split in two: `admin.config` reads
+  `config.toml`, and `admin.sync.git` runs the backup, its former `run`,
+  `repo` and `service` modules side by side. The service catalogue moves
+  to `templates/services_template.json`, and the tests mirror the new
+  layout. **The loggers are renamed with it**, for example
+  `admin.git.service.scheduler` is now `admin.sync.git.scheduler` and
+  `admin.git.setup.load` is now `admin.config.load`; a log filter on the
+  old names must be updated
+
 ## Week of 9-Nov-2026
 
 ### Changed
