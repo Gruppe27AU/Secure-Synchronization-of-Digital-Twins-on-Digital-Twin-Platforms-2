@@ -17,7 +17,7 @@ The main changes made so far are listed here.
   not `remote-backup/<workspace-id>/20261119T101530Z`
 * **A merge conflict now ends with the workspace's branch on the remote.**
   The merge is aborted, the remote's branch is saved on a new branch
-  `remote-backup/<workspace-id>/<time>`, and the workspace's branch is
+  `remote-backup/<time>-<hash>`, and the workspace's branch is
   force-pushed over the remote's, in one atomic push. `--force-with-lease`
   refuses the push if the remote moved since the fetch (`remote_changed`;
   the next cycle tries again). A forge that refuses force-pushes reports

@@ -36,12 +36,12 @@ The service cannot:
 
 ## Requirements
 
-The user needs to following to have working before installing the service:
+The user needs the following to have working before installing the service:
 
 - Docker version 27 or newer, with Docker Compose
 - Git
 - An account on GitHub or GitLab, with a repository for your files
-- An access token to the repository that can read, write or both
+- An access token to the repository that can read and write it
 - At least 1 GB of free memory
 - Port 80 must be free
 
@@ -179,6 +179,13 @@ The URL must start with `https://`. The file holds your token, so do not
 share it. The config file is never backed up as long as it stays in this
 folder. Do not move it into `/workspace/assets`.
 
+Two kinds of files are also left out of the backup, while the rest is
+backed up as usual:
+
+- Files larger than 50 MiB
+- Files with conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) left over
+  from a merge
+
 ### 4. Restart the workspace
 
 The workspace only reads the config file when it starts:
@@ -204,6 +211,9 @@ docker compose logs workspace
 
 ## When the Backup Needs You
 
+If a repository's `state` is `clone_failed`, the repository could not be
+fetched the first time. The backup tries again on every interval.
+
 The status shows the reason in `last_error.kind`:
 
 | Kind | What to do |
@@ -211,10 +221,19 @@ The status shows the reason in `last_error.kind`:
 | `auth_failed` | The token is wrong or expired. Put a new token in the config file and restart. |
 | `network`, `timeout` | GitHub or GitLab cannot be reached. The backup tries again by itself. |
 | `remote_changed` | Someone pushed to the repository while the backup was solving a conflict. The backup tries again by itself. |
-| `overwrite_refused` | The repository does not allow force-pushes to your branch, so a conflict could not be solved. Allow force-pushes to the branch, or open a terminal in `/workspace/assets/private`, run `git merge origin/main`, fix the files and commit. |
+| `overwrite_refused` | The repository does not allow force-pushes to your branch, so a conflict could not be solved. Allow force-pushes to the branch, or open a terminal in `/workspace/assets/private`, run `git merge origin/<your branch>`, fix the files and commit. |
+| `pull_failed` | The branch in the repository cannot be fetched, for example because it was renamed or its history was rewritten. Check `GIT_REPO_BRANCH` and the branch on GitHub or GitLab. |
+| `file_too_large` | A file is larger than 50 MiB and was left out. The rest was backed up. Make the file smaller or move it out of `/workspace/assets`. |
+| `conflict_markers` | A file holds conflict markers (`<<<<<<<`) and was left out. The rest was backed up. Remove the markers and save the file. |
+| `mass_deletion` | Most files in the folder are missing, so the backup stops to keep them safe in the repository. Put the files back, or delete them in smaller steps. |
+| `wrong_branch`, `detached_head` | Another branch is checked out in a terminal. Run `git checkout <your branch>`. |
+| `operation_in_progress`, `unresolved_conflicts` | A merge or rebase you started yourself is not finished. Fix the files, then `git add` and `git commit`, or stop it with `git merge --abort`. |
+| `index_locked` | Another git command was running. The backup tries again by itself. |
+| `local_changes` | Only for `common`: you changed a file that the repository changed too. Undo your change with `git checkout -- <file>`. |
+| `git_failed`, `unexpected` | Something else went wrong. The log tells what. |
 
-While the status shows `overwrite_refused`, your changes are saved in the
-workspace, but not on GitHub or GitLab.
+While the status shows `overwrite_refused` or `pull_failed`, your changes
+are saved in the workspace, but not on GitHub or GitLab.
 
 ### When you and the repository changed the same file
 
@@ -233,6 +252,9 @@ To get a file back from that branch, open a terminal in
 git fetch origin remote-backup/<time>-<id>
 git checkout FETCH_HEAD -- notes.md
 ```
+
+If git asks for a username and password, type your username on GitHub or
+GitLab, and the token as the password.
 
 The next backup saves it like any other change.
 
