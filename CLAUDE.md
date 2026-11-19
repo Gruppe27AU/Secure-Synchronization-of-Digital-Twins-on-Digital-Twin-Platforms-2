@@ -358,7 +358,8 @@ The backup lives in two packages, and the tests mirror them under
   apart; starts one locally on an empty remote; on startup restores a
   missing or empty working tree; writes back a lost `.git` file
 - `sync.py`: one cycle for a cloned tree. `MODE = "sync"` (default for
-  `private`): commit, back up, pull, push; a conflict ends the cycle.
+  `private`): commit, back up, pull, push; on a conflict the workspace's
+  branch replaces the remote's (`push.overwrite_remote`).
   `MODE = "pull"` (default for `common`): fast-forward only, never commit
   or push
 - `commit.py`: commits the user's changes, holding back large and marked
@@ -366,7 +367,9 @@ The backup lives in two packages, and the tests mirror them under
 - `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
   (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
 - `push.py`: pushes the branch, and force-pushes it to the workspace's own
-  `backup/<workspace-id>`
+  `backup/<workspace-id>`; after a conflict, `overwrite_remote()` saves the
+  remote's branch on `remote-backup/<workspace-id>/<time>` and force-pushes
+  the workspace's over it, in one atomic push with `--force-with-lease`
 - `refs.py`: ref names and refspecs of the configured branch
 - `busy.py`: whether the user is busy with the repository, so no cycle
   starts: a missing working tree, an unfinished merge, another branch or
@@ -384,8 +387,8 @@ The backup lives in two packages, and the tests mirror them under
   repository whose clone failed (`clone_and_record()`, also used on
   startup), and records each outcome in a `SyncStatus`
 - `status.py`: thread-safe record of the backup's `state` and, per
-  repository, its state, last attempt, success and error kind, served by
-  `/storage/status`
+  repository, its state, last attempt, success, error kind and last
+  overwrite of the remote's branch, served by `/storage/status`
 
 Failures here are logged, never raised: a broken git configuration must not
 stop the HTTP API from starting.

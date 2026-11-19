@@ -2,8 +2,9 @@
 One backup cycle for one cloned repository.
 
 - ``sync``: commit, push to the backup branch, merge the remote, push. A
-  conflict aborts the merge and ends the cycle; the work is on the backup
-  branch meanwhile, unless that push failed (``backup_failed``).
+  conflict aborts the merge, and the workspace's branch replaces the
+  remote's (:func:`admin.sync.git.push.overwrite_remote`); the remote's
+  version is kept on a ``remote-backup/`` branch.
 - ``pull``: fast-forward only (:func:`admin.sync.git.pull.pull_only`).
 
 The commit identity and the ``Authorization`` header are passed per
@@ -12,6 +13,7 @@ command, never written into the repository.
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from admin.sync.git.checks import MAX_FILE_BYTES
@@ -19,9 +21,13 @@ from admin.sync.git.commit import HeldBack, commit_local_changes
 from admin.config.config import RepoConfig, SyncMode
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.pull import pull_changes, pull_only
-from admin.sync.git.push import push_if_ahead, push_to_backup_branch
+from admin.sync.git.push import overwrite_remote, push_if_ahead, push_to_backup_branch
 
 logger = logging.getLogger(__name__)
+
+#: Called with the branch holding the remote's version, after the
+#: workspace's branch replaced the remote's.
+OnOverwrite = Callable[[str], None]
 
 
 class SyncStopped(Exception):
@@ -150,35 +156,79 @@ def _merge(repo: RepoConfig, backup: str | None, held: HeldBack | None) -> bool:
         raise
 
 
-def _merge_and_push(
+def _overwrite(
+    repo: RepoConfig, conflict: SyncError, on_overwrite: OnOverwrite | None
+) -> None:
+    """
+    Replace the remote's branch after ``conflict``; a failure names both.
+
+    Raises:
+        SyncError: As :func:`admin.sync.git.push.overwrite_remote`.
+    """
+    try:
+        saved = overwrite_remote(repo)
+    except SyncError as error:
+        raise SyncError(f"{conflict}; {error}", error.kind) from error
+    if on_overwrite is not None:
+        on_overwrite(saved)
+
+
+def _merge_or_overwrite(
     repo: RepoConfig,
     stop_event: threading.Event | None,
     backup: _Backup,
     held: HeldBack | None,
+    on_overwrite: OnOverwrite | None,
 ) -> bool:
     """
-    Merge the remote, then push; a refused backup push outranks any failure
-    here, since the work is then only in the container.
+    Merge the remote, then push; on a conflict, replace the remote's branch.
 
     Returns:
         True if anything was merged or pushed.
     """
     try:
         merged = _merge(repo, backup.branch, held)
-        _stop_if_requested(repo, stop_event, "push")
-        return push_if_ahead(repo) or merged
+    except SyncError as error:
+        if error.kind is not SyncErrorKind.MERGE_CONFLICT:
+            raise
+        _stop_if_requested(repo, stop_event, "replace the remote's branch")
+        _overwrite(repo, error, on_overwrite)
+        return True
+    _stop_if_requested(repo, stop_event, "push")
+    return push_if_ahead(repo) or merged
+
+
+def _merge_and_push(
+    repo: RepoConfig,
+    stop_event: threading.Event | None,
+    backup: _Backup,
+    held: HeldBack | None,
+    on_overwrite: OnOverwrite | None,
+) -> bool:
+    """
+    As :func:`_merge_or_overwrite`; a refused backup push outranks any
+    failure here, since the work is then only in the container.
+    """
+    try:
+        return _merge_or_overwrite(repo, stop_event, backup, held, on_overwrite)
     except SyncError as error:
         if backup.error and backup.error.kind is SyncErrorKind.BACKUP_FAILED:
             raise SyncError(f"{backup.error}; {error}", SyncErrorKind.BACKUP_FAILED) from error
         raise
 
 
-def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bool:
+def sync_once(
+    repo: RepoConfig,
+    stop_event: threading.Event | None = None,
+    on_overwrite: OnOverwrite | None = None,
+) -> bool:
     """
     Run one cycle. Assumes the repository is cloned.
 
     ``stop_event`` is checked between steps; a commit left unpushed is
-    pushed by the next cycle.
+    pushed by the next cycle. ``on_overwrite`` is called with the branch
+    holding the remote's version when a conflict made the workspace's
+    branch replace the remote's.
 
     Returns:
         True if a commit, merge or push to the configured branch was made.
@@ -198,7 +248,7 @@ def sync_once(repo: RepoConfig, stop_event: threading.Event | None = None) -> bo
     _stop_if_requested(repo, stop_event, "back up")
     backup = _back_up(repo)
     _stop_if_requested(repo, stop_event, "pull")
-    changed = _merge_and_push(repo, stop_event, backup, held)
+    changed = _merge_and_push(repo, stop_event, backup, held, on_overwrite)
     if backup.error:
         error = backup.error
         raise SyncError(str(error), error.kind, synced=held is None) from error

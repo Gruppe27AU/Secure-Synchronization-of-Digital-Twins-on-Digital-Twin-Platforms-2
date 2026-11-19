@@ -132,6 +132,19 @@ def ref_exists(repo: RepoConfig, ref: str) -> bool:
     return result.returncode == 0
 
 
+def resolve_commit(repo: RepoConfig, ref: str) -> str:
+    """
+    Return the commit ``ref`` points at, as a full hash.
+
+    Raises:
+        SyncError: If ``ref`` does not point at a commit, or git times out.
+    """
+    result = run_local(
+        repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], "look up a ref"
+    )
+    return result.stdout.strip()
+
+
 def count_commits(repo: RepoConfig, revision_range: str, action: str) -> int:
     """
     Count the commits in ``revision_range``, for example ``origin/main..HEAD``.

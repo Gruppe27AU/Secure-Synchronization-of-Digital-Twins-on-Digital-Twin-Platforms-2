@@ -107,7 +107,7 @@ def _merge_failure(repo: RepoConfig, output: str) -> SyncError:
     if conflicted:
         return SyncError(
             f"Repository '{repo.name}': the remote changed "
-            f"{', '.join(conflicted)} as well; merge them by hand",
+            f"{', '.join(conflicted)} as well",
             SyncErrorKind.MERGE_CONFLICT,
         )
     return SyncError(

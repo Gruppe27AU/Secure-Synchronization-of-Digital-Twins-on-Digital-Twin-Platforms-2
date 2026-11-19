@@ -41,6 +41,8 @@ class SyncErrorKind(StrEnum):
     PULL_FAILED = "pull_failed"
     BACKUP_FAILED = "backup_failed"
     MERGE_CONFLICT = "merge_conflict"
+    REMOTE_CHANGED = "remote_changed"
+    OVERWRITE_REFUSED = "overwrite_refused"
     LOCAL_CHANGES = "local_changes"
     OPERATION_IN_PROGRESS = "operation_in_progress"
     WRONG_BRANCH = "wrong_branch"

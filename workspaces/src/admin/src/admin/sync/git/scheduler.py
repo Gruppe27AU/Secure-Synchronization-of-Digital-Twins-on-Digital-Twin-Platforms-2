@@ -55,7 +55,11 @@ def _sync_one(
     """
     try:
         restore_git_file(repo)
-        sync_once(repo, stop_event)
+        sync_once(
+            repo,
+            stop_event,
+            on_overwrite=lambda _branch: status.record_remote_overwrite(repo.name),
+        )
     except SyncStopped as stopped:
         logger.info("%s", stopped)
         return False

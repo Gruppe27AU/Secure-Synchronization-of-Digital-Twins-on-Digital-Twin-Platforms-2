@@ -6,10 +6,12 @@ every command.
 """
 
 
+import threading
+
 import pytest
 
 from admin.sync.git import push
-from admin.sync.git.sync import sync_once
+from admin.sync.git.sync import sync_once, SyncStopped
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.runner import (
@@ -81,18 +83,73 @@ def test_an_unreachable_remote_is_reported_as_a_network_failure(monkeypatch, rep
     assert excinfo.value.kind is SyncErrorKind.NETWORK
 
 
-def test_a_conflict_stops_the_cycle_before_the_push(monkeypatch, repo):
-    """Test a conflict is reported with the backup branch and nothing is pushed."""
+def test_a_conflict_replaces_the_remote_instead_of_merging(monkeypatch, repo):
+    """Test the merge is aborted and the overwrite takes the push's place."""
     repo.git_dir.mkdir(parents=True)
     fake_git = install_fake_git(
         monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], outgoing=1)
     )
+    saved = []
 
-    with pytest.raises(SyncError, match=r"a\.txt.*on branch backup/") as excinfo:
-        sync_once(repo)
+    assert sync_once(repo, on_overwrite=saved.append) is True
 
-    assert excinfo.value.kind is SyncErrorKind.MERGE_CONFLICT
-    assert "push" not in fake_git.keys
+    keys = fake_git.keys
+    assert keys.index("merge-abort") < keys.index("overwrite-push")
+    assert "push" not in keys
+    assert len(saved) == 1 and saved[0].startswith("remote-backup/")
+
+
+@pytest.mark.parametrize(
+    ("output", "kind"),
+    [
+        (" ! [rejected] main -> main (stale info)", SyncErrorKind.REMOTE_CHANGED),
+        (
+            " ! [remote rejected] main -> main (protected branch hook declined)",
+            SyncErrorKind.OVERWRITE_REFUSED,
+        ),
+    ],
+    ids=["remote-moved", "protected-branch"],
+)
+def test_a_failed_overwrite_ends_the_cycle_naming_the_conflict(
+    monkeypatch, repo, output, kind
+):
+    """Test a refused overwrite says why, and names the conflicted files."""
+    repo.git_dir.mkdir(parents=True)
+    install_fake_git(
+        monkeypatch,
+        FakeGit(
+            incoming=1,
+            conflicts=["a.txt"],
+            failing="overwrite-push",
+            failure_message=output,
+        ),
+    )
+    saved = []
+
+    with pytest.raises(SyncError, match=r"a\.txt.*backup/") as excinfo:
+        sync_once(repo, on_overwrite=saved.append)
+
+    assert excinfo.value.kind is kind
+    assert not saved
+
+
+def test_a_stop_before_the_overwrite_leaves_the_remote_alone(monkeypatch, repo):
+    """Test the service stopping after the conflict skips the overwrite."""
+    repo.git_dir.mkdir(parents=True)
+    stop_event = threading.Event()
+    fake_git = FakeGit(incoming=1, conflicts=["a.txt"])
+
+    def run(command, timeout, env=None):
+        if command_key(command) == "merge-abort":
+            stop_event.set()
+        return fake_git.run(command, timeout, env)
+
+    monkeypatch.setattr(command_module, "run_git", run)
+
+    with pytest.raises(SyncStopped, match="replace the remote's branch"):
+        sync_once(repo, stop_event)
+
+    assert "overwrite-push" not in fake_git.keys
 
 
 def test_sync_once_raises_when_a_step_fails(monkeypatch, repo):

@@ -9,9 +9,11 @@ FastAPI service for workspace service discovery and management.
 - Command-line interface for standalone operation
 - Periodic git backup - commits, pulls and pushes the workspace's git assets
   every five minutes by default, so users never run a git command themselves
-- The work is pushed to the workspace's own backup branch every cycle, so a
-  conflict is never resolved by overwriting anyone: the merge is aborted
-  and left to the user
+- The work is pushed to the workspace's own backup branch every cycle
+- On a merge conflict the workspace's branch replaces the remote's, so the
+  workspace stays the one true version; the remote's version is saved
+  first on a `remote-backup/` branch, in the same atomic push (see
+  [Conflicts](DOCUMENTATION.md#the-remote-changed-the-same-file))
 - `common`, shared between users, is pull-only by default: other users'
   changes arrive, and nobody's files are overwritten
 - Never commits an unfinished merge; a file with conflict markers, or over

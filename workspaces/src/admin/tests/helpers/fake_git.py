@@ -27,7 +27,10 @@ _PLAIN_KEYS = {
 }
 
 #: Keys of the commands that talk to the remote.
-_REMOTE_KEYS = {"fetch", "push", "backup-push"}
+_REMOTE_KEYS = {"fetch", "push", "backup-push", "overwrite-push"}
+
+#: What ``git rev-parse --verify`` prints for a ref it finds.
+FAKE_COMMIT = "c0ffee" * 6 + "c0ff"
 
 #: Subcommands run more than one way, told apart by one of their arguments.
 #: Checked before ``_PLAIN_KEYS``.
@@ -41,6 +44,7 @@ _ARGUMENT_KEYS = (
     ("diff", "--quiet", "staged-check"),
     ("merge", "--abort", "merge-abort"),
     ("merge", "--ff-only", "fast-forward"),
+    ("push", "--atomic", "overwrite-push"),
 )
 
 
@@ -186,6 +190,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
             "incoming": str(self.incoming),
             "outgoing": str(self.outgoing),
             "head": self.head,
+            "ref": FAKE_COMMIT,
             "untracked-files": _listing(self.untracked),
             "modified-files": _listing(self.modified),
         }.get(key, "")

@@ -6,13 +6,21 @@ every command.
 """
 
 import subprocess
+from datetime import datetime, timezone
 
 import pytest
 
-from admin.sync.git.push import push_if_ahead, push_to_backup_branch
+from admin.sync.git import push as push_module
+from admin.sync.git.push import (
+    overwrite_remote,
+    push_if_ahead,
+    push_to_backup_branch,
+    remote_backup_branch,
+    workspace_id,
+)
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
+from tests.helpers.fake_git import FAKE_COMMIT, command_key, FakeGit, install_fake_git
 
 
 def test_push_if_ahead_pushes_when_the_remote_is_behind(monkeypatch, repo):
@@ -171,5 +179,71 @@ def test_a_failed_backup_push_keeps_a_kind_the_user_can_act_on(
 
     with pytest.raises(SyncError, match="backup branch") as excinfo:
         push_to_backup_branch(repo)
+
+    assert excinfo.value.kind is kind
+
+
+def test_overwrite_remote_backs_up_and_replaces_in_one_atomic_push(monkeypatch, repo):
+    """Test the remote's commit is saved and the branch forced only under a lease."""
+    repo.git_dir.mkdir(parents=True)
+    moment = datetime(2026, 11, 19, 10, 15, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(push_module, "_utc_now", lambda: moment)
+    fake_git = install_fake_git(monkeypatch, FakeGit())
+
+    branch = overwrite_remote(repo)
+
+    assert branch == f"remote-backup/{workspace_id(repo)}/20261119T101530Z"
+    command = fake_git.command_for("overwrite-push")
+    assert "--atomic" in command
+    assert f"--force-with-lease=refs/heads/main:{FAKE_COMMIT}" in command
+    assert command[-4:] == [
+        "--",
+        "origin",
+        f"{FAKE_COMMIT}:refs/heads/{branch}",
+        "refs/heads/main:refs/heads/main",
+    ]
+    # The lease holds the commit that was fetched, not whatever origin/main
+    # becomes later.
+    assert fake_git.command_for("ref")[-1] == "refs/remotes/origin/main^{commit}"
+
+
+def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch, repo):
+    """Test a later conflict never replaces the remote's earlier backup."""
+    repo.git_dir.mkdir(parents=True)
+    moments = iter(
+        [
+            datetime(2026, 11, 19, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 11, 19, 10, 5, 0, tzinfo=timezone.utc),
+        ]
+    )
+    monkeypatch.setattr(push_module, "_utc_now", lambda: next(moments))
+
+    assert remote_backup_branch(repo) != remote_backup_branch(repo)
+
+
+@pytest.mark.parametrize(
+    ("message", "kind"),
+    [
+        (" ! [rejected] main -> main (stale info)", SyncErrorKind.REMOTE_CHANGED),
+        (
+            "remote: error: GH006: Protected branch update failed",
+            SyncErrorKind.OVERWRITE_REFUSED,
+        ),
+        ("fatal: Authentication failed for 'https://x/'", SyncErrorKind.AUTH_FAILED),
+        ("fatal: unable to access 'https://x/': Connection refused", SyncErrorKind.NETWORK),
+    ],
+    ids=["remote-moved", "protected", "auth", "network"],
+)
+def test_a_failed_overwrite_keeps_a_kind_the_user_can_act_on(
+    monkeypatch, repo, message, kind
+):
+    """Test a moved remote, a protected branch, a token and the network are told apart."""
+    repo.git_dir.mkdir(parents=True)
+    install_fake_git(
+        monkeypatch, FakeGit(failing="overwrite-push", failure_message=message)
+    )
+
+    with pytest.raises(SyncError, match="branch main") as excinfo:
+        overwrite_remote(repo)
 
     assert excinfo.value.kind is kind

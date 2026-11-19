@@ -68,7 +68,8 @@ class RepoStatus:
     The last error is kept after a later success, so comparing
     ``last_success`` with ``last_error_at`` tells whether it still applies.
     The two are equal when the configured branch was synced but the backup
-    push failed.
+    push failed. ``last_remote_overwrite`` is when a merge conflict last
+    made the workspace's branch replace the remote's.
     """
 
     state: RepoState = RepoState.SYNCING
@@ -76,6 +77,7 @@ class RepoStatus:
     last_success: datetime | None = None
     last_error_kind: SyncErrorKind | None = None
     last_error_at: datetime | None = None
+    last_remote_overwrite: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Render the status as JSON-ready data."""
@@ -90,6 +92,7 @@ class RepoStatus:
             "last_attempt": _iso(self.last_attempt),
             "last_success": _iso(self.last_success),
             "last_error": last_error,
+            "last_remote_overwrite": _iso(self.last_remote_overwrite),
         }
 
 
@@ -195,6 +198,20 @@ class SyncStatus:
                 last_success=now,
             )
 
+    def record_remote_overwrite(self, repo_name: str) -> None:
+        """
+        Record that the workspace's branch replaced the remote's after a
+        merge conflict. The cycle's own outcome is recorded separately.
+
+        Args:
+            repo_name: Name of the repository.
+        """
+        with self._lock:
+            current = self._repos.get(repo_name, RepoStatus())
+            self._repos[repo_name] = replace(
+                current, last_remote_overwrite=self._clock()
+            )
+
     def record_failure(
         self, repo_name: str, kind: SyncErrorKind, synced: bool = False
     ) -> None:
@@ -231,8 +248,8 @@ class SyncStatus:
 
         Returns:
             ``state``; ``enabled``, true while the backup is running; and,
-            per repository name, its state, last attempt, last success and
-            last error.
+            per repository name, its state, last attempt, last success,
+            last error and last overwrite of the remote's branch.
         """
         with self._lock:
             return {

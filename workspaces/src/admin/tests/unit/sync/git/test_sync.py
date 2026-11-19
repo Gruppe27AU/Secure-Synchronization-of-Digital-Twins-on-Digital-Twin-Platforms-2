@@ -86,14 +86,36 @@ def test_a_failed_backup_push_with_a_held_back_file_is_not_synced(monkeypatch, r
     assert excinfo.value.synced is False
 
 
-def test_a_failed_backup_push_outranks_a_conflict(monkeypatch, repo):
-    """Test the status shows the work is not safe, not only the conflict."""
+def test_a_conflict_still_replaces_the_remote_when_the_backup_push_failed(
+    monkeypatch, repo
+):
+    """Test the work reaches the branch anyway, so the cycle counts as synced."""
     repo.git_dir.mkdir(parents=True)
-    install_fake_git(
+    fake_git = install_fake_git(
         monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], failing="backup-push")
     )
 
-    with pytest.raises(SyncError, match=r"backup branch.*a\.txt") as excinfo:
+    with pytest.raises(SyncError, match="backup branch") as excinfo:
+        sync_once(repo)
+
+    assert "overwrite-push" in fake_git.keys
+    assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED
+    assert excinfo.value.synced is True
+
+
+def test_a_failed_backup_push_outranks_a_refused_overwrite(monkeypatch, repo):
+    """Test the status shows the work is not safe, not only the conflict."""
+    repo.git_dir.mkdir(parents=True)
+
+    def run(command, timeout, env=None):
+        if command_key(command) == "overwrite-push":
+            return subprocess.CompletedProcess(command, 1, "", "protected branch")
+        return fake_git.run(command, timeout, env)
+
+    fake_git = FakeGit(incoming=1, conflicts=["a.txt"], failing="backup-push")
+    monkeypatch.setattr(command_module, "run_git", run)
+
+    with pytest.raises(SyncError, match=r"backup branch.*a\.txt.*protected") as excinfo:
         sync_once(repo)
 
     assert excinfo.value.kind is SyncErrorKind.BACKUP_FAILED

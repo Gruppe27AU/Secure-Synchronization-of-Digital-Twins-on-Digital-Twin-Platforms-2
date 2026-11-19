@@ -47,12 +47,14 @@ def test_enable_lists_repositories_with_no_attempt_yet():
                 "last_attempt": None,
                 "last_success": None,
                 "last_error": None,
+                "last_remote_overwrite": None,
             },
             "common": {
                 "state": "syncing",
                 "last_attempt": None,
                 "last_success": None,
                 "last_error": None,
+                "last_remote_overwrite": None,
             },
         },
     }
@@ -69,6 +71,7 @@ def test_record_success_sets_attempt_and_success():
         "last_attempt": "2026-10-09T12:00:00+00:00",
         "last_success": "2026-10-09T12:00:00+00:00",
         "last_error": None,
+        "last_remote_overwrite": None,
     }
 
 
@@ -86,6 +89,7 @@ def test_record_failure_reports_only_the_kind():
             "kind": "auth_failed",
             "at": "2026-10-09T12:00:00+00:00",
         },
+        "last_remote_overwrite": None,
     }
 
 
@@ -113,6 +117,19 @@ def test_a_synced_failure_moves_the_last_success_too():
     repo = status.snapshot()["repositories"]["private"]
     assert repo["last_success"] == repo["last_error"]["at"] == "2026-10-09T12:00:00+00:00"
     assert repo["last_error"]["kind"] == "backup_failed"
+
+
+def test_a_remote_overwrite_is_recorded_beside_the_outcome():
+    """Test an overwrite of the remote's branch is timestamped, not an error."""
+    status = SyncStatus(clock=step_clock())
+    status.enable(["private"])
+    status.record_remote_overwrite("private")
+    status.record_success("private")
+
+    repo = status.snapshot()["repositories"]["private"]
+    assert repo["last_remote_overwrite"] == "2026-10-09T12:00:00+00:00"
+    assert repo["last_success"] == "2026-10-09T12:01:00+00:00"
+    assert repo["last_error"] is None
 
 
 def test_enable_again_keeps_recorded_outcomes():
@@ -195,6 +212,7 @@ def test_a_failed_clone_is_reported_with_its_kind():
         "last_attempt": "2026-10-09T12:00:00+00:00",
         "last_success": None,
         "last_error": {"kind": "auth_failed", "at": "2026-10-09T12:00:00+00:00"},
+        "last_remote_overwrite": None,
     }
 
 

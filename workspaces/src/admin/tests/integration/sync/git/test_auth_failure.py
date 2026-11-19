@@ -110,7 +110,9 @@ def test_the_token_goes_to_the_repository_only(tmp_path, monkeypatch):
     server = HTTPServer(("127.0.0.1", 0), _Recording)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **auth.auth_environment(
+    # As runner.py does: an askpass program from the environment, such as
+    # VS Code's, would otherwise wait for a login that never comes.
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", **auth.auth_environment(
         make_repo(repo_url=f"{base}/me/priv.git", token="secret-token")
     )}
     try:

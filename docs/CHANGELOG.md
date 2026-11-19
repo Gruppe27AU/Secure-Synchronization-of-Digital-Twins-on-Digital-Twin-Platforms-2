@@ -6,6 +6,15 @@ The main changes made so far are listed here.
 
 ### Changed
 
+* **A merge conflict now ends with the workspace's branch on the remote.**
+  The merge is aborted, the remote's branch is saved on a new branch
+  `remote-backup/<workspace-id>/<time>`, and the workspace's branch is
+  force-pushed over the remote's, in one atomic push. `--force-with-lease`
+  refuses the push if the remote moved since the fetch (`remote_changed`;
+  the next cycle tries again). A forge that refuses force-pushes reports
+  `overwrite_refused`. The status kind `merge_conflict` is no longer
+  reported, and each repository in `/storage/status` has a new field,
+  `last_remote_overwrite`
 * The `admin.git` package is split in two: `admin.config` reads
   `config.toml`, and `admin.sync.git` runs the backup, its former `run`,
   `repo` and `service` modules side by side. The service catalogue moves
