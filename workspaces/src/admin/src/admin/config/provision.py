@@ -2,13 +2,17 @@
 Setup of the git config directory.
 
 A workspace without a config file gets a copy to fill in.
-The directory also gets a ``.gitignore`` that ignores everything in it,
-so a repository the user creates further up never commits the token.
+The default directory, ``.config/workspace-admin``, also gets a
+``.gitignore`` that ignores everything in it, so a repository the user
+creates further up never commits the token. Any other directory is left
+alone, as it may be the user's own repository.
 """
 
 import logging
 import os
 from pathlib import Path
+
+from admin.config.locate import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +38,9 @@ def _write_new_file(path: Path, data: bytes, mode: int) -> None:
 
 
 def _ensure_gitignore(config_dir: Path) -> None:
-    """Add the ignore file to ``config_dir`` unless one is already there."""
+    """Add the ignore file to the default directory unless one is there."""
+    if config_dir.parts[-len(CONFIG_DIR.parts):] != CONFIG_DIR.parts:
+        return
     try:
         _write_new_file(config_dir / GITIGNORE_NAME, GITIGNORE_CONTENT, 0o644)
     except FileExistsError:

@@ -33,6 +33,16 @@ The main changes made so far are listed here.
   `admin.git.setup.load` is now `admin.config.load`; a log filter on the
   old names must be updated
 
+### Fixed
+
+* A file held back for conflict markers no longer holds back other files
+  whose names match its name as a pattern: `a[1].txt` held back
+  `a1.txt` too
+* The `.gitignore` holding `*` is only written into a directory named
+  `.config/workspace-admin`. A config file placed in the user's own
+  repository through `WORKSPACE_ADMIN_CONFIG` no longer makes that
+  repository ignore every new file
+
 ## Week of 9-Nov-2026
 
 ### Changed

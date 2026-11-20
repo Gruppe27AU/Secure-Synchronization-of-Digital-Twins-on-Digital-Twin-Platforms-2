@@ -252,7 +252,10 @@ rules. The template is `workspaces/src/templates/config.toml.example`.
   Dockerfile sets `WORKSPACE_CONFIG_TEMPLATE`): the template is copied into
   place with mode `0600`, an existing file is never overwritten, and the
   directory gets a `.gitignore` holding `*`, so a repository further up
-  never commits the token. Its placeholder values are refused, so nothing
+  never commits the token. Only a directory named `.config/workspace-admin`
+  gets it: a config file placed elsewhere through `WORKSPACE_ADMIN_CONFIG`
+  may sit in the user's own repository, where `*` would hide every new
+  file. Its placeholder values are refused, so nothing
   is cloned until the user fills it in and restarts. The status reports
   `needs_setup`.
 - **No file, no template** (outside the image): the backup is disabled, the
@@ -1667,7 +1670,8 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
     lock. It stores a `SyncErrorKind`, never an error message
   - `config/provision.py`: `provision_config()` copies the template into place
     when `config.toml` is missing (mode `0600`, never overwriting) and adds
-    a `.gitignore` holding `*` to its directory
+    a `.gitignore` holding `*` to its directory when that is
+    `.config/workspace-admin`
   - `sync/git/bootstrap.py`: `start_git_backup()` is called once from
     `admin.main.cli()` on startup and returns at once, running
     `clone_configured_repos()` and then `start_git_sync()` on the

@@ -94,6 +94,20 @@ def test_existing_ignore_file_is_kept(config_path, template):
     assert gitignore.read_bytes() == b"custom\n"
 
 
+@pytest.mark.parametrize("existing", [False, True], ids=["created", "existing"])
+def test_other_directory_gets_no_ignore_file(tmp_path, template, existing):
+    """Test a config in the user's own repository does not hide its files."""
+    config_path = tmp_path / "myproject" / "config.toml"
+    if existing:
+        config_path.parent.mkdir()
+        config_path.write_bytes(b"filled in")
+
+    provision_config(config_path, template)
+
+    assert config_path.exists()
+    assert not (config_path.parent / GITIGNORE_NAME).exists()
+
+
 def test_nothing_is_created_without_a_template(config_path):
     """Test that outside the image the backup simply stays disabled."""
     assert not provision_config(config_path, None)

@@ -329,7 +329,7 @@ The backup lives in two packages, and the tests mirror them under
   and returns the path with the rule that chose it
 - `provision.py`: copies the template into place when `config.toml` is
   missing (mode `0600`, never overwriting) and adds a `.gitignore` holding
-  `*` to its directory
+  `*` to its directory when that is `.config/workspace-admin`
 - `config.py`: the types (`RepoConfig`, `SyncMode`, `ConfigError`) and the
   settings' names and limits
 - `validate.py`: checks each value (https URL, branch, `MODE`, interval,
