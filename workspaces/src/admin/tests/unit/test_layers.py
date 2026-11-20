@@ -70,4 +70,4 @@ def test_imports_point_down_only():
             if target_package is None or LAYERS[target_package] >= LAYERS[source]:
                 wrong.append(f"{_module_name(path)} -> {target}")
 
-    assert wrong == []
+    assert not wrong, wrong

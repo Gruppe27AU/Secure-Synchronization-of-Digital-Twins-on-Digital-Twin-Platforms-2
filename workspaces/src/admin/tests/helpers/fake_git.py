@@ -41,6 +41,7 @@ _ARGUMENT_KEYS = (
     ("ls-files", "--unmerged", "unmerged"),
     ("add", "-A", "add"),
     ("diff", "--quiet", "staged-check"),
+    ("diff", "--name-only", "remote-changes"),
     ("merge", "--abort", "merge-abort"),
     ("merge", "--ff-only", "fast-forward"),
     ("push", "--atomic", "overwrite-push"),
@@ -106,6 +107,8 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
         tracked_files: How many files ``git ls-files --cached`` lists.
         untracked: What ``git ls-files --others`` lists.
         modified: What ``git ls-files --modified`` lists.
+        remote_changes: What ``git diff --name-only`` lists as changed by
+            the remote.
         missing_refs: Refs ``git rev-parse --verify`` does not find.
         commands: Every command that was run, filled in as they arrive.
         timeouts: The time limit of each command.
@@ -130,6 +133,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
     tracked_files: int = 0
     untracked: list = field(default_factory=list)
     modified: list = field(default_factory=list)
+    remote_changes: list = field(default_factory=list)
     missing_refs: set = field(default_factory=set)
     commands: list = field(default_factory=list)
     timeouts: list = field(default_factory=list)
@@ -189,6 +193,7 @@ class FakeGit:  # pylint: disable=too-many-instance-attributes
             "ref": FAKE_COMMIT,
             "untracked-files": _listing(self.untracked),
             "modified-files": _listing(self.modified),
+            "remote-changes": _listing(self.remote_changes),
         }.get(key, "")
 
     def command_for(self, key):

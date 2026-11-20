@@ -142,6 +142,23 @@ def pull_changes(repo: RepoConfig) -> bool:
     return True
 
 
+def remote_changed_paths(repo: RepoConfig) -> set[str]:
+    """
+    Return the files the remote changed since the branches last met.
+
+    ``-z`` prints each name as it is, never quoted or escaped.
+
+    Raises:
+        SyncError: If the files cannot be listed.
+    """
+    result = run_local(
+        repo,
+        ["diff", "--name-only", "-z", f"HEAD...{remote_ref(repo)}", "--"],
+        "list the files the remote changed",
+    )
+    return {path for path in result.stdout.split("\0") if path}
+
+
 def pull_only(repo: RepoConfig) -> bool:
     """
     Fast-forward a ``pull`` repository; never commit or push.

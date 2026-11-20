@@ -833,7 +833,9 @@ as you left it, and the status reports `conflict_markers` until it is
 fixed.
 
 If the remote changed the same file, the merge would overwrite it, so
-nothing is merged until it is fixed, and the log says so:
+nothing is merged until it is fixed, and the log says so. The backup asks
+git for the files the remote changed and names each held-back one among
+them, whatever characters its name holds:
 
 ```text
 WARNING admin.sync.git.sync Repository 'private': notes.md is held back (conflict markers left in notes.md), remove the conflict markers in order to merge.
@@ -1652,7 +1654,11 @@ the service from starting. The tests mirror this layout under
     holding back large and marked files (`HeldBack`). The commit identity
     is passed per command with `git -c`, never written to `.git/config`
   - `sync/git/pull.py`: `pull_changes()` fetches and merges, aborting a conflicted
-    merge; `pull_only()` fast-forwards a `pull` repository
+    merge; `pull_only()` fast-forwards a `pull` repository;
+    `remote_changed_paths()` lists the files the remote changed
+    (`git diff --name-only -z HEAD...origin/<branch>`), which is how a
+    held-back file in the way of a merge is named, rather than from the
+    wording of git's error
   - `sync/git/push.py`: `push_if_ahead()` pushes the branch;
     `overwrite_remote()` saves the remote's branch on
     `remote-backup/<time>-<hash>` and force-pushes the workspace's over it,
@@ -1739,7 +1745,7 @@ obvious test file:
 | `tests/unit/sync/git/test_pull.py` | `admin/sync/git/pull.py` | Clean merge, an aborted conflict naming its files, failed fetch or merge, no merge after a branch switch |
 | `tests/unit/sync/git/test_refs.py` | `admin/sync/git/refs.py` | The refs and refspecs, https only, an option-shaped branch never reaching git as an option |
 | `tests/unit/sync/git/test_push.py` | `admin/sync/git/push.py` | Push only when ahead, counted by branch, the token hint, the atomic overwrite with its lease, a branch of its own per conflict named by time and hash, a moved remote and a protected branch told apart |
-| `tests/unit/sync/git/test_sync.py` | `admin/sync/git/sync.py` | The order of a cycle, what counts as a change, stopping between steps, every command naming its repository |
+| `tests/unit/sync/git/test_sync.py` | `admin/sync/git/sync.py` | The order of a cycle, what counts as a change, stopping between steps, every command naming its repository, a held-back file named only when the remote changed it |
 | `tests/unit/sync/git/test_sync_failures.py` | `admin/sync/git/sync.py` | Time limits, an unreachable remote, a conflict replacing the remote's branch, a refused overwrite naming the conflict, a stop before the overwrite, a pull that fails for good or may recover |
 | `tests/unit/sync/git/test_scheduler.py` | `admin/sync/git/scheduler.py` | Every repository cloned or synchronized once, failures, overwrites of the remote's branch and unexpected errors recorded, nothing started or recorded once stopped |
 | `tests/unit/sync/git/test_scheduler_loop.py` | `admin/sync/git/scheduler.py` | The daemon thread, one round per interval, the status enabled, the stop event handed to the round |

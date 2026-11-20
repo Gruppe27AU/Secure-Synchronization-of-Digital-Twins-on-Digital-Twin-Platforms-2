@@ -10,8 +10,10 @@ import threading
 import pytest
 
 from admin.sync.git import command as command_module
+from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.sync import SyncStopped, sync_once
 from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
+from tests.unit.sync.git.test_commit import MARKED_NOTES
 
 
 def test_sync_once_commits_before_it_merges(monkeypatch, repo):
@@ -118,3 +120,33 @@ def _subcommand_index(command):
     while command[index].startswith("-"):
         index += 2 if command[index] in ("-c", "-C") else 1
     return index
+
+
+@pytest.mark.parametrize(
+    ("remote_changes", "kind"),
+    [
+        (["notes.md"], SyncErrorKind.CONFLICT_MARKERS),
+        (["other.md"], SyncErrorKind.LOCAL_CHANGES),
+    ],
+    ids=["remote-changed-it", "remote-changed-another"],
+)
+def test_a_held_back_file_is_named_only_if_the_remote_changed_it(
+    monkeypatch, repo, remote_changes, kind
+):
+    """Test the remote's own list of files decides, not git's error text."""
+    fake_git = install_fake_git(
+        monkeypatch,
+        FakeGit(
+            **MARKED_NOTES,
+            incoming=1,
+            failing="merge",
+            failure_message="error: Your local changes would be overwritten by merge",
+            remote_changes=remote_changes,
+        ),
+    )
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(repo)
+
+    assert excinfo.value.kind is kind
+    assert fake_git.command_for("remote-changes")[-2:] == ["HEAD...origin/main", "--"]

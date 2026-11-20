@@ -124,8 +124,10 @@ def _write_large(tree, path):
          "remove the conflict markers"),
         ("big.bin", _write_large, SyncErrorKind.FILE_TOO_LARGE,
          "remove or shrink it"),
+        (" lead æ.txt", _write_marker, SyncErrorKind.CONFLICT_MARKERS,
+         "remove the conflict markers"),
     ],
-    ids=["tracked-marker", "untracked-marker", "untracked-large"],
+    ids=["tracked-marker", "untracked-marker", "untracked-large", "odd-name"],
 )
 def test_a_held_back_file_the_remote_changed_is_named(world, monkeypatch, case):
     """Test the held-back file is reported, not taken for a lasting failure."""

@@ -376,7 +376,8 @@ The backup lives in three packages, and the tests mirror them under
 - `commit.py`: commits the user's changes, holding back large and marked
   files (`HeldBack`)
 - `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
-  (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
+  (`merge_conflict`); `pull_only` fast-forwards a `pull` repository;
+  `remote_changed_paths` lists the files the remote changed
 - `push.py`: pushes the branch; after a conflict, `overwrite_remote()`
   saves the remote's branch on `remote-backup/<time>-<hash>` (UTC time,
   short hash of the saved commit) and force-pushes the workspace's over
