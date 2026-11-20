@@ -7,10 +7,10 @@ only fast-forward (:func:`pull_only`). Neither resolves a conflict.
 
 import logging
 
+from admin.config.config import RepoConfig
 from admin.sync.git.busy import ensure_on_branch, ensure_safe_to_sync, unmerged_stages
 from admin.sync.git.command import count_commits, output_of, ref_exists, run_local, run_remote
 from admin.sync.git.commit import identity_options
-from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind, merge_failure_kind
 from admin.sync.git.refs import (
     fetch_refspec,

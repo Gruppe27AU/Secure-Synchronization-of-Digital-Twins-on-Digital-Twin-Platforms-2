@@ -15,9 +15,9 @@ import logging
 import threading
 from collections.abc import Callable
 
+from admin.config.config import RepoConfig, SyncMode
 from admin.sync.git.checks import MAX_FILE_BYTES
 from admin.sync.git.commit import HeldBack, commit_local_changes
-from admin.config.config import RepoConfig, SyncMode
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.pull import pull_changes, pull_only
 from admin.sync.git.push import overwrite_remote, push_if_ahead

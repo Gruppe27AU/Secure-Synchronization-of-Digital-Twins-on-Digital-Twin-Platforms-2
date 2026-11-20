@@ -5,9 +5,9 @@ workspace's after a merge conflict.
 
 import logging
 
+from admin.config.config import RepoConfig
 from admin.sync.git.clock import utc_now
 from admin.sync.git.command import count_commits, ref_exists, resolve_commit, run_remote
-from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.refs import (
     local_branch,

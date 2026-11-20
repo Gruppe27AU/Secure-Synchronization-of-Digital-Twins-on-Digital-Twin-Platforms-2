@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from admin.config.config import ConfigError, DEFAULT_SYNC_INTERVAL_SECONDS
+from admin.config.config import DEFAULT_SYNC_INTERVAL_SECONDS, ConfigError
 from admin.config.load import load_config, load_sync_interval
 from tests.unit.config.samples import ROOT, VALID_CONFIG, write_config
 

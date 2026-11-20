@@ -10,15 +10,15 @@ import threading
 
 import pytest
 
-from admin.sync.git.sync import sync_once, SyncStopped
-from admin.sync.git import command as command_module
-from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.process.git_runner import (
-    GitTimeoutError,
     LOCAL_TIMEOUT_SECONDS,
     REMOTE_TIMEOUT_SECONDS,
+    GitTimeoutError,
 )
-from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
+from admin.sync.git import command as command_module
+from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.sync import SyncStopped, sync_once
+from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
 
 
 def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):

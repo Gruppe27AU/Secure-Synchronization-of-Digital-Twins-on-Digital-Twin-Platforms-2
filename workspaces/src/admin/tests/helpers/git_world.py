@@ -10,9 +10,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from admin.config.config import RepoConfig
 from admin.sync.git import command as command_module
 from admin.sync.git.clone import clone_asset
-from admin.config.config import RepoConfig
 from tests.helpers.repo_factory import make_repo
 
 #: Content of the remote's ``notebook.txt``, eight numbered lines.

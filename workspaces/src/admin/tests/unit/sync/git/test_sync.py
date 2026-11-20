@@ -9,9 +9,9 @@ import threading
 
 import pytest
 
-from admin.sync.git.sync import sync_once, SyncStopped
 from admin.sync.git import command as command_module
-from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
+from admin.sync.git.sync import SyncStopped, sync_once
+from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
 
 
 def test_sync_once_commits_before_it_merges(monkeypatch, repo):

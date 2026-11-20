@@ -10,7 +10,6 @@ can act on. The caller logs it.
 
 import subprocess
 
-from admin.sync.git.auth import AUTH_FAILURE_HINT, auth_environment, remote_options
 from admin.config.config import RepoConfig
 from admin.process.git_runner import (
     LOCAL_TIMEOUT_SECONDS,
@@ -18,6 +17,7 @@ from admin.process.git_runner import (
     GitTimeoutError,
     run_git,
 )
+from admin.sync.git.auth import AUTH_FAILURE_HINT, auth_environment, remote_options
 from admin.sync.git.errors import SyncError, SyncErrorKind, failure_kind
 
 

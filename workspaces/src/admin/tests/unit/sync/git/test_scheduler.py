@@ -8,13 +8,12 @@ import threading
 
 import pytest
 
-from admin.sync.git.sync import SyncStopped
-from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git import scheduler
+from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.status import SyncStatus
+from admin.sync.git.sync import SyncStopped
 from tests.helpers.repo_factory import make_repo
 from tests.unit.sync.git.scheduler_stubs import named_repo
-
 
 pytestmark = pytest.mark.usefixtures("restored", "not_cloned")
 

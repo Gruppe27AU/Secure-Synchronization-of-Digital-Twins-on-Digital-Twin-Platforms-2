@@ -8,9 +8,9 @@ same layout and remote instead, and the first push creates the branch.
 import logging
 from pathlib import Path
 
+from admin.config.config import RepoConfig
 from admin.sync.git.command import list_paths, run, run_local
 from admin.sync.git.errors import SyncError
-from admin.config.config import RepoConfig
 
 logger = logging.getLogger(__name__)
 

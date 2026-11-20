@@ -10,15 +10,15 @@ from datetime import datetime, timezone
 
 import pytest
 
+from admin.sync.git import command as command_module
 from admin.sync.git import push as push_module
+from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.push import (
     overwrite_remote,
     push_if_ahead,
     remote_backup_branch,
 )
-from admin.sync.git import command as command_module
-from admin.sync.git.errors import SyncError, SyncErrorKind
-from tests.helpers.fake_git import FAKE_COMMIT, command_key, FakeGit, install_fake_git
+from tests.helpers.fake_git import FAKE_COMMIT, FakeGit, command_key, install_fake_git
 
 
 def test_push_if_ahead_pushes_when_the_remote_is_behind(monkeypatch, repo):

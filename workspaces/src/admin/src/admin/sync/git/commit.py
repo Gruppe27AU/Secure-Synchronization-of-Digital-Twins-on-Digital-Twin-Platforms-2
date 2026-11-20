@@ -7,6 +7,7 @@ What is checked lives in :mod:`admin.sync.git.checks`.
 import logging
 import time
 
+from admin.config.config import RepoConfig
 from admin.sync.git.busy import ensure_safe_to_sync
 from admin.sync.git.checks import (
     MAX_FILE_BYTES,
@@ -16,7 +17,6 @@ from admin.sync.git.checks import (
     staged_conflict_markers,
 )
 from admin.sync.git.command import run_local
-from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind
 
 logger = logging.getLogger(__name__)

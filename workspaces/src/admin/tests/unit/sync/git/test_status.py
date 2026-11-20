@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from admin.sync.git.status import BackupState, SyncStatus
 from admin.sync.git.errors import SyncErrorKind
+from admin.sync.git.status import BackupState, SyncStatus
 
 START = datetime(2026, 10, 9, 12, 0, 0, tzinfo=timezone.utc)
 

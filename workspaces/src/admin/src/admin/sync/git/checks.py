@@ -9,8 +9,8 @@ such as virtual environments are never staged (:func:`ensure_default_excludes`).
 
 import logging
 
-from admin.sync.git.command import list_paths, run_local
 from admin.config.config import RepoConfig
+from admin.sync.git.command import list_paths, run_local
 from admin.sync.git.errors import SyncError, SyncErrorKind
 
 logger = logging.getLogger(__name__)

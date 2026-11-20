@@ -11,15 +11,14 @@ import pytest
 
 from admin.sync.git import checks
 from admin.sync.git.commit import (
+    HeldBack,
     build_commit_message,
     commit_local_changes,
     has_changes,
-    HeldBack,
 )
-from admin.sync.git.sync import sync_once
 from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.sync import sync_once
 from tests.helpers.fake_git import FakeGit, install_fake_git
-
 
 MARKED_NOTES = {
     "status_output": "M  notes.md",

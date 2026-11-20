@@ -14,9 +14,9 @@ import pytest
 
 from admin.sync.git import checks
 from admin.sync.git.clone import clone_asset
+from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.scheduler import sync_all
 from admin.sync.git.status import SyncStatus
-from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.sync import sync_once
 from tests.helpers.git_world import SEED_FILES, git, write
 

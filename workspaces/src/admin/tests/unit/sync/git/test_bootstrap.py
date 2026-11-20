@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from admin.sync.git import bootstrap, scheduler
 from admin.config.config import ConfigError
-from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.config.locate import CONFIG_ENV_VAR
+from admin.sync.git import bootstrap, scheduler
+from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
 from tests.helpers.templates import EXAMPLE_CONFIG_PATH

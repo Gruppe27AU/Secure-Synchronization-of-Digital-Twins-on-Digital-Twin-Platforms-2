@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 
 from admin.sync.git import command as command_module
 
-
 #: Key for each git subcommand that is only ever run one way.
 _PLAIN_KEYS = {
     "status": "status",

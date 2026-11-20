@@ -8,8 +8,8 @@ every command.
 
 import pytest
 
-from admin.sync.git.pull import pull_changes
 from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.pull import pull_changes
 from tests.helpers.fake_git import FakeGit, install_fake_git
 
 

@@ -12,11 +12,11 @@ import os
 import threading
 from pathlib import Path
 
-from admin.sync.git.clone import is_cloned
 from admin.config.config import ConfigError, PlaceholderError, RepoConfig
 from admin.config.load import load_config, load_sync_interval
 from admin.config.locate import discover_config, persistent_root
 from admin.config.provision import provision_config
+from admin.sync.git.clone import is_cloned
 from admin.sync.git.scheduler import clone_and_record, start_sync_scheduler
 from admin.sync.git.status import BackupState, SyncStatus
 

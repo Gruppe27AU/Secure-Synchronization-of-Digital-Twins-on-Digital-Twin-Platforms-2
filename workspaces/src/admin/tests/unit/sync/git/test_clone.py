@@ -12,10 +12,10 @@ from dataclasses import replace
 
 import pytest
 
-from admin.sync.git.clone import clone_asset, is_cloned, restore_git_file
+from admin.process.git_runner import REMOTE_TIMEOUT_SECONDS, GitTimeoutError
 from admin.sync.git import command as command_module
+from admin.sync.git.clone import clone_asset, is_cloned, restore_git_file
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.process.git_runner import GitTimeoutError, REMOTE_TIMEOUT_SECONDS
 from tests.helpers.repo_factory import make_repo
 
 

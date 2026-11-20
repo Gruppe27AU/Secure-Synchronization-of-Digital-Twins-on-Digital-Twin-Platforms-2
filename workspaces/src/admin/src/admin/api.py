@@ -21,8 +21,8 @@ from typing import Any
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
-from admin.sync.git.status import SyncStatus
 from admin.services import load_services
+from admin.sync.git.status import SyncStatus
 
 try:
     # Read the version from the installed distribution metadata, so that
