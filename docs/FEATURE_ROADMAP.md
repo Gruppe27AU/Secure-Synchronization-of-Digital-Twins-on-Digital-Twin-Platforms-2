@@ -119,8 +119,7 @@ tags).
 
 Out of scope: restore through the page or CLI (runbook only); renaming
 assets; shared areas between users (an operator policy); SeaweedFS
-replication; Kubernetes manifests; splitting `git/sync.py` (920
-lines), a separate technical-debt item.
+replication; Kubernetes manifests.
 
 ## Pull requests
 
