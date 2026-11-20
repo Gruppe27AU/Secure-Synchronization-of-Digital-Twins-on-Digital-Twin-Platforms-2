@@ -11,7 +11,7 @@ from admin.sync.git.busy import ensure_on_branch, ensure_safe_to_sync, unmerged_
 from admin.sync.git.command import count_commits, output_of, ref_exists, run_local, run_remote
 from admin.sync.git.commit import identity_options
 from admin.config.config import RepoConfig
-from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.errors import SyncError, SyncErrorKind, merge_failure_kind
 from admin.sync.git.refs import (
     fetch_refspec,
     local_branch,
@@ -23,17 +23,6 @@ logger = logging.getLogger(__name__)
 
 #: git's error when the remote does not have the branch.
 MISSING_REMOTE_REF = "couldn't find remote ref"
-
-#: git's errors when a merge would overwrite a local file.
-LOCAL_CHANGES_MARKERS = ("would be overwritten", "local changes")
-
-
-def _failure_kind(output: str, otherwise: SyncErrorKind) -> SyncErrorKind:
-    """Return ``local_changes`` if git refused because a local file is in the way."""
-    if any(marker in output.lower() for marker in LOCAL_CHANGES_MARKERS):
-        return SyncErrorKind.LOCAL_CHANGES
-    return otherwise
-
 
 def _fetch(repo: RepoConfig) -> bool:
     """
@@ -117,7 +106,7 @@ def _merge_failure(repo: RepoConfig, output: str) -> SyncError:
         )
     return SyncError(
         f"Failed to merge the remote's changes for repository '{repo.name}': {output}",
-        _failure_kind(output, SyncErrorKind.GIT_FAILED),
+        merge_failure_kind(output, SyncErrorKind.GIT_FAILED),
     )
 
 
@@ -180,7 +169,7 @@ def pull_only(repo: RepoConfig) -> bool:
         reason = output_of(attempt)
         raise SyncError(
             f"Not updating pull-only repository '{repo.name}': {reason}",
-            _failure_kind(reason, SyncErrorKind.PULL_FAILED),
+            merge_failure_kind(reason, SyncErrorKind.PULL_FAILED),
         )
 
     logger.info(

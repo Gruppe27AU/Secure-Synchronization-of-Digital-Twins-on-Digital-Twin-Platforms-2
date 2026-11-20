@@ -1634,8 +1634,11 @@ the service from starting. The tests mirror this layout under
     abandons stalled transfers. `is_auth_failure()` recognizes git's and
     GitLab's rejection texts, including `could not read Username`
   - `sync/git/errors.py`: `SyncErrorKind`, the reasons `/storage/status` may report,
-    and `SyncError`. `failure_kind()` sorts a failed command's output into
-    `auth_failed`, `network` or `git_failed`
+    and `SyncError`. Every rule reading a kind out of git's output is here:
+    `failure_kind()` sorts a failed command's output into `auth_failed`,
+    `network`, `remote_changed` (a stale `--force-with-lease`) or
+    `git_failed`, and `merge_failure_kind()` gives `local_changes` for a
+    merge refused because a local file is in the way
   - `sync/git/command.py`: `run()` runs every git command of the backup and the
     clone, and turns a failure or time-out into a `SyncError` of the right
     kind; the caller logs it. `run_local()` and `run_remote()` add
@@ -1754,7 +1757,7 @@ obvious test file:
 | `tests/unit/process/test_git_runner.py` | `admin/process/git_runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/sync/git/test_bootstrap.py` | `admin/sync/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
 | `tests/integration/sync/git/test_sync_conflicts.py` | `admin/sync/git/push.py`, `sync.py` | Conflicts against real git: every kind leaves the remote's branch equal to the workspace's with the remote's version on a `remote-backup/` branch, a commit that did not conflict is saved too, nothing is left to do after, a branch of its own per conflict, a push during the overwrite is never lost, a remote refusing force-pushes keeps its branch with the work still committed |
-| `tests/unit/sync/git/test_errors.py` | `admin/sync/git/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
+| `tests/unit/sync/git/test_errors.py` | `admin/sync/git/errors.py` | Sorting a failed command into `auth_failed`, `network`, `remote_changed` or `git_failed`, and a refused merge into `local_changes` |
 | `tests/unit/sync/git/test_command.py` | `admin/sync/git/command.py` | Repository options before the subcommand, remote options, credentials and time limits, failures by kind with the token hint only when a token was sent, unchecked failures, time-outs, reading git's output |
 | `tests/integration/sync/git/test_sync_repository.py` | `admin/sync/git/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted or emptied working tree is restored on startup, and one deleted while running stays deleted |
 | `tests/integration/sync/git/test_pull_only.py` | `admin/sync/git/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |

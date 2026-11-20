@@ -25,9 +25,6 @@ REMOTE_BACKUP_BRANCH_PREFIX = "remote-backup/"
 #: Characters of the commit hash in the branch name, as forges show it.
 SHORT_HASH_LENGTH = 7
 
-#: git's reason when ``--force-with-lease`` finds the remote has moved.
-STALE_LEASE_MARKER = "stale info"
-
 
 def push_if_ahead(repo: RepoConfig) -> bool:
     """
@@ -126,28 +123,24 @@ def overwrite_remote(repo: RepoConfig) -> str:
 
 
 def _overwrite_failure(repo: RepoConfig, error: Exception) -> SyncError:
-    """Sort a failed :func:`overwrite_remote` by what the user can do about it."""
-    kind = getattr(error, "kind", SyncErrorKind.GIT_FAILED)
-    output = getattr(error, "git_output", "")
-    if kind is SyncErrorKind.GIT_FAILED:
-        if STALE_LEASE_MARKER in output.lower():
-            return SyncError(
-                f"Did not replace branch {repo.branch} of repository "
-                f"'{repo.name}': the remote changed meanwhile; the next cycle "
-                "tries again",
-                SyncErrorKind.REMOTE_CHANGED,
-                git_output=output,
-            )
-        return SyncError(
-            f"Could not replace branch {repo.branch} of repository "
-            f"'{repo.name}' on the remote: {error}; allow force-pushes to "
-            f"{repo.branch}, or merge origin/{repo.branch} by hand",
-            SyncErrorKind.OVERWRITE_REFUSED,
-            git_output=output,
+    """
+    Name a failed :func:`overwrite_remote`; git's output is already sorted by
+    :func:`admin.sync.git.errors.failure_kind`, and what is left unexplained
+    is a forge refusing the force-push.
+    """
+    kind = error.kind if isinstance(error, SyncError) else SyncErrorKind.GIT_FAILED
+    reason = f"{error}"
+    if kind is SyncErrorKind.REMOTE_CHANGED:
+        reason = "the remote changed meanwhile; the next cycle tries again"
+    elif kind is SyncErrorKind.GIT_FAILED:
+        kind = SyncErrorKind.OVERWRITE_REFUSED
+        reason += (
+            f"; ask the repository's owner to allow force-pushes to "
+            f"{repo.branch}, or merge origin/{repo.branch} by hand"
         )
     return SyncError(
         f"Could not replace branch {repo.branch} of repository '{repo.name}' "
-        f"on the remote: {error}",
+        f"on the remote: {reason}",
         kind,
-        git_output=output,
+        git_output=getattr(error, "git_output", ""),
     )

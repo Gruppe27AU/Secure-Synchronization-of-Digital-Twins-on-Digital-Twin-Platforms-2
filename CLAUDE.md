@@ -356,8 +356,10 @@ The backup lives in three packages, and the tests mirror them under
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
   (`GIT_CONFIG_COUNT`) and scoped to the remote's host, never on argv; and
   recognises a rejected token in git's stderr
-- `errors.py`: `SyncErrorKind`, `SyncError`, and `failure_kind()` sorting a
-  failure into `auth_failed`, `network` or `git_failed`
+- `errors.py`: `SyncErrorKind`, `SyncError`, and every rule reading a kind
+  out of git's output: `failure_kind()` sorts a failure into `auth_failed`,
+  `network`, `remote_changed` or `git_failed`; `merge_failure_kind()` names
+  a merge refused for a local file `local_changes`
 
 `sync/git/`, working on one repository, `sync` → `pull`/`push` → `commit`
 → `busy`/`checks`:
