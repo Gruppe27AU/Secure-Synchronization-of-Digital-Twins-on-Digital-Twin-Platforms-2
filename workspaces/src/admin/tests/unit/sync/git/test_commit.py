@@ -75,7 +75,7 @@ def test_commit_holds_back_a_file_with_conflict_markers(monkeypatch, repo):
     assert excinfo.value.kind is SyncErrorKind.CONFLICT_MARKERS
     assert excinfo.value.committed is False
     # Only that file is unstaged, so the working tree is left as the user had it.
-    assert fake_git.command_for("unstage")[-2:] == ["--", "notes.md"]
+    assert fake_git.command_for("unstage")[-2:] == ["--", ":(top,literal)notes.md"]
     assert "commit" not in fake_git.keys
 
 

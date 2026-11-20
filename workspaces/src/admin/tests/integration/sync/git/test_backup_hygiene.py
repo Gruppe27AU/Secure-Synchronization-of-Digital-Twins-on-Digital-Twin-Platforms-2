@@ -32,6 +32,20 @@ def test_a_marker_line_does_not_block_other_files(world):
     assert (world.workspace.work_tree / "doc.md").exists()
 
 
+def test_a_marked_file_name_is_not_read_as_a_pattern(world):
+    """Test ``a[1].txt`` held back does not hold back ``a1.txt`` too."""
+    write(world.workspace.work_tree / "a[1].txt", "x\n<<<<<<< HEAD\n")
+    write(world.workspace.work_tree / "a1.txt", "unrelated work\n")
+
+    with pytest.raises(SyncError) as excinfo:
+        sync_once(world.workspace)
+
+    assert excinfo.value.kind is SyncErrorKind.CONFLICT_MARKERS
+    assert world.remote_file("a1.txt") == "unrelated work\n"
+    # Not remote_file: git show reads "main:a[1].txt" as a pattern.
+    assert "a[1].txt" not in git(world.remote, "ls-tree", "--name-only", "main").split()
+
+
 def test_gitattributes_lets_marker_like_lines_through(world):
     """Test the documented escape hatch: a longer marker size for a path."""
     write(world.workspace.work_tree / ".gitattributes", "*.md conflict-marker-size=32\n")
