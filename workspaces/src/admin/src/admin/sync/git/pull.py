@@ -12,7 +12,12 @@ from admin.sync.git.command import count_commits, output_of, ref_exists, run_loc
 from admin.sync.git.commit import identity_options
 from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.refs import fetch_refspec, local_branch, remote_ref
+from admin.sync.git.refs import (
+    fetch_refspec,
+    local_branch,
+    remote_ref,
+    remote_tracking_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +54,7 @@ def _fetch(repo: RepoConfig) -> bool:
         )
     except SyncError as error:
         if MISSING_REMOTE_REF in error.git_output.lower() and not ref_exists(
-            repo, f"refs/remotes/{remote_ref(repo)}"
+            repo, remote_tracking_ref(repo)
         ):
             logger.info(
                 "The remote of repository '%s' has no branch %s yet; the next "

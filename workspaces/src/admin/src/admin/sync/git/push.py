@@ -9,7 +9,12 @@ from admin.sync.git.clock import utc_now
 from admin.sync.git.command import count_commits, ref_exists, resolve_commit, run_remote
 from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.refs import local_branch, push_refspec, remote_ref
+from admin.sync.git.refs import (
+    local_branch,
+    push_refspec,
+    remote_ref,
+    remote_tracking_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +46,7 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     if not ref_exists(repo, local):
         return False
     revision_range = local
-    if ref_exists(repo, f"refs/remotes/{remote_ref(repo)}"):
+    if ref_exists(repo, remote_tracking_ref(repo)):
         revision_range = f"{remote_ref(repo)}..{local}"
 
     outgoing = count_commits(repo, revision_range, "count outgoing commits")
@@ -92,7 +97,7 @@ def overwrite_remote(repo: RepoConfig) -> str:
     """
     local = local_branch(repo)
     try:
-        remote_commit = resolve_commit(repo, f"refs/remotes/{remote_ref(repo)}")
+        remote_commit = resolve_commit(repo, remote_tracking_ref(repo))
         branch = remote_backup_branch(remote_commit)
         run_remote(
             repo,
