@@ -354,7 +354,8 @@ The backup lives in three packages, and the tests mirror them under
   repository always get `--git-dir` and `--work-tree`, so a lost `.git`
   file cannot redirect them
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
-  (`GIT_CONFIG_COUNT`) and scoped to the remote's host, never on argv; and
+  (`GIT_CONFIG_COUNT`) and scoped to the repository's own URL
+  (`header_scope()`), never to the whole host and never on argv; and
   recognises a rejected token in git's stderr
 - `errors.py`: `SyncErrorKind`, `SyncError`, and every rule reading a kind
   out of git's output: `failure_kind()` sorts a failure into `auth_failed`,
