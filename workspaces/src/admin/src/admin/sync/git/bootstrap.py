@@ -1,9 +1,9 @@
 """
 Starting and stopping the git backup.
 
-:mod:`admin.main` calls :func:`start_git_backup` on startup, which clones and
-then schedules the, and :func:`stop_git_backup`
-on shutdown. The config file is chosen once, so every step reads the same
+:mod:`admin.main` calls :func:`start_git_backup` on startup, which clones the
+repositories and then schedules their backup, and :func:`stop_git_backup` on
+shutdown. The config file is chosen once, so every step reads the same
 file. Failures are logged, never raised: the HTTP API must start regardless.
 """
 
