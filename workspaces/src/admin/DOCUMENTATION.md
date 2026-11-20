@@ -1731,6 +1731,7 @@ obvious test file:
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
 | `tests/unit/sync/git/test_auth.py` | `admin/sync/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/config/test_config.py` | `admin/config/config.py` | The token kept out of `repr` and `str`, `PlaceholderError` a `ConfigError`, a default `MODE` for every section, the default interval within its bounds, the known keys, every URL and token in the template a placeholder |
 | `tests/unit/config/test_load.py` | `admin/config/load.py` | Sections become repositories, paths below the root, the token kept out of `repr`, errors in the file itself |
 | `tests/unit/config/test_validate.py` | `admin/config/validate.py` | Required and empty values, the token optional for `pull`, placeholders, `MODE`, keys that have no effect |
 | `tests/unit/config/test_validate_remote.py` | `admin/config/validate.py` | Branch and URL handed to git, two sections on one remote (also spelled differently or with `:443`), a work tree holding the config file |
