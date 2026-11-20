@@ -4,164 +4,70 @@ The main changes made so far are listed here.
 
 ## Week of 16-Nov-2026
 
+Every change since the week of 12-Oct-2026, in one entry.
+
 ### Changed
 
-* **The backup branch `backup/<workspace-id>` is no longer pushed.** A
-  cycle commits, pulls and pushes; nothing else reaches the remote. The
-  status kind `backup_failed` is gone. While the configured branch cannot
-  be pushed (`pull_failed`, `overwrite_refused`), the work is committed but
-  only in the container. Existing `backup/` branches on the remote are left
-  alone and can be deleted
-* **`remote-backup/` branches are named by the time and the saved
-  commit's short hash**, as `remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d`,
-  not `remote-backup/<workspace-id>/20261119T101530Z`
-* **A merge conflict now ends with the workspace's branch on the remote.**
-  The merge is aborted, the remote's branch is saved on a new branch
-  `remote-backup/<time>-<hash>`, and the workspace's branch is
-  force-pushed over the remote's, in one atomic push. `--force-with-lease`
+* **A merge conflict ends with the workspace's branch on the remote.**
+  Before, a conflicted file kept the workspace's whole version inside a
+  merge. Now the merge is aborted, the remote's branch is saved on a new
+  branch `remote-backup/<time>-<hash>` (UTC time, short hash of the saved
+  commit), and the workspace's branch is force-pushed over the remote's, in
+  one atomic push. The remote's other changes leave the configured branch
+  too; they are kept on the `remote-backup/` branch. `--force-with-lease`
   refuses the push if the remote moved since the fetch (`remote_changed`;
-  the next cycle tries again). A forge that refuses force-pushes reports
-  `overwrite_refused`. The status kind `merge_conflict` is no longer
-  reported, and each repository in `/storage/status` has a new field,
-  `last_remote_overwrite`
-* The `admin.git` package is split in two: `admin.config` reads
-  `config.toml`, and `admin.sync.git` runs the backup, its former `run`,
-  `repo` and `service` modules side by side. The service catalogue moves
-  to `templates/services_template.json`, and the tests mirror the new
-  layout. **The loggers are renamed with it**, for example
-  `admin.git.service.scheduler` is now `admin.sync.git.scheduler` and
-  `admin.git.setup.load` is now `admin.config.load`; a log filter on the
-  old names must be updated
-
-* `runner.py` moves from `admin.sync.git` to `admin.process.git_runner`,
-  so `admin.config` no longer imports the backup it configures. A new test,
-  `tests/unit/test_layers.py`, fails on an import that points up or
-  sideways between the packages
-* **Without `WORKSPACE_ADMIN_CONFIG`, the config file is
-  `$PERSISTENT_DIR/.config/workspace-admin/config.toml`**, beside the
-  repositories, and `~/.config/workspace-admin/config.toml` only when
-  `PERSISTENT_DIR` is unset. A `workspace-admin` started by hand in a
-  workspace terminal now reads the same file as the service, instead of
-  creating an empty one in the home directory. `custom_startup.sh` no
-  longer sets `WORKSPACE_ADMIN_CONFIG`
-
-### Fixed
-
-* A file held back for conflict markers no longer holds back other files
-  whose names match its name as a pattern: `a[1].txt` held back
-  `a1.txt` too
-* The `.gitignore` holding `*` is only written into a directory named
-  `.config/workspace-admin`. A config file placed in the user's own
-  repository through `WORKSPACE_ADMIN_CONFIG` no longer makes that
-  repository ignore every new file
-
-## Week of 9-Nov-2026
-
-### Changed
-
-* **A merge conflict is no longer resolved automatically.** The merge is
-  aborted, nothing is pushed to the configured branch, and the status
-  reports the new kind `merge_conflict` until the user merges
-  `origin/<branch>` by hand. The workspace's version is no longer pushed
-  over the remote's
-* Every cycle of a `sync` repository pushes the work to
-  `backup/<workspace-id>` before it pulls, not only when the pull fails for
-  good, so the work leaves the container even while a conflict waits
-* The status kind `renamed_on_conflict` is gone: a file/directory clash is
-  a `merge_conflict` like any other
-* A file held back for conflict markers or size that the remote also
-  changed is named in the log, with the kind `conflict_markers` or
-  `file_too_large`, instead of being reported as `pull_failed`
-* A file name that is not valid UTF-8 no longer stops the backup
-* **On a new, empty remote the configured branch is pushed first**, before
-  `backup/<workspace-id>`, so the forge makes it the project's default
-  branch. The backup push waits until the configured branch is on the
-  remote
-* A refused backup push is reported in `/storage/status` as the new kind
-  `backup_failed`, before any other failure of the same cycle; before, the
-  cycle reported success while the work was only in the container. A
-  rejected token, an unreachable remote or a time-out keeps its own kind,
-  and when the configured branch was pushed, `last_success` moves too
-* A repository with no files yet no longer logs "had lost the files" on
-  every startup
-* A missing or empty working tree is restored on startup only. A folder
-  deleted while the service runs stays deleted and is reported as
-  `mass_deletion` until the next start
-* `CloneError` is gone; a failed clone raises `SyncError`
-* **The token is only sent to the repository's own URL**, not to every
-  repository on the same host
-* `GIT_REPO_TOKEN` may be left out or empty for a `MODE = "pull"`
-  repository, such as a public `common`; `sync` still needs it
-* A working tree whose every tracked file is missing is not committed,
-  whatever the number of files; before, fewer than ten were committed as
-  deletions. Deleting a repository's last file now takes one commit by hand
-* `https://host:443/...` and `https://host/...` count as the same remote
-* The `admin.git` package is split into `setup`, `run`, `repo` and
-  `service`, and the tests mirror it. **The loggers are renamed with it**,
-  for example `admin.git.scheduler` is now `admin.git.service.scheduler`;
-  a log filter on the old names must be updated
-* `workspace-admin` chooses its `config.toml` on startup:
-  `WORKSPACE_ADMIN_CONFIG` when it is set and not empty, otherwise
-  `~/.config/workspace-admin/config.toml`. A relative
-  `WORKSPACE_ADMIN_CONFIG` is resolved against the directory the service is
-  started in. The file is chosen once and used by every step of the backup.
-  The repositories stay below `$PERSISTENT_DIR`, wherever the config file
-  is. **Outside the image, a config kept in
-  `$PERSISTENT_DIR/.config/workspace-admin/` is no longer found by
-  default**; point `WORKSPACE_ADMIN_CONFIG` at it
-* The workspace image sets `WORKSPACE_ADMIN_CONFIG` to
-  `$PERSISTENT_DIR/.config/workspace-admin/config.toml` when it starts
-  `workspace-admin`, so the image keeps reading
-  `/workspace/.config/workspace-admin/config.toml`: an existing workspace
-  needs no change. Only `workspace-admin` gets the variable; Jupyter and
-  VS Code do not
-
-## Week of 2-Nov-2026
-
-### Changed
-
+  the next cycle tries again). A forge that refuses force-pushes, as on a
+  protected branch, reports `overwrite_refused`, and the work stays
+  committed in the container until the repository's owner allows
+  force-pushes to the branch
 * **`common` is pull-only by default.** Each `[assets.*]` section takes an
   optional `MODE = "pull"` or `"sync"`; `common` defaults to `pull`,
   `private` to `sync`. A pull-only repository is only fast-forwarded:
-  nothing is committed or pushed, so users sharing it can no longer
-  overwrite each other's files, and a read-only token is enough. **A
-  workspace that backs up `common` stops pushing it unless its section adds
-  `MODE = "sync"`**; only do that when a single user writes to it
-* The status endpoint is `/storage/status`. It was called `/git/status`
-  when it was added, as the entries below still say; clients polling the
-  old path must be updated
+  nothing is committed or pushed, and a read-only token is enough, or none
+  for a public repository. **A workspace that backs up `common` stops
+  pushing it unless its section adds `MODE = "sync"`**
 * `/storage/status` has a top-level `state` (`disabled`, `needs_setup`,
   `config_error`, `starting`, `running`), and every repository is listed as
   soon as the config file is read, with a `state` of its own (`cloning`,
-  `clone_failed`, `syncing`). Before, a missing config, an unfilled
-  template, a broken config and a failed clone all looked the same:
-  `{"enabled": false, "repositories": {}}`. `enabled` is kept
+  `clone_failed`, `syncing`) and `last_remote_overwrite`. `enabled` is kept
 * New status kinds: `network`, `timeout`, `pull_failed`, `local_changes`,
-  `file_too_large`, `renamed_on_conflict` and `mass_deletion`. Time-outs
-  and unreachable remotes are no longer reported as `git_failed`
-* The token is passed to git in its environment (`GIT_CONFIG_COUNT`)
-  instead of with `-c` on the command line, where every user of the
-  machine could read it, and the header is limited to the remote's host
-* A config key that has no effect, such as `HOME_DIR`, `WORKSPACE_APP_DIR`,
-  a per-section `GIT_DIR` or a misspelt `SYNC_INTERVAL`, is now reported
-  with a warning. A config file other users can read is warned about too
-* `private` and `common` may no longer name the same remote branch in two
-  spellings: the URLs are compared without a trailing `/` or `.git` and
-  with the host in lowercase
-* The git backup code is split further: `errors.py` (status kinds),
-  `command.py` (running one command for one repository) and `checks.py`
-  (what is checked before a commit) are new, beside a smaller `sync.py`
+  `file_too_large`, `mass_deletion`, `remote_changed` and
+  `overwrite_refused`. Time-outs and unreachable remotes are no longer
+  reported as `git_failed`
+* **The token is passed to git in its environment** (`GIT_CONFIG_COUNT`)
+  instead of with `-c` on the command line, where every user of the machine
+  could read it, and the header is only sent to the repository's own URL,
+  not to every repository on the same host
+* `WORKSPACE_ADMIN_CONFIG` names another config file. Without it the file
+  is still `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, or below
+  the home directory when `PERSISTENT_DIR` is unset
+* A config key that has no effect, such as `HOME_DIR` or a misspelt
+  `SYNC_INTERVAL`, is reported with a warning, and so is a config file other
+  users can read
+* `private` and `common` may not name the same remote branch, however the
+  URL is spelt: a trailing `/` or `.git`, the host's case and `:443` are
+  ignored
+* **The `admin.git` package is split by layer**: `admin.config` reads
+  `config.toml`, `admin.sync.git` runs the backup, and
+  `admin.process.git_runner` runs git. The service catalogue moves to
+  `admin/templates/services_template.json`. **The loggers are renamed with
+  it**: `admin.git.scheduler`, `admin.git.bootstrap` and `admin.git.clone`
+  become `admin.sync.git.scheduler`, `.bootstrap` and `.clone`;
+  `admin.git.sync` is split into `admin.sync.git.sync`, `.commit`, `.pull`,
+  `.push`, `.busy` and `.checks`; `admin.git.config` becomes
+  `admin.config.load` and `admin.config.validate`; `admin.git.provision`
+  becomes `admin.config.provision`. A log filter on the old names must be
+  updated. `tests/unit/test_layers.py` fails on an import that points up
+  or sideways between the packages
 
 ### Added
 
-* A pull that fails for good - the remote's history rewritten, the branch
-  renamed or deleted on the forge - no longer stops every push. The
-  workspace's branch is pushed to `backup/<workspace-id>` on the remote
-  instead, on every interval, and the status reports `pull_failed`
-* A remote with no commits at all can now be used: it is started locally
-  and the first push creates the branch. Before, the clone failed and the
+* A remote with no commits at all can be used: it is started locally and
+  the first push creates the branch. Before, the clone failed and the
   backup silently never started
 * A clone that failed is tried again on every interval, without a restart
+* A missing or empty working tree is restored from the git directory on
+  startup
 * Folders that are rebuilt rather than kept (`.venv/`, `__pycache__/`,
   `.ipynb_checkpoints/`, `node_modules/` and others) are never staged, and
   files over 50 MiB are left out (`file_too_large`), so the backup cannot
@@ -169,32 +75,27 @@ The main changes made so far are listed here.
 
 ### Fixed
 
-* A lost `.git` file in a working tree no longer sends the git backup, and
-  its token, to another repository. Git used to look for the repository
-  itself, and without the file it found whatever repository encloses the
-  working tree, then committed and pushed there. Every command now names
-  the git directory and working tree, and the `.git` file is written back
-  before each cycle
-* The git backup no longer commits a working tree that has lost more than
-  half of its tracked files (at least ten), which would delete them on the
-  remote too. The status reports `mass_deletion`; committing the deletion
-  by hand resumes the backup
-* Git runs with `LC_ALL=C`. In a translated locale its messages, which tell
-  a rejected token, an unreachable or an empty remote apart, were not
-  recognised
-* An expired token is now recognised as one. With prompts switched off git
-  reports `could not read Username`, which was shown as `git_failed`
-  without the hint to check `GIT_REPO_TOKEN`
-* One file with a line that looks like a conflict marker no longer stops
-  every other file from being backed up: only that file is left out
-  (`conflict_markers`). A `conflict-marker-size` in `.gitattributes` lets
-  such lines through on purpose
-* A file that git renames to `<name>~HEAD` to settle a conflict between a
-  file and a directory is reported (`renamed_on_conflict`) instead of
-  silently changing name
-* `DOCUMENTATION.md` described the old config format (`HOME_DIR`,
-  `WORKSPACE_APP_DIR`, `config.env`). Its configuration, cloning and status
-  sections are rewritten
+* A lost `.git` file in a working tree no longer sends the backup, and its
+  token, to another repository. Every command names the git directory and
+  working tree, and the `.git` file is written back before each cycle
+* The backup no longer commits a working tree that has lost every tracked
+  file, or more than half of them and at least ten, which would delete them
+  on the remote too. The status reports `mass_deletion`
+* Git runs with `LC_ALL=C`, so its messages are recognised in a translated
+  locale, and an expired token is recognised as one
+* One file with conflict markers or over the size limit no longer stops
+  every other file from being backed up: only that file is left out. A
+  `conflict-marker-size` in `.gitattributes` lets marker-like lines
+  through on purpose. When the remote changed that file too, the log names
+  it, with the kind `conflict_markers` or `file_too_large`
+* A held-back file no longer holds back other files whose names match its
+  name as a pattern: `a[1].txt` held back `a1.txt` too
+* A file name that is not valid UTF-8 no longer stops the backup
+* The `.gitignore` holding `*` is only written into a directory named
+  `.config/workspace-admin`, so a config file placed in the user's own
+  repository no longer makes that repository ignore every new file
+* `DOCUMENTATION.md` described the old config format. Its configuration,
+  cloning and status sections are rewritten
 
 ## Week of 12-Oct-2026
 
