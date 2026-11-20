@@ -178,7 +178,14 @@ Fill in the section `[assets.private]`:
 GIT_REPO_URL = "https://github.com/<your-name>/<your-repository>.git"
 GIT_REPO_BRANCH = "main"
 GIT_REPO_TOKEN = "<your token>"
+MODE = "sync"
 ```
+
+The file also holds a section `[assets.common]`, for files shared between
+users. If you do not use shared files, delete that section, from the line
+`[assets.common]` to the end of the file. The backup does not start while
+it still holds the example values. To use it, see
+[Config File Reference](#config-file-reference).
 
 The URL must start with `https://`. The file holds your token, so do not
 share it. The config file is never backed up as long as it stays in this
@@ -301,4 +308,5 @@ The next backup saves it like any other change.
 | `MODE` | `"sync"` backs up and fetches (default for `private`). `"pull"` only fetches (default for `common`). |
 
 The section `[assets.common]` receives files shared between users, in
-`/workspace/assets/common`. A read-only token is enough for it.
+`/workspace/assets/common`. Fill it in like `[assets.private]`, with its own
+repository, or delete it. A read-only token is enough for it.
