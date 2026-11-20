@@ -83,7 +83,9 @@ the service never looks past it for another one.
 
 The container sets `PERSISTENT_DIR` to `/workspace`, so the file stays on
 the persistent volume, also when you start `workspace-admin` by hand in a
-terminal. The full path is logged every time the service starts.
+VS Code or Jupyter terminal. A shell opened with `docker exec` does not
+get the variable; pass `-e PERSISTENT_DIR=/workspace`. The full path is
+logged every time the service starts.
 
 - **In the container** the file is created for you the first time.
 - **Locally** you create the directory and the file yourself; see

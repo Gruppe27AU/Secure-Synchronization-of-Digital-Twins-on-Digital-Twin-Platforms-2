@@ -245,8 +245,24 @@ By default the config file and the repositories therefore share one root.
 In the workspace image `PERSISTENT_DIR` is `/workspace`, so the file is
 `/workspace/.config/workspace-admin/config.toml`; with the bundled compose
 files, `files/<username>/.config/workspace-admin/config.toml` on the host.
-`PERSISTENT_DIR` is set for the whole image, so a `workspace-admin`
-started by hand in a terminal reads the same file as the service.
+A `workspace-admin` started by hand in a VS Code or Jupyter terminal reads
+the same file as the service, because the terminal inherits
+`PERSISTENT_DIR` from the startup script.
+
+`docker exec` does not get it. The image's last build stage is
+`FROM scratch`, which copies the files of the earlier stages but not their
+`ENV` settings, so the image itself sets no variables. Instead the
+Dockerfile writes them into `/dockerstartup/.docker_set_envs`, and
+`dtaas_shim.sh` reads that file on startup; every process it starts, and
+every terminal opened in them, inherits the variables. A command run
+through `docker exec` starts outside that chain. Without `PERSISTENT_DIR`
+it falls back to `~/.config/workspace-admin/config.toml`, a different and
+usually missing file. `PATH` is missing its additions for the same
+reason, so name the command by its full path and pass the variable along:
+
+```bash
+docker exec -u <username> -e PERSISTENT_DIR=/workspace workspace   /home/<username>/.local/bin/workspace-admin --list-services
+```
 
 It is parsed with `tomllib`, so quoting and section syntax follow TOML
 rules. The template is `workspaces/src/templates/config.toml.example`.

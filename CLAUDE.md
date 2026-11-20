@@ -416,7 +416,10 @@ file named by the variable is used even when it is missing; nothing falls
 back past it. `bootstrap` passes the chosen path to every step, so changing
 the variable later has no effect. In the image the file is
 `/workspace/.config/workspace-admin/config.toml`, for the service and for
-a `workspace-admin` started by hand in a terminal alike. The absolute path
+a `workspace-admin` started by hand in a VS Code or Jupyter terminal alike.
+`docker exec` does not inherit `PERSISTENT_DIR` (the image is built
+`FROM scratch`; the variables come from `/dockerstartup/.docker_set_envs`),
+so pass `-e PERSISTENT_DIR=/workspace`. The absolute path
 is logged on every startup. When it is absent it is created from
 the template `workspaces/src/templates/config.toml.example`, which the
 Dockerfile copies to `$WORKSPACE_CONFIG_TEMPLATE`. Nothing is cloned until
