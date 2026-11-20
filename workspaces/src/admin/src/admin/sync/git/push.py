@@ -134,10 +134,7 @@ def _overwrite_failure(repo: RepoConfig, error: Exception) -> SyncError:
         reason = "the remote changed meanwhile; the next cycle tries again"
     elif kind is SyncErrorKind.GIT_FAILED:
         kind = SyncErrorKind.OVERWRITE_REFUSED
-        reason += (
-            f"; ask the repository's owner to allow force-pushes to "
-            f"{repo.branch}, or merge origin/{repo.branch} by hand"
-        )
+        reason += f"; ask the repository's owner to allow force-pushes to {repo.branch}"
     return SyncError(
         f"Could not replace branch {repo.branch} of repository '{repo.name}' "
         f"on the remote: {reason}",

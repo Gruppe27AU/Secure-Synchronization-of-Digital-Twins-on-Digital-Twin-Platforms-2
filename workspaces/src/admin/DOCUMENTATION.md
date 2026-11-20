@@ -735,36 +735,26 @@ The force-push names the commit the backup fetched
 and the force-push, the whole push is refused and nothing is changed:
 
 ```text
-ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Did not replace branch main of repository 'private': the remote changed meanwhile; the next cycle tries again
+ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Could not replace branch main of repository 'private' on the remote: the remote changed meanwhile; the next cycle tries again
 ```
 
 The status reports `remote_changed`. The next cycle fetches the newer
 version, and saves and replaces that one instead, so a push nobody has
 saved is never overwritten.
 
-Some forges refuse force-pushes to a protected branch. Then nothing is
-changed either, and the status reports `overwrite_refused`, every interval,
-until the protection is lifted. While it lasts, the user's work is
-committed, but only in the container. To get sync going again, allow
-force-pushes to the configured branch, or merge `origin/<branch>` by hand
-in the working tree:
+GitHub and GitLab refuse force-pushes to a protected branch by default.
+Then nothing is changed either, and the status reports
+`overwrite_refused`, every interval, until force-pushes are allowed. While
+it lasts, the user's work is committed, but only in the container:
 
-```bash
-cd /workspace/assets/private
-git merge origin/main         # stops on the conflict
+```text
+ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Could not replace branch main of repository 'private' on the remote: Failed to replace the remote's branch for repository 'private': ! [remote rejected] main -> main (protected branch hook declined); ask the repository's owner to allow force-pushes to main
 ```
 
-Open each file git names and keep the content you want, then mark the files
-resolved and conclude the merge:
-
-```bash
-git add notes.md
-git commit --no-edit
-```
-
-The backup waits while the merge is unfinished (see
-[A merge or rebase you started is unfinished](#a-merge-or-rebase-you-started-is-unfinished)),
-and the next interval after the commit pushes the result.
+The user does not run git to get out of this. The repository's owner
+allows force-pushes to the configured branch in its protection settings,
+best before handing out the token, and the next interval replaces the
+remote's branch as usual.
 
 #### Taking back the remote's version
 
