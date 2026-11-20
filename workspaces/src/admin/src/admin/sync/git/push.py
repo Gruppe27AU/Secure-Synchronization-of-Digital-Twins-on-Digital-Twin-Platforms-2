@@ -4,12 +4,17 @@ workspace's after a merge conflict.
 """
 
 import logging
-from datetime import datetime, timezone
 
-from admin.sync.git.command import count_commits, ref_exists, resolve_commit, run_remote
 from admin.config.config import RepoConfig
+from admin.sync.git.clock import utc_now
+from admin.sync.git.command import count_commits, ref_exists, resolve_commit, run_remote
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.refs import local_branch, push_refspec, remote_ref
+from admin.sync.git.refs import (
+    local_branch,
+    push_refspec,
+    remote_ref,
+    remote_tracking_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +24,6 @@ REMOTE_BACKUP_BRANCH_PREFIX = "remote-backup/"
 
 #: Characters of the commit hash in the branch name, as forges show it.
 SHORT_HASH_LENGTH = 7
-
-#: git's reason when ``--force-with-lease`` finds the remote has moved.
-STALE_LEASE_MARKER = "stale info"
 
 
 def push_if_ahead(repo: RepoConfig) -> bool:
@@ -41,7 +43,7 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     if not ref_exists(repo, local):
         return False
     revision_range = local
-    if ref_exists(repo, f"refs/remotes/{remote_ref(repo)}"):
+    if ref_exists(repo, remote_tracking_ref(repo)):
         revision_range = f"{remote_ref(repo)}..{local}"
 
     outgoing = count_commits(repo, revision_range, "count outgoing commits")
@@ -57,11 +59,6 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     return True
 
 
-def _utc_now() -> datetime:
-    """Return the current time in UTC. Replaceable in tests."""
-    return datetime.now(timezone.utc)
-
-
 def remote_backup_branch(commit: str) -> str:
     """
     Return a new branch for the remote's version ``commit``, for example
@@ -70,7 +67,7 @@ def remote_backup_branch(commit: str) -> str:
     The time sorts the branches; the hash tells two saved versions apart and
     matches what the forge shows for the commit.
     """
-    stamp = _utc_now().strftime("%Y-%m-%d_%H-%M-%S-UTC")
+    stamp = utc_now().strftime("%Y-%m-%d_%H-%M-%S-UTC")
     return f"{REMOTE_BACKUP_BRANCH_PREFIX}{stamp}-{commit[:SHORT_HASH_LENGTH]}"
 
 
@@ -97,7 +94,7 @@ def overwrite_remote(repo: RepoConfig) -> str:
     """
     local = local_branch(repo)
     try:
-        remote_commit = resolve_commit(repo, f"refs/remotes/{remote_ref(repo)}")
+        remote_commit = resolve_commit(repo, remote_tracking_ref(repo))
         branch = remote_backup_branch(remote_commit)
         run_remote(
             repo,
@@ -126,28 +123,21 @@ def overwrite_remote(repo: RepoConfig) -> str:
 
 
 def _overwrite_failure(repo: RepoConfig, error: Exception) -> SyncError:
-    """Sort a failed :func:`overwrite_remote` by what the user can do about it."""
-    kind = getattr(error, "kind", SyncErrorKind.GIT_FAILED)
-    output = getattr(error, "git_output", "")
-    if kind is SyncErrorKind.GIT_FAILED:
-        if STALE_LEASE_MARKER in output.lower():
-            return SyncError(
-                f"Did not replace branch {repo.branch} of repository "
-                f"'{repo.name}': the remote changed meanwhile; the next cycle "
-                "tries again",
-                SyncErrorKind.REMOTE_CHANGED,
-                git_output=output,
-            )
-        return SyncError(
-            f"Could not replace branch {repo.branch} of repository "
-            f"'{repo.name}' on the remote: {error}; allow force-pushes to "
-            f"{repo.branch}, or merge origin/{repo.branch} by hand",
-            SyncErrorKind.OVERWRITE_REFUSED,
-            git_output=output,
-        )
+    """
+    Name a failed :func:`overwrite_remote`; git's output is already sorted by
+    :func:`admin.sync.git.errors.failure_kind`, and what is left unexplained
+    is a forge refusing the force-push.
+    """
+    kind = error.kind if isinstance(error, SyncError) else SyncErrorKind.GIT_FAILED
+    reason = f"{error}"
+    if kind is SyncErrorKind.REMOTE_CHANGED:
+        reason = "the remote changed meanwhile; the next cycle tries again"
+    elif kind is SyncErrorKind.GIT_FAILED:
+        kind = SyncErrorKind.OVERWRITE_REFUSED
+        reason += f"; ask the repository's owner to allow force-pushes to {repo.branch}"
     return SyncError(
         f"Could not replace branch {repo.branch} of repository '{repo.name}' "
-        f"on the remote: {error}",
+        f"on the remote: {reason}",
         kind,
-        git_output=output,
+        git_output=getattr(error, "git_output", ""),
     )

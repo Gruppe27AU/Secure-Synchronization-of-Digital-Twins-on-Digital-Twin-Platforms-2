@@ -17,10 +17,11 @@ shows up too.
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from admin.sync.git.clock import utc_now
 from admin.sync.git.errors import SyncErrorKind
 
 
@@ -48,11 +49,6 @@ class RepoState(StrEnum):
     CLONE_FAILED = "clone_failed"
     #: Cloned, and synchronized on every interval.
     SYNCING = "syncing"
-
-
-def _utc_now() -> datetime:
-    """Return the current time in UTC."""
-    return datetime.now(timezone.utc)
 
 
 def _iso(moment: datetime | None) -> str | None:
@@ -102,7 +98,7 @@ class SyncStatus:
     Starts :attr:`BackupState.DISABLED` with no repositories.
     """
 
-    def __init__(self, clock: Callable[[], datetime] = _utc_now) -> None:
+    def __init__(self, clock: Callable[[], datetime] = utc_now) -> None:
         """
         Args:
             clock: Returns the current time. Replaceable in tests.
@@ -119,12 +115,7 @@ class SyncStatus:
             return self._state
 
     def set_state(self, state: BackupState) -> None:
-        """
-        Record where the git backup as a whole stands.
-
-        Args:
-            state: The new state.
-        """
+        """Record where the git backup as a whole stands."""
         with self._lock:
             self._state = state
 
@@ -142,8 +133,7 @@ class SyncStatus:
             self._state = BackupState.STARTING
             for name in repo_names:
                 state = RepoState.SYNCING if name in cloned else RepoState.CLONING
-                current = self._repos.get(name, RepoStatus())
-                self._repos[name] = replace(current, state=state)
+                self._update(name, state=state)
 
     def enable(self, repo_names: list[str]) -> None:
         """
@@ -167,8 +157,7 @@ class SyncStatus:
             repo_name: Name of the repository.
         """
         with self._lock:
-            current = self._repos.get(repo_name, RepoStatus())
-            self._repos[repo_name] = replace(current, state=RepoState.SYNCING)
+            self._update(repo_name, state=RepoState.SYNCING)
 
     def record_clone_failure(self, repo_name: str, kind: SyncErrorKind) -> None:
         """
@@ -189,12 +178,8 @@ class SyncStatus:
         """
         with self._lock:
             now = self._clock()
-            current = self._repos.get(repo_name, RepoStatus())
-            self._repos[repo_name] = replace(
-                current,
-                state=RepoState.SYNCING,
-                last_attempt=now,
-                last_success=now,
+            self._update(
+                repo_name, state=RepoState.SYNCING, last_attempt=now, last_success=now
             )
 
     def record_remote_overwrite(self, repo_name: str) -> None:
@@ -206,10 +191,7 @@ class SyncStatus:
             repo_name: Name of the repository.
         """
         with self._lock:
-            current = self._repos.get(repo_name, RepoStatus())
-            self._repos[repo_name] = replace(
-                current, last_remote_overwrite=self._clock()
-            )
+            self._update(repo_name, last_remote_overwrite=self._clock())
 
     def record_failure(self, repo_name: str, kind: SyncErrorKind) -> None:
         """
@@ -227,14 +209,18 @@ class SyncStatus:
         """Record a failed attempt of either kind."""
         with self._lock:
             now = self._clock()
-            current = self._repos.get(repo_name, RepoStatus())
-            self._repos[repo_name] = replace(
-                current,
+            self._update(
+                repo_name,
                 state=state,
                 last_attempt=now,
                 last_error_kind=kind,
                 last_error_at=now,
             )
+
+    def _update(self, repo_name: str, **changes: Any) -> None:
+        """Replace fields of a repository's status; the caller holds the lock."""
+        current = self._repos.get(repo_name, RepoStatus())
+        self._repos[repo_name] = replace(current, **changes)
 
     def snapshot(self) -> dict[str, Any]:
         """
@@ -250,7 +236,6 @@ class SyncStatus:
                 "state": str(self._state),
                 "enabled": self._state is BackupState.RUNNING,
                 "repositories": {
-                    name: status.to_dict()
-                    for name, status in self._repos.items()
+                    name: status.to_dict() for name, status in self._repos.items()
                 },
             }

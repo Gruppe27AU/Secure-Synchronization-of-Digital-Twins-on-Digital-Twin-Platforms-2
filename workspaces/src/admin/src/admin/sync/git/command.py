@@ -10,15 +10,15 @@ can act on. The caller logs it.
 
 import subprocess
 
-from admin.sync.git.auth import AUTH_FAILURE_HINT, auth_environment, remote_options
 from admin.config.config import RepoConfig
-from admin.sync.git.errors import SyncError, SyncErrorKind, failure_kind
-from admin.sync.git.runner import (
+from admin.process.git_runner import (
     LOCAL_TIMEOUT_SECONDS,
     REMOTE_TIMEOUT_SECONDS,
     GitTimeoutError,
     run_git,
 )
+from admin.sync.git.auth import AUTH_FAILURE_HINT, auth_environment, remote_options
+from admin.sync.git.errors import SyncError, SyncErrorKind, failure_kind
 
 
 def _repository_options(repo: RepoConfig) -> list[str]:

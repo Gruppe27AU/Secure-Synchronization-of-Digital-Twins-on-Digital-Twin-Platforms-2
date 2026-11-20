@@ -1,6 +1,6 @@
 """
 Unit tests for :mod:`admin.sync.git.command`, the one runner for git commands.
-:func:`admin.sync.git.runner.run_git` is replaced, so git never runs.
+:func:`admin.process.git_runner.run_git` is replaced, so git never runs.
 """
 
 import subprocess
@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import pytest
 
+from admin.process.git_runner import LOCAL_TIMEOUT_SECONDS, REMOTE_TIMEOUT_SECONDS, GitTimeoutError
 from admin.sync.git import command
 from admin.sync.git.auth import AUTH_FAILURE_HINT
 from admin.sync.git.command import (
@@ -20,7 +21,6 @@ from admin.sync.git.command import (
     run_remote,
 )
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.runner import LOCAL_TIMEOUT_SECONDS, REMOTE_TIMEOUT_SECONDS, GitTimeoutError
 from tests.helpers.repo_factory import make_repo
 
 

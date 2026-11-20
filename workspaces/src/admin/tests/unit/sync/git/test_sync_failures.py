@@ -10,15 +10,15 @@ import threading
 
 import pytest
 
-from admin.sync.git.sync import sync_once, SyncStopped
-from admin.sync.git import command as command_module
-from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.runner import (
-    GitTimeoutError,
+from admin.process.git_runner import (
     LOCAL_TIMEOUT_SECONDS,
     REMOTE_TIMEOUT_SECONDS,
+    GitTimeoutError,
 )
-from tests.helpers.fake_git import command_key, FakeGit, install_fake_git
+from admin.sync.git import command as command_module
+from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.sync import SyncStopped, sync_once
+from tests.helpers.fake_git import FakeGit, command_key, install_fake_git
 
 
 def test_only_the_remote_commands_get_the_long_time_limit(monkeypatch, repo):
@@ -88,14 +88,14 @@ def test_a_conflict_replaces_the_remote_instead_of_merging(monkeypatch, repo):
     fake_git = install_fake_git(
         monkeypatch, FakeGit(incoming=1, conflicts=["a.txt"], outgoing=1)
     )
-    saved = []
+    overwrites = []
 
-    assert sync_once(repo, on_overwrite=saved.append) is True
+    assert sync_once(repo, on_overwrite=lambda: overwrites.append(True)) is True
 
     keys = fake_git.keys
     assert keys.index("merge-abort") < keys.index("overwrite-push")
     assert "push" not in keys
-    assert len(saved) == 1 and saved[0].startswith("remote-backup/")
+    assert overwrites == [True]
 
 
 @pytest.mark.parametrize(
@@ -123,13 +123,13 @@ def test_a_failed_overwrite_ends_the_cycle_naming_the_conflict(
             failure_message=output,
         ),
     )
-    saved = []
+    overwrites = []
 
     with pytest.raises(SyncError, match=r"a\.txt.*replace branch main") as excinfo:
-        sync_once(repo, on_overwrite=saved.append)
+        sync_once(repo, on_overwrite=lambda: overwrites.append(True))
 
     assert excinfo.value.kind is kind
-    assert not saved
+    assert not overwrites
 
 
 def test_a_stop_before_the_overwrite_leaves_the_remote_alone(monkeypatch, repo):

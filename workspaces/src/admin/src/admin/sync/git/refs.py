@@ -13,6 +13,11 @@ def remote_ref(repo: RepoConfig) -> str:
     return f"origin/{repo.branch}"
 
 
+def remote_tracking_ref(repo: RepoConfig) -> str:
+    """Return the remote-tracking ref's full name, ``refs/remotes/origin/<branch>``."""
+    return f"refs/remotes/{remote_ref(repo)}"
+
+
 def local_branch(repo: RepoConfig) -> str:
     """Return the configured branch's full name, ``refs/heads/<branch>``."""
     return f"refs/heads/{repo.branch}"
@@ -24,7 +29,7 @@ def fetch_refspec(repo: RepoConfig) -> str:
 
     The ``+`` lets a fetch follow a force-push, as ``git clone`` does.
     """
-    return f"+refs/heads/{repo.branch}:refs/remotes/origin/{repo.branch}"
+    return f"+{local_branch(repo)}:{remote_tracking_ref(repo)}"
 
 
 def push_refspec(repo: RepoConfig) -> str:

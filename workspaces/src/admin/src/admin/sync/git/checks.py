@@ -9,8 +9,8 @@ such as virtual environments are never staged (:func:`ensure_default_excludes`).
 
 import logging
 
-from admin.sync.git.command import list_paths, run_local
 from admin.config.config import RepoConfig
+from admin.sync.git.command import list_paths, run_local
 from admin.sync.git.errors import SyncError, SyncErrorKind
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ def ensure_no_mass_deletion(repo: RepoConfig) -> None:
     at least :data:`MASS_DELETION_MIN_FILES`.
 
     An emptied tree is more often an accident than a clean-up. Deleting that
-    much on purpose takes one commit by hand.
+    much on purpose takes smaller steps, and the last file is never deleted.
 
     Raises:
         SyncError: ``mass_deletion``, or if the files cannot be counted.
@@ -71,8 +71,9 @@ def ensure_no_mass_deletion(repo: RepoConfig) -> None:
         return
     raise SyncError(
         f"Not committing in repository '{repo.name}': {deleted} of {tracked} "
-        f"tracked files are missing from {repo.work_tree}. If that is "
-        f"intended, commit the deletion there by hand to resume the backup",
+        f"tracked files are missing from {repo.work_tree}. Put them back, or "
+        f"delete fewer at a time (fewer than {MASS_DELETION_MIN_FILES}, or at most "
+        f"half); the last file is never deleted",
         SyncErrorKind.MASS_DELETION,
     )
 

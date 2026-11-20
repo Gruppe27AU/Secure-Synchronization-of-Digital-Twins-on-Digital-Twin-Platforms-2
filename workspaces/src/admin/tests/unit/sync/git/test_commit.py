@@ -11,15 +11,14 @@ import pytest
 
 from admin.sync.git import checks
 from admin.sync.git.commit import (
+    HeldBack,
     build_commit_message,
     commit_local_changes,
     has_changes,
-    HeldBack,
 )
-from admin.sync.git.sync import sync_once
 from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.sync import sync_once
 from tests.helpers.fake_git import FakeGit, install_fake_git
-
 
 MARKED_NOTES = {
     "status_output": "M  notes.md",
@@ -75,7 +74,7 @@ def test_commit_holds_back_a_file_with_conflict_markers(monkeypatch, repo):
     assert excinfo.value.kind is SyncErrorKind.CONFLICT_MARKERS
     assert excinfo.value.committed is False
     # Only that file is unstaged, so the working tree is left as the user had it.
-    assert fake_git.command_for("unstage")[-2:] == ["--", "notes.md"]
+    assert fake_git.command_for("unstage")[-2:] == ["--", ":(top,literal)notes.md"]
     assert "commit" not in fake_git.keys
 
 

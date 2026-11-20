@@ -18,11 +18,11 @@ import uvicorn
 from uvicorn.logging import DefaultFormatter
 
 from admin.api import APP_VERSION, create_app, normalize_path_prefix
-from admin.sync.git.bootstrap import start_git_backup, stop_git_backup
 from admin.config.config import DEFAULT_SYNC_INTERVAL_SECONDS, SYNC_INTERVAL_KEY
-from admin.sync.git.status import SyncStatus
 from admin.config.validate import sync_interval_problem
 from admin.services import load_services
+from admin.sync.git.bootstrap import start_git_backup, stop_git_backup
+from admin.sync.git.status import SyncStatus
 
 #: Format of the service's log records, as uvicorn's (``INFO:     message``).
 LOG_FORMAT = "%(levelprefix)s %(message)s"

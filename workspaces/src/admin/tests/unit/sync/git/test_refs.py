@@ -11,7 +11,13 @@ import pytest
 
 from admin.sync.git.pull import pull_changes
 from admin.sync.git.push import push_if_ahead
-from admin.sync.git.refs import fetch_refspec, local_branch, push_refspec, remote_ref
+from admin.sync.git.refs import (
+    fetch_refspec,
+    local_branch,
+    push_refspec,
+    remote_ref,
+    remote_tracking_ref,
+)
 from tests.helpers.fake_git import FakeGit, install_fake_git
 
 
@@ -58,6 +64,7 @@ def test_a_dash_led_branch_is_never_passed_as_an_option(monkeypatch, repo, branc
 def test_the_refs_name_the_configured_branch(repo):
     """Test each ref and refspec spells out the branch in full."""
     assert remote_ref(repo) == "origin/main"
+    assert remote_tracking_ref(repo) == "refs/remotes/origin/main"
     assert local_branch(repo) == "refs/heads/main"
     assert fetch_refspec(repo) == "+refs/heads/main:refs/remotes/origin/main"
     assert push_refspec(repo) == "refs/heads/main:refs/heads/main"

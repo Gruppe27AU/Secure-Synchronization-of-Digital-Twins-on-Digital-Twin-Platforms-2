@@ -12,7 +12,6 @@ from admin.sync.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
 from tests.unit.sync.git.scheduler_stubs import StubStopEvent
 
-
 pytestmark = pytest.mark.usefixtures("restored", "not_cloned")
 
 

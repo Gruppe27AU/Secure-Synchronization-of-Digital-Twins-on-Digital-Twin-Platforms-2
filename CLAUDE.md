@@ -312,24 +312,29 @@ The package is layered, and the test files mirror it:
 - `src/admin/config/` - What to back up: finding, creating and reading
   `config.toml`
 - `src/admin/sync/git/` - Git backup of workspace directories
+- `src/admin/process/` - Running git as a child process (`git_runner.py`)
 - `src/admin/templates/` - Service catalogue (`services_template.json`)
 
-Dependencies point one way only: `main` → `api` → `services`.
+Imports point down the layers only, never up and never sideways: `main` →
+`api` → `sync`/`services` → `config` → `process`. `api` uses
+`sync/git/status.py`, and `config/validate.py` uses
+`process/git_runner.py` to ask git about a branch name.
+`tests/unit/test_layers.py` fails on an import against this order.
 
-The backup lives in two packages, and the tests mirror them under
-`tests/unit/config/`, `tests/unit/sync/git/` and
-`tests/integration/sync/git/`. Dependencies point one way, `sync/git` →
-`config`; `config/validate.py` uses only `sync/git/runner.py`.
-`config/config.py` and `sync/git/runner.py` import nothing from the package.
+The backup lives in three packages, and the tests mirror them under
+`tests/unit/process/`, `tests/unit/config/`, `tests/unit/sync/git/` and
+`tests/integration/sync/git/`. `config/config.py` and
+`process/git_runner.py` import nothing from the package.
 
 `config/`: what to back up
 
 - `locate.py`: `discover_config()` chooses the config file,
-  `$WORKSPACE_ADMIN_CONFIG` before `~/.config/workspace-admin/config.toml`,
+  `$WORKSPACE_ADMIN_CONFIG` before `.config/workspace-admin/config.toml`
+  below `persistent_root()` (`$PERSISTENT_DIR`, or the home directory),
   and returns the path with the rule that chose it
 - `provision.py`: copies the template into place when `config.toml` is
   missing (mode `0600`, never overwriting) and adds a `.gitignore` holding
-  `*` to its directory
+  `*` to its directory when that is `.config/workspace-admin`
 - `config.py`: the types (`RepoConfig`, `SyncMode`, `ConfigError`) and the
   settings' names and limits
 - `validate.py`: checks each value (https URL, branch, `MODE`, interval,
@@ -337,19 +342,25 @@ The backup lives in two packages, and the tests mirror them under
 - `load.py`: reads `config.toml` and returns one `RepoConfig` per
   repository
 
-`sync/git/`, running git:
+`process/`, running git:
 
-- `runner.py`: runs every git command with prompts off, empty stdin and a
-  time limit, stopping an overrunning command and its child processes
+- `git_runner.py`: runs every git command with prompts off, empty stdin and
+  a time limit, stopping an overrunning command and its child processes
+
+`sync/git/`, running git for the backup:
+
 - `command.py`: the one runner for every git command, clone included,
   raising `SyncError` for the caller to log; commands in a cloned
   repository always get `--git-dir` and `--work-tree`, so a lost `.git`
   file cannot redirect them
 - `auth.py`: builds the HTTP Basic header, passed in git's environment
-  (`GIT_CONFIG_COUNT`) and scoped to the remote's host, never on argv; and
+  (`GIT_CONFIG_COUNT`) and scoped to the repository's own URL
+  (`header_scope()`), never to the whole host and never on argv; and
   recognises a rejected token in git's stderr
-- `errors.py`: `SyncErrorKind`, `SyncError`, and `failure_kind()` sorting a
-  failure into `auth_failed`, `network` or `git_failed`
+- `errors.py`: `SyncErrorKind`, `SyncError`, and every rule reading a kind
+  out of git's output: `failure_kind()` sorts a failure into `auth_failed`,
+  `network`, `remote_changed` or `git_failed`; `merge_failure_kind()` names
+  a merge refused for a local file `local_changes`
 
 `sync/git/`, working on one repository, `sync` → `pull`/`push` → `commit`
 → `busy`/`checks`:
@@ -365,12 +376,15 @@ The backup lives in two packages, and the tests mirror them under
 - `commit.py`: commits the user's changes, holding back large and marked
   files (`HeldBack`)
 - `pull.py`: fetches and merges (`pull_changes`), aborting on a conflict
-  (`merge_conflict`); `pull_only` fast-forwards a `pull` repository
+  (`merge_conflict`); `pull_only` fast-forwards a `pull` repository;
+  `remote_changed_paths` lists the files the remote changed
 - `push.py`: pushes the branch; after a conflict, `overwrite_remote()`
   saves the remote's branch on `remote-backup/<time>-<hash>` (UTC time,
   short hash of the saved commit) and force-pushes the workspace's over
   it, in one atomic push with `--force-with-lease`
 - `refs.py`: ref names and refspecs of the configured branch
+- `clock.py`: `utc_now()`, the one clock for status times and
+  `remote-backup/` branch names
 - `busy.py`: whether the user is busy with the repository, so no cycle
   starts: a missing working tree, an unfinished merge, another branch or
   detached HEAD, unresolved files, a fresh `index.lock`
@@ -396,13 +410,17 @@ stop the HTTP API from starting.
 `locate.discover_config()` chooses `config.toml` once on startup:
 `$WORKSPACE_ADMIN_CONFIG` when it is set and not empty (a relative path is
 resolved against the current directory), otherwise
-`~/.config/workspace-admin/config.toml`. A file named by the variable is
-used even when it is missing; nothing falls back past it. `bootstrap`
-passes the chosen path to every step, so changing the variable later has
-no effect. In the image `custom_startup.sh` sets the variable to
-`$PERSISTENT_DIR/.config/workspace-admin/config.toml`
-(`/workspace/.config/workspace-admin/config.toml`). The absolute path is
-logged on every startup. When it is absent it is created from
+`$PERSISTENT_DIR/.config/workspace-admin/config.toml`, or
+`~/.config/workspace-admin/config.toml` when `PERSISTENT_DIR` is unset. A
+file named by the variable is used even when it is missing; nothing falls
+back past it. `bootstrap` passes the chosen path to every step, so changing
+the variable later has no effect. In the image the file is
+`/workspace/.config/workspace-admin/config.toml`, for the service and for
+a `workspace-admin` started by hand in a VS Code or Jupyter terminal alike.
+`docker exec` does not inherit `PERSISTENT_DIR` (the image is built
+`FROM scratch`; the variables come from `/dockerstartup/.docker_set_envs`),
+so pass `-e PERSISTENT_DIR=/workspace`. The absolute path
+is logged on every startup. When it is absent it is created from
 the template `workspaces/src/templates/config.toml.example`, which the
 Dockerfile copies to `$WORKSPACE_CONFIG_TEMPLATE`. Nothing is cloned until
 the user fills it in and restarts: its placeholder values are rejected.
@@ -436,10 +454,8 @@ To add new services to the workspace:
 - `PATH_PREFIX`: Optional path prefix for admin service routes (can
   be set via CLI)
 - `WORKSPACE_ADMIN_CONFIG`: Config file of the git backup; when unset or
-  empty, `~/.config/workspace-admin/config.toml` is used. In the image
-  `custom_startup.sh` sets it in prefix form for `workspace-admin` alone,
-  so Jupyter and VS Code never see it; it is deliberately not a Dockerfile
-  `ENV`, which `.docker_set_envs` would pin over runtime values
+  empty, `.config/workspace-admin/config.toml` below `$PERSISTENT_DIR`
+  (or the home directory) is used. The image does not set it
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when it is
   missing (set by the Dockerfile; unset outside the image)
 

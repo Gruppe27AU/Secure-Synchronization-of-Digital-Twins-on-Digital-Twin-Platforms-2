@@ -7,28 +7,22 @@ only fast-forward (:func:`pull_only`). Neither resolves a conflict.
 
 import logging
 
+from admin.config.config import RepoConfig
 from admin.sync.git.busy import ensure_on_branch, ensure_safe_to_sync, unmerged_stages
 from admin.sync.git.command import count_commits, output_of, ref_exists, run_local, run_remote
 from admin.sync.git.commit import identity_options
-from admin.config.config import RepoConfig
-from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.refs import fetch_refspec, local_branch, remote_ref
+from admin.sync.git.errors import SyncError, SyncErrorKind, merge_failure_kind
+from admin.sync.git.refs import (
+    fetch_refspec,
+    local_branch,
+    remote_ref,
+    remote_tracking_ref,
+)
 
 logger = logging.getLogger(__name__)
 
 #: git's error when the remote does not have the branch.
 MISSING_REMOTE_REF = "couldn't find remote ref"
-
-#: git's errors when a merge would overwrite a local file.
-LOCAL_CHANGES_MARKERS = ("would be overwritten", "local changes")
-
-
-def _failure_kind(output: str, otherwise: SyncErrorKind) -> SyncErrorKind:
-    """Return ``local_changes`` if git refused because a local file is in the way."""
-    if any(marker in output.lower() for marker in LOCAL_CHANGES_MARKERS):
-        return SyncErrorKind.LOCAL_CHANGES
-    return otherwise
-
 
 def _fetch(repo: RepoConfig) -> bool:
     """
@@ -49,7 +43,7 @@ def _fetch(repo: RepoConfig) -> bool:
         )
     except SyncError as error:
         if MISSING_REMOTE_REF in error.git_output.lower() and not ref_exists(
-            repo, f"refs/remotes/{remote_ref(repo)}"
+            repo, remote_tracking_ref(repo)
         ):
             logger.info(
                 "The remote of repository '%s' has no branch %s yet; the next "
@@ -112,7 +106,7 @@ def _merge_failure(repo: RepoConfig, output: str) -> SyncError:
         )
     return SyncError(
         f"Failed to merge the remote's changes for repository '{repo.name}': {output}",
-        _failure_kind(output, SyncErrorKind.GIT_FAILED),
+        merge_failure_kind(output, SyncErrorKind.GIT_FAILED),
     )
 
 
@@ -148,6 +142,23 @@ def pull_changes(repo: RepoConfig) -> bool:
     return True
 
 
+def remote_changed_paths(repo: RepoConfig) -> set[str]:
+    """
+    Return the files the remote changed since the branches last met.
+
+    ``-z`` prints each name as it is, never quoted or escaped.
+
+    Raises:
+        SyncError: If the files cannot be listed.
+    """
+    result = run_local(
+        repo,
+        ["diff", "--name-only", "-z", f"HEAD...{remote_ref(repo)}", "--"],
+        "list the files the remote changed",
+    )
+    return {path for path in result.stdout.split("\0") if path}
+
+
 def pull_only(repo: RepoConfig) -> bool:
     """
     Fast-forward a ``pull`` repository; never commit or push.
@@ -175,7 +186,7 @@ def pull_only(repo: RepoConfig) -> bool:
         reason = output_of(attempt)
         raise SyncError(
             f"Not updating pull-only repository '{repo.name}': {reason}",
-            _failure_kind(reason, SyncErrorKind.PULL_FAILED),
+            merge_failure_kind(reason, SyncErrorKind.PULL_FAILED),
         )
 
     logger.info(

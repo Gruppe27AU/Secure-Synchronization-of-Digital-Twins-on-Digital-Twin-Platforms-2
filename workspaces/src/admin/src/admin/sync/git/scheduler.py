@@ -11,8 +11,8 @@ the backup silently while the HTTP API kept running.
 import logging
 import threading
 
-from admin.sync.git.clone import clone_asset, is_cloned, restore_git_file
 from admin.config.config import RepoConfig
+from admin.sync.git.clone import clone_asset, is_cloned, restore_git_file
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.status import SyncStatus
 from admin.sync.git.sync import SyncStopped, sync_once
@@ -58,7 +58,7 @@ def _sync_one(
         sync_once(
             repo,
             stop_event,
-            on_overwrite=lambda _branch: status.record_remote_overwrite(repo.name),
+            on_overwrite=lambda: status.record_remote_overwrite(repo.name),
         )
     except SyncStopped as stopped:
         logger.info("%s", stopped)

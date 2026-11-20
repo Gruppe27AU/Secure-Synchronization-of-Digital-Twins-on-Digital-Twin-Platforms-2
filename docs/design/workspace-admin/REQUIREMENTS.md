@@ -119,5 +119,4 @@ The threats behind these are in the
 ## Out of scope
 
 Restore through the page or CLI (runbook only), renaming assets,
-shared areas between users, device-flow sign-in (a follow-up), and
-splitting `git/sync.py` (technical debt).
+shared areas between users, and device-flow sign-in (a follow-up).

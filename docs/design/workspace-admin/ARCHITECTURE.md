@@ -18,7 +18,7 @@ flowchart TB
         login[Login core<br/>admin/login]
         assets[Asset config<br/>admin/assets]
         sched[Scheduler and status<br/>admin/backup]
-        gitb[Git backend<br/>admin/git]
+        gitb[Git backend<br/>admin/sync/git]
         s3b[S3 backend<br/>admin/s3]
     end
     nginx[nginx :8080] -->|auth_request /_auth| cfg
@@ -41,9 +41,10 @@ flowchart TB
 | `admin/backup` | `Backend` protocol, scheduler, status, error kinds; calls a round hook it is given | `shared` |
 | `admin/login` | Connections, sign-in, session check, storage pass, STS ([Login core](LOGIN_CORE.md)) | `shared` |
 | `admin/assets` | Parse, validate, write `config.toml` ([Config file](CONFIG_FILE.md)) | `backup` (kinds) |
-| `admin/git` | Git backend: existing clone, sync, auth | `backup` |
+| `admin/sync/git` | Git backend: existing clone, sync, auth; runs git through `admin/process` | `backup`, `process` |
+| `admin/process` | Runs git without prompts and within a time limit (`git_runner.py`) | nothing |
 | `admin/s3` | S3 backend, `rclone` runner, error mapping | `backup` |
-| `admin/wiring.py` | Builds backends from asset config, and the round hook that fetches credentials and hands them to backends | `assets`, `git`, `s3`, `backup`, `login` |
+| `admin/wiring.py` | Builds backends from asset config, and the round hook that fetches credentials and hands them to backends | `assets`, `sync/git`, `s3`, `backup`, `login` |
 | `admin/web` | Config, callback, `/_auth` and control routes; static page ([Config page](CONFIG_PAGE.md)) | `login`, `assets`, `backup`, `wiring` |
 | `admin/cli` | Subcommands, socket client, offline writer fallback ([CLI](CLI.md)) | `assets` |
 | `admin/api.py` | Public routes (unchanged contract) | `backup` |

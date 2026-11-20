@@ -22,7 +22,7 @@ flow itself is described in [Sign-in](SIGN_IN.md).
    login-relay.
 
 It never decides which assets exist, never runs `git` or `rclone`,
-and imports nothing from `admin/backup`, `admin/git` or `admin/s3`.
+and imports nothing from `admin/backup`, `admin/sync/git` or `admin/s3`.
 
 ## Modules
 

@@ -82,7 +82,7 @@ def fixture_ticking_clock(monkeypatch):
         datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc) + timedelta(minutes=step)
         for step in range(100)
     )
-    monkeypatch.setattr(push_module, "_utc_now", lambda: next(moments))
+    monkeypatch.setattr(push_module, "utc_now", lambda: next(moments))
 
 
 @pytest.mark.parametrize(
@@ -95,16 +95,15 @@ def test_a_conflict_makes_the_workspace_the_remote_branch(world, conflict):
     path = conflict(world)
     remote_main = _sha(world.remote, "main")
     local = _read(world.workspace.work_tree / path)
-    saved = []
 
-    assert sync_once(world.workspace, on_overwrite=saved.append) is True
+    assert sync_once(world.workspace) is True
 
     workspace_main = _sha(world.workspace.git_dir, "main")
     assert _sha(world.remote, "main") == workspace_main
     assert _show(world, "main", path) == (local.decode() if local else None)
     assert _read(world.workspace.work_tree / path) == local
     assert not (world.workspace.git_dir / "MERGE_HEAD").exists()
-    assert _remote_backups(world) == {saved[0]: remote_main}
+    assert list(_remote_backups(world).values()) == [remote_main]
     # Nothing of the remote's version lingers on the branch.
     assert subprocess.run(
         ["git", "merge-base", "--is-ancestor", remote_main, workspace_main],

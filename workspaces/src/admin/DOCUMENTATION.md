@@ -233,17 +233,36 @@ chooses it once, on startup, checking in order:
 1. `$WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
    is resolved against the directory the service is started in, at that
    moment.
-2. `~/.config/workspace-admin/config.toml`.
+2. `.config/workspace-admin/config.toml` below `$PERSISTENT_DIR`, or below
+   the home directory when `PERSISTENT_DIR` is unset.
 
 A file named by `$WORKSPACE_ADMIN_CONFIG` is used even when it is missing;
 the default directory is then not looked at. The chosen path is passed to
 every step of the backup, so changing the variable while the service runs
 has no effect, and its absolute form is logged on every start. Where the
 file is does not move the repositories: they stay below `$PERSISTENT_DIR`.
-In the workspace image `custom_startup.sh` sets `$WORKSPACE_ADMIN_CONFIG`
-to `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, so the file is
+By default the config file and the repositories therefore share one root.
+In the workspace image `PERSISTENT_DIR` is `/workspace`, so the file is
 `/workspace/.config/workspace-admin/config.toml`; with the bundled compose
 files, `files/<username>/.config/workspace-admin/config.toml` on the host.
+A `workspace-admin` started by hand in a VS Code or Jupyter terminal reads
+the same file as the service, because the terminal inherits
+`PERSISTENT_DIR` from the startup script.
+
+`docker exec` does not get it. The image's last build stage is
+`FROM scratch`, which copies the files of the earlier stages but not their
+`ENV` settings, so the image itself sets no variables. Instead the
+Dockerfile writes them into `/dockerstartup/.docker_set_envs`, and
+`dtaas_shim.sh` reads that file on startup; every process it starts, and
+every terminal opened in them, inherits the variables. A command run
+through `docker exec` starts outside that chain. Without `PERSISTENT_DIR`
+it falls back to `~/.config/workspace-admin/config.toml`, a different and
+usually missing file. `PATH` is missing its additions for the same
+reason, so name the command by its full path and pass the variable along:
+
+```bash
+docker exec -u <username> -e PERSISTENT_DIR=/workspace workspace   /home/<username>/.local/bin/workspace-admin --list-services
+```
 
 It is parsed with `tomllib`, so quoting and section syntax follow TOML
 rules. The template is `workspaces/src/templates/config.toml.example`.
@@ -252,7 +271,10 @@ rules. The template is `workspaces/src/templates/config.toml.example`.
   Dockerfile sets `WORKSPACE_CONFIG_TEMPLATE`): the template is copied into
   place with mode `0600`, an existing file is never overwritten, and the
   directory gets a `.gitignore` holding `*`, so a repository further up
-  never commits the token. Its placeholder values are refused, so nothing
+  never commits the token. Only a directory named `.config/workspace-admin`
+  gets it: a config file placed elsewhere through `WORKSPACE_ADMIN_CONFIG`
+  may sit in the user's own repository, where `*` would hide every new
+  file. Its placeholder values are refused, so nothing
   is cloned until the user fills it in and restarts. The status reports
   `needs_setup`.
 - **No file, no template** (outside the image): the backup is disabled, the
@@ -581,8 +603,8 @@ ERROR admin.sync.git.bootstrap Failed to clone for repository 'common': <git's m
 
 ### Time limits and prompts
 
-Every git command goes through `run_git()` in `runner.py`, so none of them
-can wait forever:
+Every git command goes through `run_git()` in `git_runner.py`, so none of
+them can wait forever:
 
 - **No prompts.** `GIT_TERMINAL_PROMPT=0` and an empty `GIT_ASKPASS` stop git
   from asking for a username or password, on a terminal or through an
@@ -664,7 +686,7 @@ doing without reading the log.
 | Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
 | A file holds conflict markers | You | Leaves that file out, commits and pushes the rest | Remove the markers |
 | A file is over 50 MiB | You | Leaves that file out, commits and pushes the rest | Move or shrink it, or ignore it |
-| Most tracked files are missing | You | Waits: no commit | Restore them, or commit the deletion by hand |
+| Most tracked files are missing | You | Waits: no commit | Restore them, or delete fewer at a time |
 
 Every command below is run in the repository's working tree, which with the
 workspace image is `/workspace/assets/<name>`. The service can
@@ -709,6 +731,12 @@ never replaces an earlier one. They are never deleted by the backup.
 Only a real conflict does this. Remote changes that merge cleanly are
 merged as before, and the branch is pushed normally.
 
+The workspace is therefore meant to be the only writer of its branch: give
+each workspace a repository or branch of its own. Two workspaces backing
+up to one branch replace each other's version on every conflict, and each
+version is then only on a `remote-backup/` branch. `common` is pull-only by
+default for this reason.
+
 #### Why the workspace's version wins
 
 The workspace is where the user works, and the backup is there so they
@@ -729,36 +757,26 @@ The force-push names the commit the backup fetched
 and the force-push, the whole push is refused and nothing is changed:
 
 ```text
-ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Did not replace branch main of repository 'private': the remote changed meanwhile; the next cycle tries again
+ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Could not replace branch main of repository 'private' on the remote: the remote changed meanwhile; the next cycle tries again
 ```
 
 The status reports `remote_changed`. The next cycle fetches the newer
 version, and saves and replaces that one instead, so a push nobody has
 saved is never overwritten.
 
-Some forges refuse force-pushes to a protected branch. Then nothing is
-changed either, and the status reports `overwrite_refused`, every interval,
-until the protection is lifted. While it lasts, the user's work is
-committed, but only in the container. To get sync going again, allow
-force-pushes to the configured branch, or merge `origin/<branch>` by hand
-in the working tree:
+GitHub and GitLab refuse force-pushes to a protected branch by default.
+Then nothing is changed either, and the status reports
+`overwrite_refused`, every interval, until force-pushes are allowed. While
+it lasts, the user's work is committed, but only in the container:
 
-```bash
-cd /workspace/assets/private
-git merge origin/main         # stops on the conflict
+```text
+ERROR admin.sync.git.scheduler Repository 'private': the remote changed notes.md as well; Could not replace branch main of repository 'private' on the remote: Failed to replace the remote's branch for repository 'private': ! [remote rejected] main -> main (protected branch hook declined); ask the repository's owner to allow force-pushes to main
 ```
 
-Open each file git names and keep the content you want, then mark the files
-resolved and conclude the merge:
-
-```bash
-git add notes.md
-git commit --no-edit
-```
-
-The backup waits while the merge is unfinished (see
-[A merge or rebase you started is unfinished](#a-merge-or-rebase-you-started-is-unfinished)),
-and the next interval after the commit pushes the result.
+The user does not run git to get out of this. The repository's owner
+allows force-pushes to the configured branch in its protection settings,
+best before handing out the token, and the next interval replaces the
+remote's branch as usual.
 
 #### Taking back the remote's version
 
@@ -837,7 +855,9 @@ as you left it, and the status reports `conflict_markers` until it is
 fixed.
 
 If the remote changed the same file, the merge would overwrite it, so
-nothing is merged until it is fixed, and the log says so:
+nothing is merged until it is fixed, and the log says so. The backup asks
+git for the files the remote changed and names each held-back one among
+them, whatever characters its name holds:
 
 ```text
 WARNING admin.sync.git.sync Repository 'private': notes.md is held back (conflict markers left in notes.md), remove the conflict markers in order to merge.
@@ -916,20 +936,15 @@ of them and at least ten, the backup does not commit, so the files are not
 deleted on the remote either:
 
 ```text
-ERROR admin.sync.git.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. If that is intended, commit the deletion there by hand to resume the backup
+ERROR admin.sync.git.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. Put them back, or delete fewer at a time (fewer than 10, or at most half); the last file is never deleted
 ```
 
 A folder that has been emptied is far more often an accident, such as a
 move, a clean-up that went too far or a restore that has not finished, than
-a decision. If you did mean to delete the files, commit the deletion
-yourself and the next interval pushes it:
-
-```bash
-cd /workspace/assets/private
-git add -A && git commit -m "Remove old results"
-```
-
-That is also how the last file of a repository is deleted.
+a decision. If you did mean to delete the files, delete fewer at a time:
+fewer than ten per interval, or at most half of those left. Each interval
+commits and pushes one step. The last file of a repository is never
+deleted by the backup, so keep one, such as a `README.md`.
 
 ### The working tree is deleted
 
@@ -1546,6 +1561,8 @@ src/admin/
 ├── main.py                       # Command-line entry point
 ├── templates/
 │   └── services_template.json    # Service catalogue (data, not code)
+├── process/
+│   └── git_runner.py             # Runs git without prompts, within a time limit
 ├── config/                       # What to back up
 │   ├── locate.py                 # Chooses which config.toml to read
 │   ├── provision.py              # Creates a missing config.toml from the template
@@ -1554,7 +1571,6 @@ src/admin/
 │   └── load.py                   # Reads config.toml into RepoConfig objects
 └── sync/
     └── git/                      # Git backup of workspace directories
-        ├── runner.py             # Runs git without prompts, within a time limit
         ├── command.py            # The one runner for every git command
         ├── auth.py               # HTTP auth header, https-only options, rejected tokens
         ├── errors.py             # SyncErrorKind, SyncError, sorting failures by kind
@@ -1564,6 +1580,7 @@ src/admin/
         ├── pull.py               # Fetches and merges, or fast-forwards
         ├── push.py               # Push, and replace the remote's branch
         ├── refs.py               # Ref names and refspecs of the branch
+        ├── clock.py              # The current time in UTC
         ├── busy.py               # Whether the user is busy with the repository
         ├── checks.py             # What is checked in the files to commit
         ├── bootstrap.py          # Starts and stops the backup
@@ -1571,13 +1588,17 @@ src/admin/
         └── status.py             # Where the backup stands, for /storage/status
 ```
 
-Dependencies point one way: `main` → `api` → `services`, and for the
-backup: `sync/git` → `config`. Inside `sync/git`: `bootstrap` →
-`scheduler` → `clone`/`sync` → `pull`/`push` → `commit` → `busy`/`checks`
-→ `command` → `auth`/`errors`/`runner`. `config/validate.py` uses only
-`sync/git/runner.py`, to ask git about a branch name. `config/config.py`
-and `sync/git/runner.py` import nothing from the package. The tests mirror
-this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
+Imports point down the layers only, never up and never sideways: `main`
+→ `api` → `sync`/`services` → `config` → `process`. `api` uses
+`sync/git/status.py`, and `config/validate.py` uses
+`process/git_runner.py` to ask git about a branch name. Inside
+`sync/git`: `bootstrap` → `scheduler` → `clone`/`sync` → `pull`/`push` →
+`commit` → `busy`/`checks` → `command` → `auth`/`errors`.
+`config/config.py` and `process/git_runner.py` import nothing from the
+package. `tests/unit/test_layers.py` reads the imports of every module and
+fails on one against this order, since a cycle between packages would stop
+the service from starting. The tests mirror this layout under
+`tests/unit/process/`, `tests/unit/config/`, `tests/unit/sync/git/` and
 `tests/integration/sync/git/`.
 
 ### Components
@@ -1592,17 +1613,18 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
 - **CLI Entry Point** (`src/admin/main.py`): Argument parsing
   (`build_parser`) and the `workspace-admin` command (`cli`), which either
   prints the catalogue or serves the API with uvicorn
-- **Git Backup** (`src/admin/config/`, `src/admin/sync/git/`): Configuration, cloning, authentication
-  and working tree synchronization for shared and private git assets
-  - `sync/git/runner.py`: `run_git()` runs every git command of the backup with
+- **Git Backup** (`src/admin/config/`, `src/admin/sync/git/`,
+  `src/admin/process/`): Configuration, cloning, authentication and working
+  tree synchronization for shared and private git assets
+  - `process/git_runner.py`: `run_git()` runs every git command with
     prompts switched off, empty standard input and a time limit, and stops
     a command that overruns it together with the processes it started,
     raising `GitTimeoutError`. Extra environment, such as the credentials,
     is passed per command. See
     [Time limits and prompts](#time-limits-and-prompts)
   - `config/locate.py`: `discover_config()` chooses the config file,
-    `$WORKSPACE_ADMIN_CONFIG` before
-    `~/.config/workspace-admin/config.toml`, and returns a
+    `$WORKSPACE_ADMIN_CONFIG` before `.config/workspace-admin/config.toml`
+    below `persistent_root()`, and returns a
     `ConfigLocation` holding the absolute path and the `ConfigRule` that
     chose it. See [Configuration](#configuration)
   - `config/config.py`: the types `RepoConfig`, `SyncMode`, `ConfigError` and
@@ -1621,8 +1643,11 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
     abandons stalled transfers. `is_auth_failure()` recognizes git's and
     GitLab's rejection texts, including `could not read Username`
   - `sync/git/errors.py`: `SyncErrorKind`, the reasons `/storage/status` may report,
-    and `SyncError`. `failure_kind()` sorts a failed command's output into
-    `auth_failed`, `network` or `git_failed`
+    and `SyncError`. Every rule reading a kind out of git's output is here:
+    `failure_kind()` sorts a failed command's output into `auth_failed`,
+    `network`, `remote_changed` (a stale `--force-with-lease`) or
+    `git_failed`, and `merge_failure_kind()` gives `local_changes` for a
+    merge refused because a local file is in the way
   - `sync/git/command.py`: `run()` runs every git command of the backup and the
     clone, and turns a failure or time-out into a `SyncError` of the right
     kind; the caller logs it. `run_local()` and `run_remote()` add
@@ -1640,11 +1665,17 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
     restores a missing or empty work tree on startup.
     `restore_git_file()` writes back a lost `.git` file
   - `sync/git/refs.py`: the configured branch's ref names and refspecs
+  - `sync/git/clock.py`: `utc_now()`, shared by the status times and the
+    `remote-backup/` branch names, so the two always agree
   - `sync/git/commit.py`: `commit_local_changes()` commits the user's changes,
     holding back large and marked files (`HeldBack`). The commit identity
     is passed per command with `git -c`, never written to `.git/config`
   - `sync/git/pull.py`: `pull_changes()` fetches and merges, aborting a conflicted
-    merge; `pull_only()` fast-forwards a `pull` repository
+    merge; `pull_only()` fast-forwards a `pull` repository;
+    `remote_changed_paths()` lists the files the remote changed
+    (`git diff --name-only -z HEAD...origin/<branch>`), which is how a
+    held-back file in the way of a merge is named, rather than from the
+    wording of git's error
   - `sync/git/push.py`: `push_if_ahead()` pushes the branch;
     `overwrite_remote()` saves the remote's branch on
     `remote-backup/<time>-<hash>` and force-pushes the workspace's over it,
@@ -1667,7 +1698,8 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
     lock. It stores a `SyncErrorKind`, never an error message
   - `config/provision.py`: `provision_config()` copies the template into place
     when `config.toml` is missing (mode `0600`, never overwriting) and adds
-    a `.gitignore` holding `*` to its directory
+    a `.gitignore` holding `*` to its directory when that is
+    `.config/workspace-admin`
   - `sync/git/bootstrap.py`: `start_git_backup()` is called once from
     `admin.main.cli()` on startup and returns at once, running
     `clone_configured_repos()` and then `start_git_sync()` on the
@@ -1689,15 +1721,12 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
 - `ADMIN_SERVER_PORT`: Port for the admin service (default: `8091`)
 - `PATH_PREFIX`: Optional path prefix for API routes (can also be set via CLI `--path-prefix` argument)
 - `PERSISTENT_DIR`: Root of the git backup. Every repository is placed
-  below it, wherever `config.toml` is (default: the home directory;
-  `/workspace` in the workspace image)
+  below it, wherever `config.toml` is, and so is the default config file
+  (default: the home directory; `/workspace` in the workspace image)
 - `WORKSPACE_ADMIN_CONFIG`: The config file of the git backup. When unset
-  or empty, `~/.config/workspace-admin/config.toml` is used. A relative
-  path is resolved against the directory the service is started in. The
-  workspace image sets it to
-  `$PERSISTENT_DIR/.config/workspace-admin/config.toml` when it starts
-  `workspace-admin`, and only for that process: Jupyter and VS Code do
-  not see it
+  or empty, `.config/workspace-admin/config.toml` below `$PERSISTENT_DIR`
+  is used. A relative path is resolved against the directory the service
+  is started in. The workspace image does not set it
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when the
   file is missing. Set by the Dockerfile; unset outside the image, where a
   missing file leaves the backup disabled
@@ -1721,6 +1750,7 @@ obvious test file:
 | `tests/unit/test_services.py` | `admin/services.py` | Catalogue loading and template integrity |
 | `tests/unit/test_main.py`  | `admin/main.py`    | Argument parsing, CLI flags, git backup handed off before serving with the same status object the API reports, and stopped by the server's shutdown hook, no interval passed on without `--sync-interval`, which is range-checked like the config file |
 | `tests/unit/sync/git/test_auth.py` | `admin/sync/git/auth.py` | Auth header built/omitted based on credentials, https-only protocol options, credential helpers reset and stalled transfers abandoned, token never in the header text, recognizing (and not mis-recognizing) auth-failure stderr |
+| `tests/unit/config/test_config.py` | `admin/config/config.py` | The token kept out of `repr` and `str`, `PlaceholderError` a `ConfigError`, a default `MODE` for every section, the default interval within its bounds, the known keys, every URL and token in the template a placeholder |
 | `tests/unit/config/test_load.py` | `admin/config/load.py` | Sections become repositories, paths below the root, the token kept out of `repr`, errors in the file itself |
 | `tests/unit/config/test_validate.py` | `admin/config/validate.py` | Required and empty values, the token optional for `pull`, placeholders, `MODE`, keys that have no effect |
 | `tests/unit/config/test_validate_remote.py` | `admin/config/validate.py` | Branch and URL handed to git, two sections on one remote (also spelled differently or with `:443`), a work tree holding the config file |
@@ -1732,15 +1762,15 @@ obvious test file:
 | `tests/unit/sync/git/test_pull.py` | `admin/sync/git/pull.py` | Clean merge, an aborted conflict naming its files, failed fetch or merge, no merge after a branch switch |
 | `tests/unit/sync/git/test_refs.py` | `admin/sync/git/refs.py` | The refs and refspecs, https only, an option-shaped branch never reaching git as an option |
 | `tests/unit/sync/git/test_push.py` | `admin/sync/git/push.py` | Push only when ahead, counted by branch, the token hint, the atomic overwrite with its lease, a branch of its own per conflict named by time and hash, a moved remote and a protected branch told apart |
-| `tests/unit/sync/git/test_sync.py` | `admin/sync/git/sync.py` | The order of a cycle, what counts as a change, stopping between steps, every command naming its repository |
+| `tests/unit/sync/git/test_sync.py` | `admin/sync/git/sync.py` | The order of a cycle, what counts as a change, stopping between steps, every command naming its repository, a held-back file named only when the remote changed it |
 | `tests/unit/sync/git/test_sync_failures.py` | `admin/sync/git/sync.py` | Time limits, an unreachable remote, a conflict replacing the remote's branch, a refused overwrite naming the conflict, a stop before the overwrite, a pull that fails for good or may recover |
 | `tests/unit/sync/git/test_scheduler.py` | `admin/sync/git/scheduler.py` | Every repository cloned or synchronized once, failures, overwrites of the remote's branch and unexpected errors recorded, nothing started or recorded once stopped |
 | `tests/unit/sync/git/test_scheduler_loop.py` | `admin/sync/git/scheduler.py` | The daemon thread, one round per interval, the status enabled, the stop event handed to the round |
 | `tests/unit/sync/git/test_status.py` | `admin/sync/git/status.py` | Disabled until enabled, success, failure and overwrite timestamps, last error kept after a success, snapshots are copies, concurrent writers |
-| `tests/unit/sync/git/test_runner.py` | `admin/sync/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
+| `tests/unit/process/test_git_runner.py` | `admin/process/git_runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/sync/git/test_bootstrap.py` | `admin/sync/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
 | `tests/integration/sync/git/test_sync_conflicts.py` | `admin/sync/git/push.py`, `sync.py` | Conflicts against real git: every kind leaves the remote's branch equal to the workspace's with the remote's version on a `remote-backup/` branch, a commit that did not conflict is saved too, nothing is left to do after, a branch of its own per conflict, a push during the overwrite is never lost, a remote refusing force-pushes keeps its branch with the work still committed |
-| `tests/unit/sync/git/test_errors.py` | `admin/sync/git/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |
+| `tests/unit/sync/git/test_errors.py` | `admin/sync/git/errors.py` | Sorting a failed command into `auth_failed`, `network`, `remote_changed` or `git_failed`, and a refused merge into `local_changes` |
 | `tests/unit/sync/git/test_command.py` | `admin/sync/git/command.py` | Repository options before the subcommand, remote options, credentials and time limits, failures by kind with the token hint only when a token was sent, unchecked failures, time-outs, reading git's output |
 | `tests/integration/sync/git/test_sync_repository.py` | `admin/sync/git/sync.py`, `clone.py` | A lost `.git` file never redirects the backup to an enclosing repository; an emptied working tree is not committed; a deleted or emptied working tree is restored on startup, and one deleted while running stays deleted |
 | `tests/integration/sync/git/test_pull_only.py` | `admin/sync/git/pull.py` | Pull-only repositories: the remote's changes arrive, local edits are never pushed, an edit in the way is reported and kept |

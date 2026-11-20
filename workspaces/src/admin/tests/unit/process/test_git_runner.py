@@ -1,7 +1,7 @@
 """
 Unit tests for running git as a child process.
 
-Covers :mod:`admin.sync.git.runner`: prompts switched off, empty standard input,
+Covers :mod:`admin.process.git_runner`: prompts switched off, empty standard input,
 failures returned rather than raised, and a command that overruns its time
 limit being stopped - politely first, then by force, together with every
 process it started. The commands are small Python scripts rather than git,
@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from admin.sync.git import runner
-from admin.sync.git.runner import GitTimeoutError, run_git
+from admin.process import git_runner as runner
+from admin.process.git_runner import GitTimeoutError, run_git
 
 posix_only = pytest.mark.skipif(
     os.name != "posix", reason="process groups and SIGTERM are POSIX-only"

@@ -11,8 +11,8 @@ import logging
 import time
 from pathlib import Path
 
-from admin.sync.git.command import run_local
 from admin.config.config import RepoConfig
+from admin.sync.git.command import run_local
 from admin.sync.git.errors import SyncError, SyncErrorKind
 
 logger = logging.getLogger(__name__)

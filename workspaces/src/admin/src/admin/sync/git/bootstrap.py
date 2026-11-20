@@ -1,9 +1,9 @@
 """
 Starting and stopping the git backup.
 
-:mod:`admin.main` calls :func:`start_git_backup` on startup, which clones and
-then schedules the, and :func:`stop_git_backup`
-on shutdown. The config file is chosen once, so every step reads the same
+:mod:`admin.main` calls :func:`start_git_backup` on startup, which clones the
+repositories and then schedules their backup, and :func:`stop_git_backup` on
+shutdown. The config file is chosen once, so every step reads the same
 file. Failures are logged, never raised: the HTTP API must start regardless.
 """
 
@@ -12,11 +12,11 @@ import os
 import threading
 from pathlib import Path
 
-from admin.sync.git.clone import is_cloned
 from admin.config.config import ConfigError, PlaceholderError, RepoConfig
 from admin.config.load import load_config, load_sync_interval
-from admin.config.locate import discover_config
+from admin.config.locate import discover_config, persistent_root
 from admin.config.provision import provision_config
+from admin.sync.git.clone import is_cloned
 from admin.sync.git.scheduler import clone_and_record, start_sync_scheduler
 from admin.sync.git.status import BackupState, SyncStatus
 
@@ -28,12 +28,6 @@ BOOTSTRAP_THREAD_NAME = "git-bootstrap"
 #: Longest a stopping service waits for the running git command; under the
 #: 10 seconds ``docker stop`` allows.
 SHUTDOWN_TIMEOUT_SECONDS = 8
-
-
-def _root_dir() -> Path:
-    """Return ``$PERSISTENT_DIR``, or the home directory when it is unset."""
-    persistent_dir = os.environ.get("PERSISTENT_DIR")
-    return Path(persistent_dir) if persistent_dir else Path.home()
 
 
 def _template_path() -> Path | None:
@@ -64,7 +58,7 @@ def _load_repos(
         _log_missing_config(config_path)
         return []
     try:
-        return load_config(config_path, _root_dir())
+        return load_config(config_path, persistent_root())
     except PlaceholderError as exc:
         logger.error("%s: %s", failure_message, exc)
         status.set_state(BackupState.NEEDS_SETUP)

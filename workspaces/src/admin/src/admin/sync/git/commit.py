@@ -7,6 +7,7 @@ What is checked lives in :mod:`admin.sync.git.checks`.
 import logging
 import time
 
+from admin.config.config import RepoConfig
 from admin.sync.git.busy import ensure_safe_to_sync
 from admin.sync.git.checks import (
     MAX_FILE_BYTES,
@@ -16,7 +17,6 @@ from admin.sync.git.checks import (
     staged_conflict_markers,
 )
 from admin.sync.git.command import run_local
-from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,8 @@ def _stage(repo: RepoConfig, held_back: list[str]) -> None:
 def _unstage(repo: RepoConfig, paths: list[str]) -> None:
     """Unstage ``paths``, so a file deleted by hand leaves no staged addition."""
     if paths:
-        run_local(repo, ["reset", "--quiet", "--", *paths], "unstage the refused files")
+        literal = [f":(top,literal){path}" for path in paths]
+        run_local(repo, ["reset", "--quiet", "--", *literal], "unstage the refused files")
 
 
 def _has_staged_changes(repo: RepoConfig) -> bool:

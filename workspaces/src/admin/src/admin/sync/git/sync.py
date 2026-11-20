@@ -15,18 +15,17 @@ import logging
 import threading
 from collections.abc import Callable
 
+from admin.config.config import RepoConfig, SyncMode
 from admin.sync.git.checks import MAX_FILE_BYTES
 from admin.sync.git.commit import HeldBack, commit_local_changes
-from admin.config.config import RepoConfig, SyncMode
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.pull import pull_changes, pull_only
+from admin.sync.git.pull import pull_changes, pull_only, remote_changed_paths
 from admin.sync.git.push import overwrite_remote, push_if_ahead
 
 logger = logging.getLogger(__name__)
 
-#: Called with the branch holding the remote's version, after the
-#: workspace's branch replaced the remote's.
-OnOverwrite = Callable[[str], None]
+#: Called after the workspace's branch replaced the remote's.
+OnOverwrite = Callable[[], None]
 
 
 class SyncStopped(Exception):
@@ -90,21 +89,24 @@ def _held_back_in_the_way(
     repo: RepoConfig, error: SyncError, held: HeldBack | None
 ) -> SyncError | None:
     """
-    Name the held-back files that stopped the merge.
+    Name the held-back files that stopped the merge: those the remote changed.
 
     Args:
         error: Why the pull failed.
         held: The files held back from this cycle's commit, if any.
 
     Returns:
-        The error to raise instead, or None if no held-back file was in the way.
+        The error to raise instead, or None if no held-back file was in the way
+        or the remote's files cannot be listed.
     """
     if held is None or error.kind is not SyncErrorKind.LOCAL_CHANGES:
         return None
-    # git lists the files in the way on lines of their own, indented by a tab.
-    listed = {line.strip() for line in str(error).splitlines() if line.startswith("\t")}
-    marked = [path for path in held.marked if path in listed]
-    too_large = [path for path in held.too_large if path in listed]
+    try:
+        changed = remote_changed_paths(repo)
+    except SyncError:
+        return None
+    marked = [path for path in held.marked if path in changed]
+    too_large = [path for path in held.too_large if path in changed]
     if not marked and not too_large:
         return None
     blocked = SyncError(
@@ -136,11 +138,11 @@ def _overwrite(
         SyncError: As :func:`admin.sync.git.push.overwrite_remote`.
     """
     try:
-        saved = overwrite_remote(repo)
+        overwrite_remote(repo)
     except SyncError as error:
         raise SyncError(f"{conflict}; {error}", error.kind) from error
     if on_overwrite is not None:
-        on_overwrite(saved)
+        on_overwrite()
 
 
 def _merge_or_overwrite(
@@ -176,9 +178,8 @@ def sync_once(
     Run one cycle. Assumes the repository is cloned.
 
     ``stop_event`` is checked between steps; a commit left unpushed is
-    pushed by the next cycle. ``on_overwrite`` is called with the branch
-    holding the remote's version when a conflict made the workspace's
-    branch replace the remote's.
+    pushed by the next cycle. ``on_overwrite`` is called when a conflict
+    made the workspace's branch replace the remote's.
 
     Returns:
         True if a commit, merge or push to the configured branch was made.

@@ -2,16 +2,19 @@
 Unit tests for finding the config file.
 
 Covers :mod:`admin.config.locate`: ``$WORKSPACE_ADMIN_CONFIG`` first, then
-``~/.config/workspace-admin/config.toml``.
+``.config/workspace-admin/config.toml`` below ``$PERSISTENT_DIR`` or the
+home directory.
 """
 
 import pytest
 
 from admin.config.locate import (
     CONFIG_ENV_VAR,
+    PERSISTENT_DIR_ENV_VAR,
     ConfigLocation,
     ConfigRule,
     discover_config,
+    persistent_root,
 )
 
 
@@ -23,6 +26,7 @@ def fixture_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+    monkeypatch.delenv(PERSISTENT_DIR_ENV_VAR, raising=False)
     return home
 
 
@@ -56,6 +60,30 @@ def test_without_the_variable_the_default_directory_is_used(home):
     expected = home / ".config" / "workspace-admin" / "config.toml"
 
     assert discover_config() == ConfigLocation(expected, ConfigRule.DEFAULT)
+
+
+def test_persistent_dir_holds_the_default_directory(tmp_path, monkeypatch):
+    """Test the config file sits below $PERSISTENT_DIR, beside the repositories."""
+    monkeypatch.setenv(PERSISTENT_DIR_ENV_VAR, str(tmp_path / "workspace"))
+    expected = tmp_path / "workspace" / ".config" / "workspace-admin" / "config.toml"
+
+    assert discover_config() == ConfigLocation(expected, ConfigRule.DEFAULT)
+
+
+def test_persistent_root_is_persistent_dir(tmp_path, monkeypatch):
+    """Test the repositories and the config file share $PERSISTENT_DIR."""
+    monkeypatch.setenv(PERSISTENT_DIR_ENV_VAR, str(tmp_path))
+
+    assert persistent_root() == tmp_path
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_persistent_root_defaults_to_home(home, monkeypatch, value):
+    """Test the home directory is the root outside the image."""
+    if value is not None:
+        monkeypatch.setenv(PERSISTENT_DIR_ENV_VAR, value)
+
+    assert persistent_root() == home
 
 
 def test_the_variable_wins_over_the_default_directory(

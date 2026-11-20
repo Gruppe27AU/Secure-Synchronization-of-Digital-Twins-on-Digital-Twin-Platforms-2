@@ -5,8 +5,9 @@ Why a git backup step failed, in a form that is safe to show to anyone.
 :class:`SyncError` can hold git's own output and the names of the user's
 files, so it only ever goes to the log; the kind holds neither.
 
-:func:`failure_kind` sorts a failed git command's output into the kinds a
-user can act on: a rejected token, an unreachable remote, or anything else.
+Every rule that reads a kind out of git's output is here:
+:func:`failure_kind` for every git command, and :func:`merge_failure_kind`
+for a merge refused because of a local file.
 """
 
 from enum import StrEnum
@@ -27,6 +28,12 @@ _NETWORK_FAILURE_MARKERS = (
     "no route to host",
     "operation timed out",
 )
+
+#: git's reason when ``--force-with-lease`` finds the remote has moved.
+_REMOTE_CHANGED_MARKER = "stale info"
+
+#: git's errors when a merge would overwrite a local file.
+_LOCAL_CHANGES_MARKERS = ("would be overwritten", "local changes")
 
 
 class SyncErrorKind(StrEnum):
@@ -98,11 +105,22 @@ def failure_kind(output: str) -> SyncErrorKind:
 
     Returns:
         :attr:`SyncErrorKind.AUTH_FAILED` for a rejected token,
-        :attr:`SyncErrorKind.NETWORK` for an unreachable remote, and
-        :attr:`SyncErrorKind.GIT_FAILED` for anything else.
+        :attr:`SyncErrorKind.NETWORK` for an unreachable remote,
+        :attr:`SyncErrorKind.REMOTE_CHANGED` when ``--force-with-lease``
+        found the remote moved, and :attr:`SyncErrorKind.GIT_FAILED` for
+        anything else.
     """
     if is_auth_failure(output):
         return SyncErrorKind.AUTH_FAILED
     if is_network_failure(output):
         return SyncErrorKind.NETWORK
+    if _REMOTE_CHANGED_MARKER in output.lower():
+        return SyncErrorKind.REMOTE_CHANGED
     return SyncErrorKind.GIT_FAILED
+
+
+def merge_failure_kind(output: str, otherwise: SyncErrorKind) -> SyncErrorKind:
+    """Return ``local_changes`` if a merge refused because a local file is in the way."""
+    if any(marker in output.lower() for marker in _LOCAL_CHANGES_MARKERS):
+        return SyncErrorKind.LOCAL_CHANGES
+    return otherwise

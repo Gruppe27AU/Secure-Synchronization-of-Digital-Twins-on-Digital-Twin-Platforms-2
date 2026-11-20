@@ -17,8 +17,8 @@ import pytest
 
 from admin.sync.git import auth
 from admin.sync.git.clone import clone_asset
-from admin.sync.git.sync import sync_once
 from admin.sync.git.errors import SyncError, SyncErrorKind
+from admin.sync.git.sync import sync_once
 from tests.helpers.git_world import git, write
 from tests.helpers.repo_factory import make_repo
 

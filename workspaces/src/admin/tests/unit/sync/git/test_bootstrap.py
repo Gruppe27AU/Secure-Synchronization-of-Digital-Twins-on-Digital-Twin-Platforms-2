@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from admin.sync.git import bootstrap, scheduler
 from admin.config.config import ConfigError
-from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.config.locate import CONFIG_ENV_VAR
+from admin.sync.git import bootstrap, scheduler
+from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.status import SyncStatus
 from tests.helpers.repo_factory import make_repo
 from tests.helpers.templates import EXAMPLE_CONFIG_PATH
@@ -183,24 +183,6 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
 
     assert result == {"private": False, "common": True}
     assert "git clone failed for repository 'private'" in caplog.text
-
-
-def test_root_dir_uses_persistent_dir(monkeypatch):
-    """Test the repositories are placed below $PERSISTENT_DIR."""
-    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
-
-    root = bootstrap._root_dir()  # pylint: disable=protected-access
-
-    assert root == Path("/some/persistent/dir")
-
-
-def test_root_dir_defaults_to_home(monkeypatch):
-    """Test the repositories are placed below the home directory by default."""
-    monkeypatch.delenv("PERSISTENT_DIR", raising=False)
-
-    root = bootstrap._root_dir()  # pylint: disable=protected-access
-
-    assert root == Path.home()
 
 
 def test_load_repos_keeps_the_root_on_persistent_dir(
