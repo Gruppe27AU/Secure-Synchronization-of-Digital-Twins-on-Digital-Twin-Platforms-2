@@ -12,7 +12,6 @@ import shutil
 
 import pytest
 
-from admin.sync.git import checks
 from admin.sync.git.clone import clone_asset
 from admin.sync.git.errors import SyncError, SyncErrorKind
 from admin.sync.git.scheduler import sync_all
@@ -83,21 +82,21 @@ def test_an_emptied_working_tree_is_not_committed(world):
         assert world.remote_file(name) == content
 
 
-def test_a_deletion_committed_by_hand_is_pushed(world, monkeypatch):
-    """Test the way out of the guard: commit the deletion yourself."""
-    monkeypatch.setattr(checks, "MASS_DELETION_MIN_FILES", 2)
+def test_a_deletion_in_smaller_steps_is_pushed_but_not_the_last_file(world):
+    """Test the way out of the guard needs no git: delete fewer at a time."""
     work_tree = world.workspace.work_tree
-    for name in SEED_FILES:
+    *most, last = SEED_FILES
+    for name in most:
         (work_tree / name).unlink()
-    with pytest.raises(SyncError):
-        sync_once(world.workspace)
-
-    git(work_tree, "add", "-A")
-    git(work_tree, "commit", "--quiet", "-m", "clear out")
 
     assert sync_once(world.workspace) is True
-    for name in SEED_FILES:
+    for name in most:
         assert world.remote_file(name) is None
+
+    (work_tree / last).unlink()
+    with pytest.raises(SyncError, match="the last file is never deleted"):
+        sync_once(world.workspace)
+    assert world.remote_file(last) == SEED_FILES[last]
 
 
 def _delete_work_tree(world):

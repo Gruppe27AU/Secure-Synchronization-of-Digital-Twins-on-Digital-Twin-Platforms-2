@@ -254,7 +254,7 @@ What each kind means:
 | `pull_failed` | The branch in the repository cannot be fetched, for example because it was renamed or its history was rewritten. Check `GIT_REPO_BRANCH` and the branch on GitHub. |
 | `file_too_large` | A file is larger than 50 MiB and was left out. The rest was backed up. Make the file smaller or move it out of `/workspace/assets`. |
 | `conflict_markers` | A file holds conflict markers (`<<<<<<<`) and was left out. The rest was backed up. Remove the markers and save the file. |
-| `mass_deletion` | Most files in the folder are missing, so the backup stops to keep them safe in the repository. Put the files back, or delete them in smaller steps. |
+| `mass_deletion` | Most files in the folder are missing, so the backup stops to keep them safe in the repository. Put the files back, or delete fewer at a time: fewer than 10 per backup, or at most half of those left. The last file is never deleted, so keep one, such as a `README.md`. |
 | `wrong_branch`, `detached_head`, `operation_in_progress`, `unresolved_conflicts` | Git was run by hand in the folder, and the backup waits until that is undone. The backup runs git for you, so do not run git commands in `/workspace/assets`. Ask whoever set up the workspace to put the folder back on your branch. |
 | `index_locked` | Another git command was running. The backup tries again by itself. |
 | `local_changes` | Only for `common`: you changed a file that the repository changed too. Save your version under another name outside `/workspace/assets/common` if you need it, then delete the file. The next backup fetches the repository's version. |

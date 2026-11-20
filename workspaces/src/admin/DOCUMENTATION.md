@@ -670,7 +670,7 @@ doing without reading the log.
 | Git still lists files as conflicted | You | Waits: no commit, no pull, no push | Fix the files, then `git add` |
 | A file holds conflict markers | You | Leaves that file out, commits and pushes the rest | Remove the markers |
 | A file is over 50 MiB | You | Leaves that file out, commits and pushes the rest | Move or shrink it, or ignore it |
-| Most tracked files are missing | You | Waits: no commit | Restore them, or commit the deletion by hand |
+| Most tracked files are missing | You | Waits: no commit | Restore them, or delete fewer at a time |
 
 Every command below is run in the repository's working tree, which with the
 workspace image is `/workspace/assets/<name>`. The service can
@@ -914,20 +914,15 @@ of them and at least ten, the backup does not commit, so the files are not
 deleted on the remote either:
 
 ```text
-ERROR admin.sync.git.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. If that is intended, commit the deletion there by hand to resume the backup
+ERROR admin.sync.git.scheduler Not committing in repository 'private': 40 of 52 tracked files are missing from /workspace/assets/private. Put them back, or delete fewer at a time (fewer than 10, or at most half); the last file is never deleted
 ```
 
 A folder that has been emptied is far more often an accident, such as a
 move, a clean-up that went too far or a restore that has not finished, than
-a decision. If you did mean to delete the files, commit the deletion
-yourself and the next interval pushes it:
-
-```bash
-cd /workspace/assets/private
-git add -A && git commit -m "Remove old results"
-```
-
-That is also how the last file of a repository is deleted.
+a decision. If you did mean to delete the files, delete fewer at a time:
+fewer than ten per interval, or at most half of those left. Each interval
+commits and pushes one step. The last file of a repository is never
+deleted by the backup, so keep one, such as a `README.md`.
 
 ### The working tree is deleted
 
