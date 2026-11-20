@@ -5,7 +5,7 @@ placeholders, MODE and keys that have no effect.
 
 import pytest
 
-from admin.config.config import ConfigError, SyncMode
+from admin.config.config import ConfigError, PlaceholderError, SyncMode
 from admin.config.load import load_config
 from tests.helpers.templates import EXAMPLE_CONFIG_PATH
 from tests.unit.config.samples import (
@@ -68,9 +68,9 @@ def test_bundled_template_is_rejected():
         load_config(EXAMPLE_CONFIG_PATH, ROOT)
 
 
-def test_template_with_only_private_filled_in_is_accepted(tmp_path):
-    """Test that the commented-out common section does not block private."""
-    content = (
+def _template_with_private_filled_in() -> str:
+    """Return the template with only ``[assets.private]`` filled in."""
+    return (
         EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
         .replace(
             'GIT_REPO_URL = "https://gitlab.com/username/repository.git"',
@@ -80,9 +80,23 @@ def test_template_with_only_private_filled_in_is_accepted(tmp_path):
         .replace('GIT_REPO_TOKEN = "gitlab-api-token"', 'GIT_REPO_TOKEN = "t"', 1)
     )
 
+
+def test_template_with_private_filled_in_and_common_deleted_is_accepted(tmp_path):
+    """Test the template's advice: fill in private, delete an unused common."""
+    content = _template_with_private_filled_in()
+    content = content[: content.index("[assets.common]")]
+
     repos = load_config(write_config(tmp_path, content), ROOT)
 
-    assert [repo.name for repo in repos] == ["private"]
+    assert [(repo.name, repo.mode) for repo in repos] == [("private", SyncMode.SYNC)]
+
+
+def test_template_with_common_left_unfilled_is_refused(tmp_path):
+    """Test an untouched common section stops the backup, as the template says."""
+    content = _template_with_private_filled_in()
+
+    with pytest.raises(PlaceholderError, match=r"\[assets\.common\]"):
+        load_config(write_config(tmp_path, content), ROOT)
 
 
 @pytest.mark.parametrize(

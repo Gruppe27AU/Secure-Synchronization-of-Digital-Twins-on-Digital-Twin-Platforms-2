@@ -131,6 +131,11 @@ If you have a repository, or are given access to one you can skip this part.
 Make a repository on GitHub for your files. It can be empty, or
 hold files you want in the workspace.
 
+Use the repository and branch for one workspace only. Two workspaces that
+back up to the same branch replace each other's version whenever both
+changed the same file, see
+[When a file is changed locally and on remote](#when-a-file-is-changed-locally-and-on-remote).
+
 ### 2. Make a token
 
 Make a fine-grained access token on

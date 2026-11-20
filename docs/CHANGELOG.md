@@ -38,6 +38,9 @@ Every change since the week of 12-Oct-2026, in one entry.
   instead of with `-c` on the command line, where every user of the machine
   could read it, and the header is only sent to the repository's own URL,
   not to every repository on the same host
+* The config template lists `[assets.common]` uncommented and `MODE` in
+  both sections. A `common` section left with the example values stops the
+  backup, so fill it in or delete it
 * `WORKSPACE_ADMIN_CONFIG` names another config file. Without it the file
   is still `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, or below
   the home directory when `PERSISTENT_DIR` is unset

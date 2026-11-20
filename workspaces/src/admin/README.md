@@ -130,24 +130,30 @@ SYNC_INTERVAL_SECONDS = 300
 # Git repository configuration. The section name decides where each
 # repository's files appear: /workspace/assets/<name>.
 
+# Back up to a repository and branch used by this workspace only: on a
+# conflict, the workspace's branch replaces the remote's.
 [assets.private]
 GIT_REPO_URL = "https://gitlab.com/username/repository.git"
 GIT_REPO_BRANCH = "main"
 # HTTP token for authentication
 GIT_REPO_TOKEN = "gitlab-api-token"
+# "sync" commits, fetches and pushes your changes
+MODE = "sync"
 
-# Uncomment to also receive files shared between users. common is
-# pull-only by default: other users' changes arrive, but nothing you change
-# in /workspace/assets/common is committed or pushed, so nobody's files are
-# overwritten. A read-only token is enough.
-# [assets.common]
-# GIT_REPO_URL = "https://gitlab.com/username/repository.git"
-# GIT_REPO_BRANCH = "main"
-# # HTTP token for authentication
-# GIT_REPO_TOKEN = "gitlab-api-token"
-# # "pull" (default for common) or "sync" (default for private). Only use
-# # "sync" for common if a single user writes to it.
-# MODE = "pull"
+# Files shared between users. Fill it in, or delete this section if you
+# do not use shared files: the backup does not start while it holds the
+# example values. common is pull-only by default: other users' changes
+# arrive, but nothing you change in /workspace/assets/common is committed
+# or pushed, so nobody's files are overwritten. A read-only token is enough.
+[assets.common]
+GIT_REPO_URL = "https://gitlab.com/username/repository.git"
+GIT_REPO_BRANCH = "main"
+# HTTP token for authentication; leave it out for a public repository
+# in "pull" mode
+GIT_REPO_TOKEN = "gitlab-api-token"
+# "pull" (default for common) or "sync" (default for private). Only use
+# "sync" for common if a single user writes to it.
+MODE = "pull"
 ```
 
 What each line means:
@@ -156,7 +162,7 @@ What each line means:
 | --- | --- | --- |
 | `SYNC_INTERVAL_SECONDS` | No | Seconds between two backups, 1 to 86400. Default 300. |
 | `[assets.private]` | One of the two | Your own repository. |
-| `[assets.common]` | One of the two | A repository shared between users. Remove the `#` in front of its lines to use it. |
+| `[assets.common]` | One of the two | A repository shared between users. Fill it in, or delete the whole section if you do not use it: the backup does not start while it holds the example values. |
 | `GIT_REPO_URL` | Yes | The repository's `https://` address, as shown under *Clone* on GitLab. |
 | `GIT_REPO_BRANCH` | Yes | The branch to back up, usually `main`. |
 | `GIT_REPO_TOKEN` | Yes | The access token from step 1. |

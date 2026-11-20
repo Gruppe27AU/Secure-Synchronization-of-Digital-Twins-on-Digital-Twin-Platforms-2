@@ -731,6 +731,12 @@ never replaces an earlier one. They are never deleted by the backup.
 Only a real conflict does this. Remote changes that merge cleanly are
 merged as before, and the branch is pushed normally.
 
+The workspace is therefore meant to be the only writer of its branch: give
+each workspace a repository or branch of its own. Two workspaces backing
+up to one branch replace each other's version on every conflict, and each
+version is then only on a `remote-backup/` branch. `common` is pull-only by
+default for this reason.
+
 #### Why the workspace's version wins
 
 The workspace is where the user works, and the backup is there so they
