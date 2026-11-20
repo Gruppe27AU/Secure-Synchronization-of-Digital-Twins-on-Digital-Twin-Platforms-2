@@ -24,9 +24,8 @@ from admin.sync.git.push import overwrite_remote, push_if_ahead
 
 logger = logging.getLogger(__name__)
 
-#: Called with the branch holding the remote's version, after the
-#: workspace's branch replaced the remote's.
-OnOverwrite = Callable[[str], None]
+#: Called after the workspace's branch replaced the remote's.
+OnOverwrite = Callable[[], None]
 
 
 class SyncStopped(Exception):
@@ -136,11 +135,11 @@ def _overwrite(
         SyncError: As :func:`admin.sync.git.push.overwrite_remote`.
     """
     try:
-        saved = overwrite_remote(repo)
+        overwrite_remote(repo)
     except SyncError as error:
         raise SyncError(f"{conflict}; {error}", error.kind) from error
     if on_overwrite is not None:
-        on_overwrite(saved)
+        on_overwrite()
 
 
 def _merge_or_overwrite(
@@ -176,9 +175,8 @@ def sync_once(
     Run one cycle. Assumes the repository is cloned.
 
     ``stop_event`` is checked between steps; a commit left unpushed is
-    pushed by the next cycle. ``on_overwrite`` is called with the branch
-    holding the remote's version when a conflict made the workspace's
-    branch replace the remote's.
+    pushed by the next cycle. ``on_overwrite`` is called when a conflict
+    made the workspace's branch replace the remote's.
 
     Returns:
         True if a commit, merge or push to the configured branch was made.

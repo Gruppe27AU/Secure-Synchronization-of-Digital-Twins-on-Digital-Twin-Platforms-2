@@ -146,7 +146,7 @@ def test_sync_all_records_an_overwrite_of_the_remote(monkeypatch):
     """Test a conflict that replaced the remote's branch shows in the status."""
 
     def fake_sync_once(_repo, _stop_event, on_overwrite=None):
-        on_overwrite("remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d")
+        on_overwrite()
         return True
 
     monkeypatch.setattr(scheduler, "sync_once", fake_sync_once)
@@ -158,8 +158,6 @@ def test_sync_all_records_an_overwrite_of_the_remote(monkeypatch):
     assert repo["last_remote_overwrite"] is not None
     assert repo["last_success"] is not None
     assert repo["last_error"] is None
-    # The branch name stays in the log; the status holds only the time.
-    assert "remote-backup" not in str(status.snapshot())
 
 
 def test_sync_all_records_an_unexpected_error(monkeypatch):

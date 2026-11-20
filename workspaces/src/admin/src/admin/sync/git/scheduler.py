@@ -58,7 +58,7 @@ def _sync_one(
         sync_once(
             repo,
             stop_event,
-            on_overwrite=lambda _branch: status.record_remote_overwrite(repo.name),
+            on_overwrite=lambda: status.record_remote_overwrite(repo.name),
         )
     except SyncStopped as stopped:
         logger.info("%s", stopped)
