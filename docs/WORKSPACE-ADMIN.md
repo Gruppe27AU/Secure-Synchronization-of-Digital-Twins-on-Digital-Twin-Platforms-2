@@ -39,7 +39,7 @@ The user needs the following to have working before installing the service:
 
 - Docker version 27 or newer, with Docker Compose
 - Git
-- An account on GitHub, with a repository for your files
+- An account on GitHub or GitLab, with a repository for your files
 - An access token to the repository with read and write permissions
 - Port 80 must be free
 
@@ -128,7 +128,7 @@ docker compose down
 
 If you have a repository, or are given access to one you can skip this part.
 
-Make a repository on GitHub for your files. It can be empty, or
+Make a repository on GitHub or GitLab for your files. It can be empty, or
 hold files you want in the workspace.
 
 Use the repository and branch for one workspace only. Two workspaces that
@@ -138,10 +138,18 @@ changed the same file, see
 
 ### 2. Make a token
 
-Make a fine-grained access token on
-[GitHub](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+Make a token that reaches only this repository.
+
+On GitHub, make a
+[fine-grained access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 Give it access to the repository, with the permission Contents set to Read
 and write.
+
+On GitLab, make a
+[project access token](https://docs.gitlab.com/user/project/settings/project_access_tokens/)
+in the repository, with the role Developer and the scope `write_repository`.
+Do not use a personal token with the scope `api`: it reaches all your
+projects.
 
 The backup also needs to force-push to the branch, to settle a conflict
 (see [When a file is changed locally and on remote](#when-a-file-is-changed-locally-and-on-remote)).
@@ -309,4 +317,6 @@ The next backup saves it like any other change.
 
 The section `[assets.common]` receives files shared between users, in
 `/workspace/assets/common`. Fill it in like `[assets.private]`, with its own
-repository, or delete it. A read-only token is enough for it.
+repository, or delete it. A read-only token is enough for it: on GitHub set
+Contents to Read-only, on GitLab use a project access token with the scope
+`read_repository`.
