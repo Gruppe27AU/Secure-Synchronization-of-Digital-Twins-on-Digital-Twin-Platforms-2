@@ -233,17 +233,20 @@ chooses it once, on startup, checking in order:
 1. `$WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
    is resolved against the directory the service is started in, at that
    moment.
-2. `~/.config/workspace-admin/config.toml`.
+2. `.config/workspace-admin/config.toml` below `$PERSISTENT_DIR`, or below
+   the home directory when `PERSISTENT_DIR` is unset.
 
 A file named by `$WORKSPACE_ADMIN_CONFIG` is used even when it is missing;
 the default directory is then not looked at. The chosen path is passed to
 every step of the backup, so changing the variable while the service runs
 has no effect, and its absolute form is logged on every start. Where the
 file is does not move the repositories: they stay below `$PERSISTENT_DIR`.
-In the workspace image `custom_startup.sh` sets `$WORKSPACE_ADMIN_CONFIG`
-to `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, so the file is
+By default the config file and the repositories therefore share one root.
+In the workspace image `PERSISTENT_DIR` is `/workspace`, so the file is
 `/workspace/.config/workspace-admin/config.toml`; with the bundled compose
 files, `files/<username>/.config/workspace-admin/config.toml` on the host.
+`PERSISTENT_DIR` is set for the whole image, so a `workspace-admin`
+started by hand in a terminal reads the same file as the service.
 
 It is parsed with `tomllib`, so quoting and section syntax follow TOML
 rules. The template is `workspaces/src/templates/config.toml.example`.
@@ -1610,8 +1613,8 @@ the service from starting. The tests mirror this layout under
     is passed per command. See
     [Time limits and prompts](#time-limits-and-prompts)
   - `config/locate.py`: `discover_config()` chooses the config file,
-    `$WORKSPACE_ADMIN_CONFIG` before
-    `~/.config/workspace-admin/config.toml`, and returns a
+    `$WORKSPACE_ADMIN_CONFIG` before `.config/workspace-admin/config.toml`
+    below `persistent_root()`, and returns a
     `ConfigLocation` holding the absolute path and the `ConfigRule` that
     chose it. See [Configuration](#configuration)
   - `config/config.py`: the types `RepoConfig`, `SyncMode`, `ConfigError` and
@@ -1699,15 +1702,12 @@ the service from starting. The tests mirror this layout under
 - `ADMIN_SERVER_PORT`: Port for the admin service (default: `8091`)
 - `PATH_PREFIX`: Optional path prefix for API routes (can also be set via CLI `--path-prefix` argument)
 - `PERSISTENT_DIR`: Root of the git backup. Every repository is placed
-  below it, wherever `config.toml` is (default: the home directory;
-  `/workspace` in the workspace image)
+  below it, wherever `config.toml` is, and so is the default config file
+  (default: the home directory; `/workspace` in the workspace image)
 - `WORKSPACE_ADMIN_CONFIG`: The config file of the git backup. When unset
-  or empty, `~/.config/workspace-admin/config.toml` is used. A relative
-  path is resolved against the directory the service is started in. The
-  workspace image sets it to
-  `$PERSISTENT_DIR/.config/workspace-admin/config.toml` when it starts
-  `workspace-admin`, and only for that process: Jupyter and VS Code do
-  not see it
+  or empty, `.config/workspace-admin/config.toml` below `$PERSISTENT_DIR`
+  is used. A relative path is resolved against the directory the service
+  is started in. The workspace image does not set it
 - `WORKSPACE_CONFIG_TEMPLATE`: Template copied to `config.toml` when the
   file is missing. Set by the Dockerfile; unset outside the image, where a
   missing file leaves the backup disabled

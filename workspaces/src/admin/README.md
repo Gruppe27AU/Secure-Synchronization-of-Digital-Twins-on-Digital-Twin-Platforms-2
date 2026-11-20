@@ -67,7 +67,8 @@ The service chooses its config file once, when it starts:
 
 1. `WORKSPACE_ADMIN_CONFIG`, when it is set and not empty. A relative path
    is resolved against the directory you start `workspace-admin` from.
-2. Otherwise `~/.config/workspace-admin/config.toml`.
+2. Otherwise `.config/workspace-admin/config.toml` below `PERSISTENT_DIR`,
+   or below your home directory when `PERSISTENT_DIR` is not set.
 
 A file named by `WORKSPACE_ADMIN_CONFIG` is used even if it does not exist:
 the service never looks past it for another one.
@@ -77,10 +78,11 @@ the service never looks past it for another one.
 | Workspace container | `/workspace/.config/workspace-admin/config.toml` |
 | Locally, Linux or macOS | `~/.config/workspace-admin/config.toml` |
 | Locally, Windows | `%USERPROFILE%\.config\workspace-admin\config.toml` |
+| Locally, `PERSISTENT_DIR` set | `$PERSISTENT_DIR/.config/workspace-admin/config.toml` |
 
-The container sets `WORKSPACE_ADMIN_CONFIG` to the path in the table when
-it starts the service, so the file stays on the persistent volume. The full
-path is logged every time the service starts.
+The container sets `PERSISTENT_DIR` to `/workspace`, so the file stays on
+the persistent volume, also when you start `workspace-admin` by hand in a
+terminal. The full path is logged every time the service starts.
 
 - **In the container** the file is created for you the first time.
 - **Locally** you create the directory and the file yourself; see
@@ -182,9 +184,35 @@ cd workspaces/src/admin
 poetry install
 ```
 
-#### Step 2: Create the directory
+#### Step 2: Choose where the files go
 
-The directory is `.config/workspace-admin` in your home directory.
+The config file and the repositories go below one root directory:
+
+- **`PERSISTENT_DIR` not set** (the simplest): your home directory. The
+  config file is `~/.config/workspace-admin/config.toml`, and the
+  repositories go into `~/assets/<name>`.
+- **`PERSISTENT_DIR` set**: that directory. The config file is
+  `$PERSISTENT_DIR/.config/workspace-admin/config.toml`, and the
+  repositories go into `$PERSISTENT_DIR/assets/<name>`. Set it in the same
+  terminal before every start, or the service looks in your home
+  directory again.
+
+Windows PowerShell:
+
+```powershell
+$env:PERSISTENT_DIR = "C:\my-workspace"
+```
+
+Linux or macOS:
+
+```bash
+export PERSISTENT_DIR=~/my-workspace
+```
+
+The commands below use the home directory. With `PERSISTENT_DIR` set,
+replace `$HOME` or `~` with `$env:PERSISTENT_DIR` or `$PERSISTENT_DIR`.
+
+#### Step 3: Create the directory
 
 Windows PowerShell:
 
@@ -198,7 +226,7 @@ Linux or macOS:
 mkdir -p ~/.config/workspace-admin
 ```
 
-#### Step 3: Create the config file
+#### Step 4: Create the config file
 
 Create an empty `config.toml` in that directory and open it.
 
@@ -217,20 +245,21 @@ chmod 600 ~/.config/workspace-admin/config.toml
 nano ~/.config/workspace-admin/config.toml
 ```
 
-#### Step 4: Paste the example and fill it in
+#### Step 5: Paste the example and fill it in
 
 Paste the [example](#2-understand-the-config-file) into the file, then
 replace `GIT_REPO_URL`, `GIT_REPO_BRANCH` and `GIT_REPO_TOKEN` with your
 own values. Save the file.
 
-#### Step 5: Start the service
+#### Step 6: Start the service
 
 ```bash
 poetry run workspace-admin
 ```
 
 The first log line shows which file it read. It must be the file you just
-made:
+made. If it is in your home directory although you meant to use
+`PERSISTENT_DIR`, the variable is not set in this terminal:
 
 ```text
 INFO:     Git backup config file: C:\Users\<name>\.config\workspace-admin\config.toml
@@ -238,24 +267,18 @@ INFO:     Git backup config file: C:\Users\<name>\.config\workspace-admin\config
 
 Cloning starts on startup, and a repository that fails to clone is tried
 again on every interval. The repositories are cloned into `assets/<name>`
-in your home directory. After a change to the config file, stop the
+below the root from step 2. After a change to the config file, stop the
 service with `Ctrl+C` and start it again.
 
-#### Step 6: Check that it runs
+#### Step 7: Check that it runs
 
 See [Checking the backup](#checking-the-backup).
 
-#### Using another directory
+#### Using a config file somewhere else
 
-To use another config file, set `WORKSPACE_ADMIN_CONFIG` to it before every
-start. To keep the repositories somewhere other than your home directory,
-set `PERSISTENT_DIR`. The two are independent:
-
-```powershell
-$env:WORKSPACE_ADMIN_CONFIG = "C:\my-workspace\.config\workspace-admin\config.toml"
-$env:PERSISTENT_DIR = "C:\my-workspace"
-poetry run workspace-admin
-```
+To read a config file outside the root, set `WORKSPACE_ADMIN_CONFIG` to it
+before every start. It moves only the config file; the repositories stay
+below the root from step 2.
 
 ### Run it in the workspace container
 

@@ -37,6 +37,13 @@ The main changes made so far are listed here.
   so `admin.config` no longer imports the backup it configures. A new test,
   `tests/unit/test_layers.py`, fails on an import that points up or
   sideways between the packages
+* **Without `WORKSPACE_ADMIN_CONFIG`, the config file is
+  `$PERSISTENT_DIR/.config/workspace-admin/config.toml`**, beside the
+  repositories, and `~/.config/workspace-admin/config.toml` only when
+  `PERSISTENT_DIR` is unset. A `workspace-admin` started by hand in a
+  workspace terminal now reads the same file as the service, instead of
+  creating an empty one in the home directory. `custom_startup.sh` no
+  longer sets `WORKSPACE_ADMIN_CONFIG`
 
 ### Fixed
 

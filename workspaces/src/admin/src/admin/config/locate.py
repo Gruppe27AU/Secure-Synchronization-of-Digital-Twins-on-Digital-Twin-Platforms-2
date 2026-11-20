@@ -5,12 +5,13 @@ Finding the config file of the git backup.
 checking in order:
 
 1. ``$WORKSPACE_ADMIN_CONFIG``, when it is set and not empty
-2. ``~/.config/workspace-admin/config.toml``
+2. ``.config/workspace-admin/config.toml`` below :func:`persistent_root`:
+   ``$PERSISTENT_DIR``, or the home directory when it is unset
 
 It only chooses a path and never reads the file, so a variable naming a
 file that does not exist is still the answer: nothing falls back past it.
-Where the repositories are kept does not depend on the answer; that stays
-below ``$PERSISTENT_DIR``.
+The repositories are kept below :func:`persistent_root` whatever the answer,
+so by default the config file and the repositories share one root.
 """
 
 import os
@@ -24,7 +25,10 @@ CONFIG_ENV_VAR = "WORKSPACE_ADMIN_CONFIG"
 #: Filename of the config file.
 DEFAULT_CONFIG_FILE = "config.toml"
 
-#: Directory holding the config file, below the home directory.
+#: Environment variable naming the root of the config file and repositories.
+PERSISTENT_DIR_ENV_VAR = "PERSISTENT_DIR"
+
+#: Directory holding the config file, below :func:`persistent_root`.
 CONFIG_DIR = Path(".config", "workspace-admin")
 
 
@@ -33,7 +37,7 @@ class ConfigRule(StrEnum):
     The rule that chose the config file.
 
     ``env`` is ``$WORKSPACE_ADMIN_CONFIG``; ``default`` is the file in the
-    default directory below the home directory.
+    default directory below :func:`persistent_root`.
     """
 
     ENV = "env"
@@ -54,9 +58,15 @@ class ConfigLocation:
     rule: ConfigRule
 
 
+def persistent_root() -> Path:
+    """Return ``$PERSISTENT_DIR``, or the home directory when it is unset."""
+    persistent_dir = os.environ.get(PERSISTENT_DIR_ENV_VAR)
+    return Path(persistent_dir) if persistent_dir else Path.home()
+
+
 def default_config_path() -> Path:
-    """Return ``~/.config/workspace-admin/config.toml``."""
-    return Path.home() / CONFIG_DIR / DEFAULT_CONFIG_FILE
+    """Return ``.config/workspace-admin/config.toml`` below the root."""
+    return persistent_root() / CONFIG_DIR / DEFAULT_CONFIG_FILE
 
 
 def discover_config() -> ConfigLocation:

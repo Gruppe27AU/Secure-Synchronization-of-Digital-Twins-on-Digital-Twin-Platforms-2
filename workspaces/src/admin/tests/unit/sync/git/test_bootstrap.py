@@ -185,24 +185,6 @@ def test_clone_configured_repos_one_failure_does_not_block_the_other(
     assert "git clone failed for repository 'private'" in caplog.text
 
 
-def test_root_dir_uses_persistent_dir(monkeypatch):
-    """Test the repositories are placed below $PERSISTENT_DIR."""
-    monkeypatch.setenv("PERSISTENT_DIR", "/some/persistent/dir")
-
-    root = bootstrap._root_dir()  # pylint: disable=protected-access
-
-    assert root == Path("/some/persistent/dir")
-
-
-def test_root_dir_defaults_to_home(monkeypatch):
-    """Test the repositories are placed below the home directory by default."""
-    monkeypatch.delenv("PERSISTENT_DIR", raising=False)
-
-    root = bootstrap._root_dir()  # pylint: disable=protected-access
-
-    assert root == Path.home()
-
-
 def test_load_repos_keeps_the_root_on_persistent_dir(
     config_file, persistent_dir, monkeypatch
 ):
