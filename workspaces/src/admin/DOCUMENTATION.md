@@ -1571,6 +1571,7 @@ src/admin/
         ├── pull.py               # Fetches and merges, or fast-forwards
         ├── push.py               # Push, and replace the remote's branch
         ├── refs.py               # Ref names and refspecs of the branch
+        ├── clock.py              # The current time in UTC
         ├── busy.py               # Whether the user is busy with the repository
         ├── checks.py             # What is checked in the files to commit
         ├── bootstrap.py          # Starts and stops the backup
@@ -1652,6 +1653,8 @@ the service from starting. The tests mirror this layout under
     restores a missing or empty work tree on startup.
     `restore_git_file()` writes back a lost `.git` file
   - `sync/git/refs.py`: the configured branch's ref names and refspecs
+  - `sync/git/clock.py`: `utc_now()`, shared by the status times and the
+    `remote-backup/` branch names, so the two always agree
   - `sync/git/commit.py`: `commit_local_changes()` commits the user's changes,
     holding back large and marked files (`HeldBack`). The commit identity
     is passed per command with `git -c`, never written to `.git/config`

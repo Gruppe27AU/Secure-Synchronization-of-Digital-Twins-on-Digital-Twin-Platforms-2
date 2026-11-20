@@ -379,6 +379,8 @@ The backup lives in three packages, and the tests mirror them under
   short hash of the saved commit) and force-pushes the workspace's over
   it, in one atomic push with `--force-with-lease`
 - `refs.py`: ref names and refspecs of the configured branch
+- `clock.py`: `utc_now()`, the one clock for status times and
+  `remote-backup/` branch names
 - `busy.py`: whether the user is busy with the repository, so no cycle
   starts: a missing working tree, an unfinished merge, another branch or
   detached HEAD, unresolved files, a fresh `index.lock`

@@ -51,6 +51,7 @@ src/admin/
         ├── pull.py               # Fetch and merge, or fast-forward
         ├── push.py               # Push, and replace the remote's branch
         ├── refs.py               # Ref names and refspecs of the branch
+        ├── clock.py              # The current time in UTC
         ├── busy.py               # Whether the user is busy with the repository
         ├── checks.py             # What is checked in the files to commit
         ├── bootstrap.py          # Start and stop the backup

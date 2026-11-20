@@ -17,10 +17,11 @@ shows up too.
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from admin.sync.git.clock import utc_now
 from admin.sync.git.errors import SyncErrorKind
 
 
@@ -48,11 +49,6 @@ class RepoState(StrEnum):
     CLONE_FAILED = "clone_failed"
     #: Cloned, and synchronized on every interval.
     SYNCING = "syncing"
-
-
-def _utc_now() -> datetime:
-    """Return the current time in UTC."""
-    return datetime.now(timezone.utc)
 
 
 def _iso(moment: datetime | None) -> str | None:
@@ -102,7 +98,7 @@ class SyncStatus:
     Starts :attr:`BackupState.DISABLED` with no repositories.
     """
 
-    def __init__(self, clock: Callable[[], datetime] = _utc_now) -> None:
+    def __init__(self, clock: Callable[[], datetime] = utc_now) -> None:
         """
         Args:
             clock: Returns the current time. Replaceable in tests.

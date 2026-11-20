@@ -82,7 +82,7 @@ def fixture_ticking_clock(monkeypatch):
         datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc) + timedelta(minutes=step)
         for step in range(100)
     )
-    monkeypatch.setattr(push_module, "_utc_now", lambda: next(moments))
+    monkeypatch.setattr(push_module, "utc_now", lambda: next(moments))
 
 
 @pytest.mark.parametrize(

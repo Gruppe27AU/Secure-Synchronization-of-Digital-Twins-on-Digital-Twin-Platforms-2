@@ -153,7 +153,7 @@ def test_an_unborn_branch_has_nothing_to_push(monkeypatch, repo):
 def test_overwrite_remote_backs_up_and_replaces_in_one_atomic_push(monkeypatch, repo):
     """Test the remote's commit is saved and the branch forced only under a lease."""
     moment = datetime(2026, 11, 19, 10, 15, 30, tzinfo=timezone.utc)
-    monkeypatch.setattr(push_module, "_utc_now", lambda: moment)
+    monkeypatch.setattr(push_module, "utc_now", lambda: moment)
     fake_git = install_fake_git(monkeypatch, FakeGit())
 
     branch = overwrite_remote(repo)
@@ -181,7 +181,7 @@ def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch):
             datetime(2026, 11, 19, 10, 5, 0, tzinfo=timezone.utc),
         ]
     )
-    monkeypatch.setattr(push_module, "_utc_now", lambda: next(moments))
+    monkeypatch.setattr(push_module, "utc_now", lambda: next(moments))
 
     assert remote_backup_branch(FAKE_COMMIT) != remote_backup_branch(FAKE_COMMIT)
 
@@ -189,7 +189,7 @@ def test_each_overwrite_gets_a_branch_of_its_own(monkeypatch):
 def test_two_versions_saved_in_the_same_second_get_branches_of_their_own(monkeypatch):
     """Test the hash keeps two workspaces' conflicts apart within one second."""
     moment = datetime(2026, 11, 19, 10, 15, 30, tzinfo=timezone.utc)
-    monkeypatch.setattr(push_module, "_utc_now", lambda: moment)
+    monkeypatch.setattr(push_module, "utc_now", lambda: moment)
 
     assert remote_backup_branch("a1b2c3d" + "0" * 33) == (
         "remote-backup/2026-11-19_10-15-30-UTC-a1b2c3d"

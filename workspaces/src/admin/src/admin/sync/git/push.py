@@ -4,8 +4,8 @@ workspace's after a merge conflict.
 """
 
 import logging
-from datetime import datetime, timezone
 
+from admin.sync.git.clock import utc_now
 from admin.sync.git.command import count_commits, ref_exists, resolve_commit, run_remote
 from admin.config.config import RepoConfig
 from admin.sync.git.errors import SyncError, SyncErrorKind
@@ -57,11 +57,6 @@ def push_if_ahead(repo: RepoConfig) -> bool:
     return True
 
 
-def _utc_now() -> datetime:
-    """Return the current time in UTC. Replaceable in tests."""
-    return datetime.now(timezone.utc)
-
-
 def remote_backup_branch(commit: str) -> str:
     """
     Return a new branch for the remote's version ``commit``, for example
@@ -70,7 +65,7 @@ def remote_backup_branch(commit: str) -> str:
     The time sorts the branches; the hash tells two saved versions apart and
     matches what the forge shows for the commit.
     """
-    stamp = _utc_now().strftime("%Y-%m-%d_%H-%M-%S-UTC")
+    stamp = utc_now().strftime("%Y-%m-%d_%H-%M-%S-UTC")
     return f"{REMOTE_BACKUP_BRANCH_PREFIX}{stamp}-{commit[:SHORT_HASH_LENGTH]}"
 
 
