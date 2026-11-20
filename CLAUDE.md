@@ -312,15 +312,19 @@ The package is layered, and the test files mirror it:
 - `src/admin/config/` - What to back up: finding, creating and reading
   `config.toml`
 - `src/admin/sync/git/` - Git backup of workspace directories
+- `src/admin/process/` - Running git as a child process (`git_runner.py`)
 - `src/admin/templates/` - Service catalogue (`services_template.json`)
 
-Dependencies point one way only: `main` → `api` → `services`.
+Imports point down the layers only, never up and never sideways: `main` →
+`api` → `sync`/`services` → `config` → `process`. `api` uses
+`sync/git/status.py`, and `config/validate.py` uses
+`process/git_runner.py` to ask git about a branch name.
+`tests/unit/test_layers.py` fails on an import against this order.
 
-The backup lives in two packages, and the tests mirror them under
-`tests/unit/config/`, `tests/unit/sync/git/` and
-`tests/integration/sync/git/`. Dependencies point one way, `sync/git` →
-`config`; `config/validate.py` uses only `sync/git/runner.py`.
-`config/config.py` and `sync/git/runner.py` import nothing from the package.
+The backup lives in three packages, and the tests mirror them under
+`tests/unit/process/`, `tests/unit/config/`, `tests/unit/sync/git/` and
+`tests/integration/sync/git/`. `config/config.py` and
+`process/git_runner.py` import nothing from the package.
 
 `config/`: what to back up
 
@@ -337,10 +341,13 @@ The backup lives in two packages, and the tests mirror them under
 - `load.py`: reads `config.toml` and returns one `RepoConfig` per
   repository
 
-`sync/git/`, running git:
+`process/`, running git:
 
-- `runner.py`: runs every git command with prompts off, empty stdin and a
-  time limit, stopping an overrunning command and its child processes
+- `git_runner.py`: runs every git command with prompts off, empty stdin and
+  a time limit, stopping an overrunning command and its child processes
+
+`sync/git/`, running git for the backup:
+
 - `command.py`: the one runner for every git command, clone included,
   raising `SyncError` for the caller to log; commands in a cloned
   repository always get `--git-dir` and `--work-tree`, so a lost `.git`

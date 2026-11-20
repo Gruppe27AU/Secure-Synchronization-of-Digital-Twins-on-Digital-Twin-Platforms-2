@@ -13,7 +13,7 @@ import pytest
 from admin.sync.git.sync import sync_once, SyncStopped
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.runner import (
+from admin.process.git_runner import (
     GitTimeoutError,
     LOCAL_TIMEOUT_SECONDS,
     REMOTE_TIMEOUT_SECONDS,

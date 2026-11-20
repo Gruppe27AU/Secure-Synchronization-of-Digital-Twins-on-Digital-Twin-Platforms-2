@@ -584,8 +584,8 @@ ERROR admin.sync.git.bootstrap Failed to clone for repository 'common': <git's m
 
 ### Time limits and prompts
 
-Every git command goes through `run_git()` in `runner.py`, so none of them
-can wait forever:
+Every git command goes through `run_git()` in `git_runner.py`, so none of
+them can wait forever:
 
 - **No prompts.** `GIT_TERMINAL_PROMPT=0` and an empty `GIT_ASKPASS` stop git
   from asking for a username or password, on a terminal or through an
@@ -1549,6 +1549,8 @@ src/admin/
 ├── main.py                       # Command-line entry point
 ├── templates/
 │   └── services_template.json    # Service catalogue (data, not code)
+├── process/
+│   └── git_runner.py             # Runs git without prompts, within a time limit
 ├── config/                       # What to back up
 │   ├── locate.py                 # Chooses which config.toml to read
 │   ├── provision.py              # Creates a missing config.toml from the template
@@ -1557,7 +1559,6 @@ src/admin/
 │   └── load.py                   # Reads config.toml into RepoConfig objects
 └── sync/
     └── git/                      # Git backup of workspace directories
-        ├── runner.py             # Runs git without prompts, within a time limit
         ├── command.py            # The one runner for every git command
         ├── auth.py               # HTTP auth header, https-only options, rejected tokens
         ├── errors.py             # SyncErrorKind, SyncError, sorting failures by kind
@@ -1574,13 +1575,17 @@ src/admin/
         └── status.py             # Where the backup stands, for /storage/status
 ```
 
-Dependencies point one way: `main` → `api` → `services`, and for the
-backup: `sync/git` → `config`. Inside `sync/git`: `bootstrap` →
-`scheduler` → `clone`/`sync` → `pull`/`push` → `commit` → `busy`/`checks`
-→ `command` → `auth`/`errors`/`runner`. `config/validate.py` uses only
-`sync/git/runner.py`, to ask git about a branch name. `config/config.py`
-and `sync/git/runner.py` import nothing from the package. The tests mirror
-this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
+Imports point down the layers only, never up and never sideways: `main`
+→ `api` → `sync`/`services` → `config` → `process`. `api` uses
+`sync/git/status.py`, and `config/validate.py` uses
+`process/git_runner.py` to ask git about a branch name. Inside
+`sync/git`: `bootstrap` → `scheduler` → `clone`/`sync` → `pull`/`push` →
+`commit` → `busy`/`checks` → `command` → `auth`/`errors`.
+`config/config.py` and `process/git_runner.py` import nothing from the
+package. `tests/unit/test_layers.py` reads the imports of every module and
+fails on one against this order, since a cycle between packages would stop
+the service from starting. The tests mirror this layout under
+`tests/unit/process/`, `tests/unit/config/`, `tests/unit/sync/git/` and
 `tests/integration/sync/git/`.
 
 ### Components
@@ -1595,9 +1600,10 @@ this layout under `tests/unit/config/`, `tests/unit/sync/git/` and
 - **CLI Entry Point** (`src/admin/main.py`): Argument parsing
   (`build_parser`) and the `workspace-admin` command (`cli`), which either
   prints the catalogue or serves the API with uvicorn
-- **Git Backup** (`src/admin/config/`, `src/admin/sync/git/`): Configuration, cloning, authentication
-  and working tree synchronization for shared and private git assets
-  - `sync/git/runner.py`: `run_git()` runs every git command of the backup with
+- **Git Backup** (`src/admin/config/`, `src/admin/sync/git/`,
+  `src/admin/process/`): Configuration, cloning, authentication and working
+  tree synchronization for shared and private git assets
+  - `process/git_runner.py`: `run_git()` runs every git command with
     prompts switched off, empty standard input and a time limit, and stops
     a command that overruns it together with the processes it started,
     raising `GitTimeoutError`. Extra environment, such as the credentials,
@@ -1741,7 +1747,7 @@ obvious test file:
 | `tests/unit/sync/git/test_scheduler.py` | `admin/sync/git/scheduler.py` | Every repository cloned or synchronized once, failures, overwrites of the remote's branch and unexpected errors recorded, nothing started or recorded once stopped |
 | `tests/unit/sync/git/test_scheduler_loop.py` | `admin/sync/git/scheduler.py` | The daemon thread, one round per interval, the status enabled, the stop event handed to the round |
 | `tests/unit/sync/git/test_status.py` | `admin/sync/git/status.py` | Disabled until enabled, success, failure and overwrite timestamps, last error kept after a success, snapshots are copies, concurrent writers |
-| `tests/unit/sync/git/test_runner.py` | `admin/sync/git/runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
+| `tests/unit/process/test_git_runner.py` | `admin/process/git_runner.py` | Prompts off, empty stdin, failures returned, overrunning commands stopped (SIGTERM first, then SIGKILL, including the processes they started) |
 | `tests/unit/sync/git/test_bootstrap.py` | `admin/sync/git/bootstrap.py` | Startup wiring: the clone running on a background thread without holding up the caller, cloning every configured repository (`private` and `common`), one repository's clone failure not blocking another's, scheduling only cloned repositories, and graceful handling of config/clone failures, the caller's stop event used, no sync started after a stop during the clone, and a shutdown wait that gives up after its limit, the interval read from the config file unless one is given, and no sync started when the file can no longer be read |
 | `tests/integration/sync/git/test_sync_conflicts.py` | `admin/sync/git/push.py`, `sync.py` | Conflicts against real git: every kind leaves the remote's branch equal to the workspace's with the remote's version on a `remote-backup/` branch, a commit that did not conflict is saved too, nothing is left to do after, a branch of its own per conflict, a push during the overwrite is never lost, a remote refusing force-pushes keeps its branch with the work still committed |
 | `tests/unit/sync/git/test_errors.py` | `admin/sync/git/errors.py` | Sorting a failed command into `auth_failed`, `network` or `git_failed` |

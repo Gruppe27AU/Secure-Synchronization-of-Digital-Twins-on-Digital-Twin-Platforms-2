@@ -4,7 +4,7 @@ Unit tests for cloning git-backed workspace assets.
 Covers :mod:`admin.sync.git.clone`: skipping an already-cloned repository,
 performing a successful clone, and surfacing a failed clone as
 :class:`admin.sync.git.errors.SyncError`. Real git is never invoked -
-:func:`admin.sync.git.runner.run_git` is replaced for every test.
+:func:`admin.process.git_runner.run_git` is replaced for every test.
 """
 
 import subprocess
@@ -15,7 +15,7 @@ import pytest
 from admin.sync.git.clone import clone_asset, is_cloned, restore_git_file
 from admin.sync.git import command as command_module
 from admin.sync.git.errors import SyncError, SyncErrorKind
-from admin.sync.git.runner import GitTimeoutError, REMOTE_TIMEOUT_SECONDS
+from admin.process.git_runner import GitTimeoutError, REMOTE_TIMEOUT_SECONDS
 from tests.helpers.repo_factory import make_repo
 
 

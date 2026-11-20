@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from admin.sync.git.runner import GitTimeoutError
+from admin.process.git_runner import GitTimeoutError
 from admin.config import validate as validate_module
 from admin.config.config import ConfigError
 from admin.config.load import load_config

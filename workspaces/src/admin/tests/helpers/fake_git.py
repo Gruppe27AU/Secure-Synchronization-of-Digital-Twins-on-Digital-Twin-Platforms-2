@@ -1,7 +1,7 @@
 """
 Stand-in for git in the sync tests.
 
-:class:`FakeGit` replaces :func:`admin.sync.git.runner.run_git` where
+:class:`FakeGit` replaces :func:`admin.process.git_runner.run_git` where
 :mod:`admin.sync.git.command` uses it, records every command and answers it with
 canned results.
 """
@@ -77,7 +77,7 @@ def _listing(paths):
 @dataclass
 class FakeGit:  # pylint: disable=too-many-instance-attributes
     """
-    Stands in for :func:`admin.sync.git.runner.run_git` and records every git call.
+    Stands in for :func:`admin.process.git_runner.run_git` and records every git call.
 
     Args:
         status_output: What ``git status --porcelain`` prints. Empty means

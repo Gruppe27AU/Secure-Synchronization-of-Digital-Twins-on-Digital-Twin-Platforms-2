@@ -23,7 +23,7 @@ from admin.config.config import (
     RepoConfig,
     SyncMode,
 )
-from admin.sync.git.runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
+from admin.process.git_runner import LOCAL_TIMEOUT_SECONDS, GitTimeoutError, run_git
 
 logger = logging.getLogger(__name__)
 

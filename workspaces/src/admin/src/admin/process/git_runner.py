@@ -1,7 +1,7 @@
 """
 Running git as a child process.
 
-Every git command of the backup goes through :func:`run_git`, so that no
+Every git command of the service goes through :func:`run_git`, so that no
 command can wait forever - neither for a person nor for the network:
 
 - Prompts are switched off. ``GIT_TERMINAL_PROMPT=0`` stops git asking on
@@ -18,8 +18,8 @@ command can wait forever - neither for a person nor for the network:
 - Each command has a time limit. When it runs out, the command and every
   process it started are stopped, and :class:`GitTimeoutError` is raised.
 
-This module knows nothing about repositories or configuration, so every
-other module of :mod:`admin.sync.git` and :mod:`admin.config` can use it.
+It imports nothing from :mod:`admin`, so :mod:`admin.config` and
+:mod:`admin.sync.git` can both use it without importing each other.
 """
 
 import os

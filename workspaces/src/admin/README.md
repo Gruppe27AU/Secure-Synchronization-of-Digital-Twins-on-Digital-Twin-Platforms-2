@@ -32,6 +32,8 @@ src/admin/
 ├── main.py                       # Command-line entry point
 ├── templates/
 │   └── services_template.json    # Service catalogue
+├── process/
+│   └── git_runner.py             # Run git with a time limit
 ├── config/                       # What to back up
 │   ├── locate.py                 # Choose which config.toml to read
 │   ├── provision.py              # Create a missing config.toml from the template
@@ -40,7 +42,6 @@ src/admin/
 │   └── load.py                   # config.toml -> RepoConfig
 └── sync/
     └── git/                      # Git backup of workspace directories
-        ├── runner.py             # Run git with a time limit
         ├── command.py            # The one runner for every git command
         ├── auth.py               # HTTP auth header (in the environment), https only
         ├── errors.py             # Status kinds, and sorting failures by kind

@@ -33,6 +33,11 @@ The main changes made so far are listed here.
   `admin.git.setup.load` is now `admin.config.load`; a log filter on the
   old names must be updated
 
+* `runner.py` moves from `admin.sync.git` to `admin.process.git_runner`,
+  so `admin.config` no longer imports the backup it configures. A new test,
+  `tests/unit/test_layers.py`, fails on an import that points up or
+  sideways between the packages
+
 ### Fixed
 
 * A file held back for conflict markers no longer holds back other files
